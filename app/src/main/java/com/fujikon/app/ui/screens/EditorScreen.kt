@@ -1,0 +1,563 @@
+package com.fujikon.app.ui.screens
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
+import coil.compose.AsyncImage
+import com.fujikon.app.render.ExportManager
+import com.fujikon.app.ui.components.ExportOptionsSheet
+import com.fujikon.app.ui.components.PresetPickerSheet
+import com.fujikon.app.ui.components.ZoomableImage
+import com.fujikon.app.ui.theme.Amber
+import com.fujikon.app.ui.theme.Card
+import com.fujikon.app.ui.theme.CardHigh
+import com.fujikon.app.ui.theme.Danger
+import com.fujikon.app.ui.theme.Ink
+import com.fujikon.app.ui.theme.InkElevated
+import com.fujikon.app.ui.theme.Outline
+import com.fujikon.app.ui.theme.TextPrimary
+import com.fujikon.app.ui.theme.TextSecondary
+import com.fujikon.app.ui.viewmodel.EditorViewModel
+import com.fujikon.app.ui.viewmodel.FujiKonViewModelFactory
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditorScreen(
+    navController: NavHostController,
+    factory: FujiKonViewModelFactory
+) {
+    val context = LocalContext.current
+    val viewModel: EditorViewModel = viewModel(factory = factory)
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+
+    var comparing by remember { mutableStateOf(false) }
+    var showPicker by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
+    var pendingOptions by remember { mutableStateOf<ExportManager.Options?>(null) }
+
+    val writePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val options = pendingOptions
+        pendingOptions = null
+        if (granted && options != null) {
+            viewModel.export(options)
+        } else if (!granted) {
+            scope.launch { snackbar.showSnackbar("需要存储权限才能保存到相册") }
+        }
+    }
+
+    fun startExport(options: ExportManager.Options) {
+        if (Build.VERSION.SDK_INT <= 28 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingOptions = options
+            writePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            viewModel.export(options)
+        }
+    }
+
+    LaunchedEffect(state.index, state.presetId) {
+        comparing = false
+    }
+
+    val preset = state.currentPreset
+    val current = state.currentPhoto
+    val exporting = state.export is EditorViewModel.ExportState.Running
+
+    Scaffold(
+        containerColor = Ink,
+        snackbarHost = { SnackbarHost(snackbar) },
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = TextPrimary)
+                    }
+                },
+                title = {
+                    Column {
+                        Text(
+                            if (state.photos.isEmpty()) "查看" else "${state.index + 1} / ${state.photos.size}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary
+                        )
+                        Text(
+                            current?.displayName ?: "选择照片",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                actions = {
+                    if (preset != null) {
+                        TextButton(onClick = { showPicker = true }, enabled = !exporting) {
+                            Text(
+                                preset.name,
+                                color = Amber,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.width(96.dp)
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink)
+            )
+        },
+        bottomBar = {
+            Surface(color = InkElevated) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                ) {
+                    if (state.photos.size > 1) {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            itemsIndexed(state.photos, key = { _, photo -> photo.id }) { index, photo ->
+                                val selected = index == state.index
+                                Box(
+                                    Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .border(
+                                            width = if (selected) 2.dp else 1.dp,
+                                            color = if (selected) Amber else Outline,
+                                            shape = RoundedCornerShape(8.dp)
+                                        )
+                                        .clickable(enabled = !exporting) { viewModel.show(index) }
+                                ) {
+                                    AsyncImage(
+                                        model = photo.uri,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showPicker = true },
+                            enabled = !exporting,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("换预设", color = TextPrimary)
+                        }
+                        Button(
+                            onClick = { showExport = true },
+                            enabled = !exporting && preset != null && state.photos.isNotEmpty(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("导出 ${state.photos.size} 张", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .background(Color.Black)
+            ) {
+                val rendered = state.rendered
+                if (rendered != null) {
+                    ZoomableImage(
+                        bitmap = rendered,
+                        original = state.original,
+                        comparing = comparing,
+                        onComparingChange = { active ->
+                            comparing = active
+                            if (active) viewModel.markCompareHintSeen()
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        resetKey = state.currentPhoto?.uri ?: state.index
+                    )
+                } else if (state.error != null) {
+                    Column(
+                        Modifier.fillMaxSize().padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            state.error ?: "渲染失败",
+                            color = TextSecondary,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        Button(
+                            onClick = {
+                                if (state.photos.isEmpty()) navController.popBackStack()
+                                else viewModel.retry()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
+                        ) {
+                            Text(if (state.photos.isEmpty()) "返回" else "重试")
+                        }
+                    }
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Amber, strokeWidth = 2.dp)
+                    }
+                }
+
+                if (preset != null && rendered != null) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(12.dp),
+                        color = Color.Black.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            preset.name,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextPrimary,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                if (comparing) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp),
+                        color = Amber,
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            "原图",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Ink,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                if (state.loading && rendered != null) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 12.dp),
+                        color = Color.Black.copy(alpha = 0.6f),
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                color = Amber,
+                                strokeWidth = 1.5.dp,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text("渲染中", color = TextPrimary, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+
+                if (!state.seenCompareHint && rendered != null) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 16.dp)
+                            .clickable { viewModel.markCompareHintSeen() },
+                        color = Color.Black.copy(alpha = 0.62f),
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Filled.TouchApp,
+                                contentDescription = null,
+                                tint = Amber,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                "长按图片 · 对比原图   ·   双指缩放",
+                                color = TextPrimary,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+
+                if (rendered != null && !exporting) {
+                    if (state.index > 0) {
+                        IconButton(
+                            onClick = { viewModel.previous() },
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .padding(start = 8.dp)
+                                .size(38.dp)
+                                .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                        ) {
+                            Icon(Icons.Filled.ChevronLeft, contentDescription = "上一张", tint = TextPrimary)
+                        }
+                    }
+                    if (state.index < state.photos.lastIndex) {
+                        IconButton(
+                            onClick = { viewModel.next() },
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = 8.dp)
+                                .size(38.dp)
+                                .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                        ) {
+                            Icon(Icons.Filled.ChevronRight, contentDescription = "下一张", tint = TextPrimary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showPicker) {
+        PresetPickerSheet(
+            presets = state.presets,
+            selectedId = state.presetId,
+            onSelect = { selected ->
+                viewModel.selectPreset(selected.id)
+                showPicker = false
+            },
+            onDismiss = { showPicker = false }
+        )
+    }
+
+    if (showExport) {
+        ExportOptionsSheet(
+            initial = viewModel.currentOptions(),
+            onStart = { options ->
+                showExport = false
+                startExport(options)
+            },
+            onDismiss = { showExport = false }
+        )
+    }
+
+    when (val export = state.export) {
+        is EditorViewModel.ExportState.Running -> {
+            AlertDialog(
+                onDismissRequest = { },
+                containerColor = Card,
+                title = { Text("正在导出", color = TextPrimary) },
+                text = {
+                    Column {
+                        Text(
+                            "${export.done} / ${export.total}",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = Amber
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        LinearProgressIndicator(
+                            progress = {
+                                if (export.total <= 0) 0f else export.done.toFloat() / export.total
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Amber,
+                            trackColor = CardHigh
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            if (export.currentName.isBlank()) "正在写入相册…" else export.currentName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.cancelExport() }) {
+                        Text("取消", color = TextSecondary)
+                    }
+                }
+            )
+        }
+
+        is EditorViewModel.ExportState.Done -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissExportResult() },
+                containerColor = Card,
+                title = {
+                    Text(
+                        if (export.failures.isEmpty()) "导出完成" else "导出完成（部分失败）",
+                        color = TextPrimary
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            "已保存 ${export.saved} 张到「Pictures/${export.album}」",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextPrimary
+                        )
+                        if (export.failures.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            Column(
+                                Modifier
+                                    .heightIn(max = 180.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                export.failures.take(12).forEach { failure ->
+                                    Text(
+                                        "• $failure",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Danger
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.dismissExportResult() }) {
+                        Text("完成", color = Amber)
+                    }
+                },
+                dismissButton = {
+                    val uri = export.firstUri?.takeIf { it.scheme == "content" }
+                    if (uri != null) {
+                        TextButton(onClick = {
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, "image/*")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(intent)
+                            }
+                            viewModel.dismissExportResult()
+                        }) {
+                            Text("查看照片", color = TextSecondary)
+                        }
+                    }
+                }
+            )
+        }
+
+        is EditorViewModel.ExportState.Failed -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissExportResult() },
+                containerColor = Card,
+                title = { Text("导出失败", color = TextPrimary) },
+                text = { Text(export.message, color = TextSecondary) },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.dismissExportResult() }) {
+                        Text("知道了", color = Amber)
+                    }
+                }
+            )
+        }
+
+        EditorViewModel.ExportState.Idle -> Unit
+    }
+}

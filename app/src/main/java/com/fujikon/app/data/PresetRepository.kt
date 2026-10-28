@@ -1,0 +1,293 @@
+package com.fujikon.app.data
+
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import com.fujikon.app.ncp.PictureControlParser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
+import java.security.MessageDigest
+import java.util.UUID
+
+class PresetRepository(private val context: Context) {
+
+    data class ImportResult(
+        val imported: List<Preset>,
+        val duplicates: List<String>,
+        val errors: List<String>
+    ) {
+        val total: Int get() = imported.size + duplicates.size + errors.size
+    }
+
+    private val mutex = Mutex()
+    private val rootDir = File(context.filesDir, "presets")
+    private val filesDir = File(rootDir, "files")
+    private val indexFile = File(rootDir, "index.json")
+
+    private val _presets = MutableStateFlow<List<Preset>>(emptyList())
+    val presets: StateFlow<List<Preset>> = _presets.asStateFlow()
+
+    private val _ready = MutableStateFlow(false)
+    val ready: StateFlow<Boolean> = _ready.asStateFlow()
+
+    @Volatile
+    private var loaded = false
+
+    suspend fun load() {
+        globalLoadMutex.withLock {
+            mutex.withLock {
+                if (loaded) return
+                withContext(Dispatchers.IO) {
+                    rootDir.mkdirs()
+                    filesDir.mkdirs()
+                    var list = readIndex()
+                    if (!indexFile.exists()) {
+                        list = seedSamplesLocked()
+                        writeIndex(list)
+                    }
+                    publish(list)
+                    loaded = true
+                    _ready.value = true
+                }
+            }
+        }
+    }
+
+    fun find(id: String?): Preset? = _presets.value.firstOrNull { it.id == id }
+
+    suspend fun importUris(uris: List<Uri>): ImportResult {
+        load()
+        val imported = mutableListOf<Preset>()
+        val duplicates = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val existingHashes = _presets.value.map { it.contentHash }.filter { it.isNotBlank() }.toMutableSet()
+                val list = _presets.value.toMutableList()
+                uris.forEach { uri ->
+                    val displayName = displayName(uri) ?: "preset_${System.currentTimeMillis()}"
+                    try {
+                        val bytes = readAllLimited(uri, MAX_FILE_BYTES)
+                            ?: throw IllegalArgumentException("无法读取文件")
+                        val control = PictureControlParser.parse(bytes, displayName)
+                        val hash = sha256(bytes)
+                        if (hash in existingHashes) {
+                            duplicates.add(displayName)
+                            return@forEach
+                        }
+                        val id = UUID.randomUUID().toString()
+                        val extension = when (control.format) {
+                            com.fujikon.app.ncp.PictureControlFormat.NP3 -> "np3"
+                            com.fujikon.app.ncp.PictureControlFormat.NP2 -> "np2"
+                            else -> "ncp"
+                        }
+                        val storedName = "$id.$extension"
+                        File(filesDir, storedName).writeBytes(bytes)
+                        val preset = Preset.from(
+                            control = control,
+                            id = id,
+                            fileName = storedName,
+                            fileSize = bytes.size,
+                            isSample = false,
+                            contentHash = hash
+                        )
+                        list.add(preset)
+                        imported.add(preset)
+                        existingHashes.add(hash)
+                    } catch (e: Exception) {
+                        errors.add("$displayName：${e.message ?: "解析失败"}")
+                    }
+                }
+                publish(list)
+                writeIndex(list)
+            }
+        }
+        return ImportResult(imported, duplicates, errors)
+    }
+
+    suspend fun update(preset: Preset) {
+        load()
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val list = _presets.value.toMutableList()
+                val index = list.indexOfFirst { it.id == preset.id }
+                if (index >= 0) {
+                    list[index] = preset
+                    publish(list)
+                    writeIndex(list)
+                }
+            }
+        }
+    }
+
+    suspend fun delete(id: String) {
+        load()
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val preset = _presets.value.firstOrNull { it.id == id } ?: return@withContext
+                File(filesDir, preset.fileName).delete()
+                val list = _presets.value.filterNot { it.id == id }
+                publish(list)
+                writeIndex(list)
+            }
+        }
+    }
+
+    suspend fun restoreSamples(): Int {
+        load()
+        var count = 0
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val list = _presets.value.toMutableList()
+                val existing = list.map { it.contentHash }.toMutableSet()
+                sampleAssets().forEach { assetName ->
+                    val bytes = runCatching { context.assets.open(assetName).use { it.readBytes() } }.getOrNull()
+                        ?: return@forEach
+                    val hash = sha256(bytes)
+                    if (hash in existing) return@forEach
+                    val control = runCatching { PictureControlParser.parse(bytes, assetName) }.getOrNull()
+                        ?: return@forEach
+                    val id = UUID.randomUUID().toString()
+                    val extension = if (control.format.name == "NP3") "np3" else "ncp"
+                    val storedName = "$id.$extension"
+                    File(filesDir, storedName).writeBytes(bytes)
+                    list.add(
+                        Preset.from(
+                            control = control,
+                            id = id,
+                            fileName = storedName,
+                            fileSize = bytes.size,
+                            isSample = true,
+                            contentHash = hash
+                        )
+                    )
+                    existing.add(hash)
+                    count++
+                }
+                if (count > 0) {
+                    publish(list)
+                    writeIndex(list)
+                }
+            }
+        }
+        return count
+    }
+
+    fun fileFor(preset: Preset): File = File(filesDir, preset.fileName)
+
+    // ------------------------------------------------------------ internals
+
+    private fun seedSamplesLocked(): List<Preset> {
+        val result = mutableListOf<Preset>()
+        sampleAssets().forEach { assetName ->
+            val bytes = runCatching { context.assets.open(assetName).use { it.readBytes() } }.getOrNull()
+                ?: return@forEach
+            val control = runCatching { PictureControlParser.parse(bytes, assetName) }.getOrNull()
+                ?: return@forEach
+            val id = UUID.randomUUID().toString()
+            val extension = if (control.format.name == "NP3") "np3" else "ncp"
+            val storedName = "$id.$extension"
+            File(filesDir, storedName).writeBytes(bytes)
+            result.add(
+                Preset.from(
+                    control = control,
+                    id = id,
+                    fileName = storedName,
+                    fileSize = bytes.size,
+                    isSample = true,
+                    contentHash = sha256(bytes)
+                )
+            )
+        }
+        return result
+    }
+
+    private fun sampleAssets(): List<String> {
+        val names = runCatching { context.assets.list("samples")?.toList() }.getOrNull() ?: emptyList()
+        return names.filter { it.endsWith(".ncp", true) || it.endsWith(".np3", true) || it.endsWith(".np2", true) }
+            .sorted()
+            .map { "samples/$it" }
+    }
+
+    private fun publish(list: List<Preset>) {
+        _presets.value = sort(list)
+    }
+
+    private fun sort(list: List<Preset>): List<Preset> = list.sortedWith(
+        compareByDescending<Preset> { it.favorite }
+            .thenBy { it.name.lowercase() }
+    )
+
+    private fun readIndex(): List<Preset> {
+        if (!indexFile.exists()) return emptyList()
+        return runCatching {
+            val root = JSONObject(indexFile.readText(Charsets.UTF_8))
+            val array = root.optJSONArray("presets") ?: JSONArray()
+            (0 until array.length()).mapNotNull { i ->
+                runCatching { Preset.fromJson(array.getJSONObject(i)) }.getOrNull()
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun writeIndex(list: List<Preset>) {
+        runCatching {
+            val array = JSONArray()
+            list.forEach { array.put(it.toJson()) }
+            val root = JSONObject().put("version", 1).put("presets", array)
+            val temp = File(rootDir, "index.json.tmp")
+            if (temp.exists()) temp.delete()
+            temp.writeText(root.toString(), Charsets.UTF_8)
+            if (indexFile.exists()) indexFile.delete()
+            if (!temp.renameTo(indexFile)) {
+                temp.copyTo(indexFile, overwrite = true)
+                temp.delete()
+            }
+        }
+    }
+
+    private fun displayName(uri: Uri): String? {
+        return runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment
+    }
+
+    private fun readAllLimited(uri: Uri, limit: Int): ByteArray? {
+        val input: InputStream = context.contentResolver.openInputStream(uri) ?: return null
+        input.use { stream ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val read = stream.read(buffer)
+                if (read < 0) break
+                output.write(buffer, 0, read)
+                if (output.size() > limit) throw IllegalArgumentException("文件超过 4MB，可能不是预设文件")
+            }
+            return output.toByteArray()
+        }
+    }
+
+    private fun sha256(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    companion object {
+        private const val MAX_FILE_BYTES = 4 * 1024 * 1024
+
+        // Two repositories can exist in one process (app container plus tests or
+        // a second Activity). Serialize their first load so samples are seeded once.
+        private val globalLoadMutex = Mutex()
+    }
+}
