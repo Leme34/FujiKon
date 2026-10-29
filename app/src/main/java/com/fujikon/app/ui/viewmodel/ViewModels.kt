@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.fujikon.app.AppContainer
 import com.fujikon.app.data.Album
 import com.fujikon.app.data.AppSettings
+import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.Preset
@@ -502,16 +503,22 @@ class EditorViewModel(
         val export: ExportState = ExportState.Idle,
         val seenCompareHint: Boolean = false,
         /** Non-null while the user has an unsaved curve edit for the session. */
-        val toneCurveOverride: ToneCurve? = null
+        val toneCurveOverride: ToneCurve? = null,
+        /** Global Lightroom-style adjustments for the current look. */
+        val adjustments: EditAdjustments = EditAdjustments.Neutral
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
         val selectedPreset: Preset? get() = presets.firstOrNull { it.id == presetId }
         val currentPreset: Preset? get() = selectedPreset?.let { base ->
-            if (toneCurveOverride != null) base.copy(toneCurve = toneCurveOverride) else base
+            base.copy(
+                toneCurve = toneCurveOverride ?: base.toneCurve,
+                adjustments = adjustments
+            )
         }
         val effectiveToneCurve: ToneCurve
             get() = toneCurveOverride ?: selectedPreset?.toneCurve ?: ToneCurve.linear()
         val hasToneCurve: Boolean get() = !effectiveToneCurve.isLinear()
+        val hasAdjustments: Boolean get() = !adjustments.isNeutral()
     }
 
     private val _state = MutableStateFlow(UiState(seenCompareHint = settings.hasSeenCompareHint))
@@ -531,11 +538,15 @@ class EditorViewModel(
     init {
         viewModelScope.launch {
             presetRepository.load()
+            val loaded = presetRepository.presets.value
+            val selectedId = selectionStore.presetId.value ?: loaded.firstOrNull()?.id
+            val selected = loaded.firstOrNull { it.id == selectedId }
             _state.update {
                 it.copy(
                     photos = selectionStore.photos.value,
-                    presets = presetRepository.presets.value,
-                    presetId = selectionStore.presetId.value ?: presetRepository.presets.value.firstOrNull()?.id
+                    presets = loaded,
+                    presetId = selectedId,
+                    adjustments = selected?.adjustments ?: EditAdjustments.Neutral
                 )
             }
             if (_state.value.photos.isEmpty()) {
@@ -548,10 +559,17 @@ class EditorViewModel(
             presetRepository.presets.collect { list ->
                 _state.update { current ->
                     val stillThere = list.any { it.id == current.presetId }
+                    val nextId = if (stillThere) current.presetId else list.firstOrNull()?.id
+                    val nextPreset = list.firstOrNull { it.id == nextId }
                     current.copy(
                         presets = list,
-                        presetId = if (stillThere) current.presetId else list.firstOrNull()?.id,
-                        toneCurveOverride = if (stillThere) current.toneCurveOverride else null
+                        presetId = nextId,
+                        toneCurveOverride = if (stillThere) current.toneCurveOverride else null,
+                        adjustments = if (stillThere) {
+                            current.adjustments
+                        } else {
+                            nextPreset?.adjustments ?: EditAdjustments.Neutral
+                        }
                     )
                 }
             }
@@ -565,13 +583,27 @@ class EditorViewModel(
 
     fun selectPreset(id: String) {
         if (_state.value.presetId == id) return
-        _state.update { it.copy(presetId = id, toneCurveOverride = null) }
+        val preset = _state.value.presets.firstOrNull { it.id == id }
+        _state.update {
+            it.copy(
+                presetId = id,
+                toneCurveOverride = null,
+                adjustments = preset?.adjustments ?: EditAdjustments.Neutral
+            )
+        }
         selectionStore.setPreset(id)
         renderCurrent()
     }
 
     fun setToneCurve(curve: ToneCurve) {
         _state.update { it.copy(toneCurveOverride = curve) }
+        renderCurrent()
+    }
+
+    fun setAdjustments(adjustments: EditAdjustments) {
+        val normalized = adjustments.normalized()
+        if (_state.value.adjustments == normalized) return
+        _state.update { it.copy(adjustments = normalized) }
         renderCurrent()
     }
 
@@ -586,17 +618,18 @@ class EditorViewModel(
      * Saves the current look as a new, binary-less preset. The original preset
      * and its NCP/NP3 file are left untouched.
      */
-    suspend fun saveCurvePreset(name: String): Preset? {
+    suspend fun saveCurrentLookPreset(name: String): Preset? {
         val snapshot = _state.value
         val base = snapshot.selectedPreset ?: return null
         val curve = snapshot.effectiveToneCurve
         val saved = presetRepository.add(
             base.copy(
-                name = name.trim().ifBlank { "${base.name} 曲线" }.take(40),
+                name = name.trim().ifBlank { "${base.name} 调整" }.take(40),
                 fileName = "",
                 fileSize = 0,
                 sourceName = "由 ${base.name} 调整",
                 toneCurve = curve.takeUnless { it.isLinear() },
+                adjustments = snapshot.adjustments,
                 note = base.note,
                 importedAt = System.currentTimeMillis(),
                 isSample = false,
@@ -604,18 +637,19 @@ class EditorViewModel(
             )
         )
         // Keep working with the saved copy on the next launch instead of the
-        // original preset plus a transient override.
+        // original preset plus transient overrides.
         _state.update {
             it.copy(
                 presets = presetRepository.presets.value,
                 presetId = saved.id,
-                toneCurveOverride = null
+                toneCurveOverride = null,
+                adjustments = saved.adjustments
             )
         }
         selectionStore.setPreset(saved.id)
         // The saved copy has a new ID, so an in-flight render for the original
         // preset will be discarded by the generation guard. Render again with
-        // the persisted curve.
+        // the persisted look.
         renderCurrent()
         return saved
     }

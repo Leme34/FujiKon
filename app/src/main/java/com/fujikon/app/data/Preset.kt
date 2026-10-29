@@ -27,6 +27,8 @@ data class Preset(
     val curve: IntArray?,
     /** Optional RGB master curve layered on top of the Nikon rendering. */
     val toneCurve: ToneCurve? = null,
+    /** Lightroom-style global adjustments layered after the preset rendering. */
+    val adjustments: EditAdjustments = EditAdjustments.Neutral,
     val sharpening: Float,
     val clarity: Float,
     val midRangeSharpening: Float,
@@ -53,6 +55,8 @@ data class Preset(
     val hasCurve: Boolean get() = curve != null && curve.size >= 256
 
     val hasToneCurve: Boolean get() = toneCurve != null && !toneCurve.isLinear()
+
+    val hasAdjustments: Boolean get() = !adjustments.isNeutral()
 
     /** Presets saved from the in-app curve editor have no binary source file. */
     val isDerived: Boolean get() = fileName.isBlank()
@@ -101,6 +105,7 @@ data class Preset(
         put("baseProfileName", baseProfileName)
         put("curve", curve?.let { encodeCurve(it) } ?: JSONObject.NULL)
         put("toneCurve", toneCurve?.toJson() ?: JSONObject.NULL)
+        put("adjustments", adjustments.toJson())
         put("sharpening", sharpening.toDouble())
         put("clarity", clarity.toDouble())
         put("midRangeSharpening", midRangeSharpening.toDouble())
@@ -143,6 +148,7 @@ data class Preset(
                 baseProfileName = control.baseProfileName,
                 curve = control.curve,
                 toneCurve = null,
+                adjustments = EditAdjustments.Neutral,
                 sharpening = control.sharpening,
                 clarity = control.clarity,
                 midRangeSharpening = control.midRangeSharpening,
@@ -181,6 +187,7 @@ data class Preset(
             toneCurve = if (json.isNull("toneCurve")) null else {
                 json.optJSONObject("toneCurve")?.let(ToneCurve::fromJson)
             },
+            adjustments = EditAdjustments.fromJson(json.optJSONObject("adjustments")),
             sharpening = json.optDouble("sharpening", 0.0).toFloat(),
             clarity = json.optDouble("clarity", 0.0).toFloat(),
             midRangeSharpening = json.optDouble("midRangeSharpening", 0.0).toFloat(),

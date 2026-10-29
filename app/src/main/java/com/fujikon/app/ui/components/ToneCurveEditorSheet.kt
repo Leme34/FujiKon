@@ -137,7 +137,7 @@ fun ToneCurveEditorSheet(
         containerColor = Color.Transparent,
         contentColor = TextPrimary,
         tonalElevation = 0.dp,
-        scrimColor = Color.Black.copy(alpha = 0.08f),
+        scrimColor = Color.Black.copy(alpha = 0.03f),
         dragHandle = null,
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
     ) {
@@ -146,9 +146,9 @@ fun ToneCurveEditorSheet(
                 .fillMaxWidth()
                 .background(
                     brush = Brush.verticalGradient(
-                        0f to InkElevated.copy(alpha = 0.42f),
-                        0.32f to InkElevated.copy(alpha = 0.84f),
-                        1f to InkElevated.copy(alpha = 0.97f)
+                        0f to InkElevated.copy(alpha = 0.06f),
+                        0.32f to InkElevated.copy(alpha = 0.18f),
+                        1f to InkElevated.copy(alpha = 0.40f)
                     ),
                     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
                 )
@@ -200,7 +200,7 @@ fun ToneCurveEditorSheet(
                     .fillMaxWidth()
                     .height(216.dp)
                     .background(
-                        CardHigh.copy(alpha = 0.58f),
+                        CardHigh.copy(alpha = 0.20f),
                         RoundedCornerShape(16.dp)
                     )
                     .border(
@@ -299,7 +299,7 @@ fun ToneCurveEditorSheet(
             Spacer(Modifier.height(10.dp))
             Button(
                 onClick = {
-                    draftName = "${presetName.take(34)} 曲线"
+                    draftName = "${presetName.take(34)} 调整"
                     showSaveDialog = true
                 },
                 enabled = !saving,
@@ -327,11 +327,11 @@ fun ToneCurveEditorSheet(
         AlertDialog(
             onDismissRequest = { if (!saving) showSaveDialog = false },
             containerColor = Card,
-            title = { Text("保存曲线预设", color = TextPrimary) },
+            title = { Text("保存当前效果", color = TextPrimary) },
             text = {
                 Column {
                     Text(
-                        "将当前曲线和预设参数保存为新副本，用于当前预览和批量导出；原始 NCP/NP3 文件不会被修改。",
+                        "将当前曲线、调节和预设参数保存为新副本，用于当前预览和批量导出；原始 NCP/NP3 文件不会被修改。",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )

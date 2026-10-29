@@ -185,7 +185,7 @@ class NikonPcService(
     companion object {
         const val DEFAULT_BASE_URL = "https://nikonpc.com/"
 
-        private const val USER_AGENT = "FujiKon/1.2.0 (Android; NikonPC importer)"
+        private const val USER_AGENT = "FujiKon/1.3.0 (Android; NikonPC importer)"
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024

@@ -1,6 +1,7 @@
 package com.fujikon.app.render
 
 import android.graphics.Bitmap
+import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.BaseProfiles
 import kotlinx.coroutines.CancellationException
@@ -14,6 +15,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -48,8 +50,8 @@ class ImageRenderer {
             processRows(pixels, width, from, to, plan, job)
         }
 
-        if (plan.sharpenFine > 0.01f || plan.sharpenClarity > 0.01f) {
-            applySharpening(pixels, width, height, plan, job)
+        if (plan.needsDetail) {
+            applyDetail(pixels, width, height, plan, job)
         }
         checkCancelled(job)
 
@@ -76,11 +78,21 @@ class ImageRenderer {
         val gradingBalance: Float,
         val sharpenFine: Float,
         val sharpenClarity: Float,
-        val clarityRadius: Int
+        val clarityRadius: Int,
+        val adjustToneLut: IntArray?,
+        val whiteBalance: FloatArray?,
+        val vibrance: Float,
+        val texture: Float,
+        val adjustmentClarity: Float,
+        val textureRadius: Int
     ) {
         val needsColor: Boolean
             get() = monochrome || abs(saturation - 1f) > 0.001f || hueMatrix != null ||
                 blender != null || gradingChroma != null
+
+        val needsDetail: Boolean
+            get() = abs(sharpenFine) > 0.01f || abs(sharpenClarity) > 0.01f ||
+                abs(texture) > 0.01f || abs(adjustmentClarity) > 0.01f
     }
 
     private fun buildPlan(preset: Preset, forExport: Boolean, width: Int, height: Int): Plan {
@@ -163,15 +175,40 @@ class ImageRenderer {
             raw.coerceIn(0.1f, 1f)
         } else 0f
 
+        val adjustments = preset.adjustments.normalized()
+        val temperature = adjustments.temperature / EditAdjustments.TONE_RANGE
+        val tint = adjustments.tint / EditAdjustments.TONE_RANGE
+        val whiteBalance = if (abs(temperature) > 0.001f || abs(tint) > 0.001f) {
+            floatArrayOf(
+                (1f + temperature * 0.12f + tint * 0.035f).coerceIn(0.65f, 1.4f),
+                (1f + temperature * 0.004f - tint * 0.065f).coerceIn(0.65f, 1.4f),
+                (1f - temperature * 0.12f + tint * 0.035f).coerceIn(0.65f, 1.4f)
+            )
+        } else null
+        val hasToneAdjustment =
+            abs(adjustments.exposure) > 0.001f ||
+                abs(adjustments.contrast) > 0.001f ||
+                abs(adjustments.highlights) > 0.001f ||
+                abs(adjustments.shadows) > 0.001f ||
+                abs(adjustments.whites) > 0.001f ||
+                abs(adjustments.blacks) > 0.001f ||
+                abs(adjustments.dehaze) > 0.001f
+        val adjustToneLut = if (hasToneAdjustment) buildAdjustmentToneLut(adjustments) else null
+        val vibrance = adjustments.vibrance / EditAdjustments.TONE_RANGE +
+            adjustments.dehaze / EditAdjustments.TONE_RANGE * 0.18f
+        val texture = adjustments.texture / EditAdjustments.TONE_RANGE
+        val adjustmentClarity = adjustments.clarity / EditAdjustments.TONE_RANGE
+
         val maxDimension = max(width, height)
         val unit = (maxDimension / 1400f).coerceIn(0.35f, 4f)
         val sharp = preset.sharpening.coerceAtLeast(0f) / 9f
         val mid = preset.midRangeSharpening.coerceAtLeast(0f) / 5f
-        val clarity = preset.clarity.coerceAtLeast(0f) / 5f
+        val presetClarity = preset.clarity.coerceAtLeast(0f) / 5f
         val previewScale = if (forExport) 1f else 0.7f
         val fineAmount = (sharp * 1.10f + mid * 0.55f) * previewScale
-        val clarityAmount = (clarity * 0.85f) * previewScale
+        val clarityAmount = (presetClarity * 0.85f) * previewScale
         val clarityRadius = (5f * unit).roundToInt().coerceIn(2, 18)
+        val textureRadius = (2.2f * unit).roundToInt().coerceIn(1, 6)
 
         return Plan(
             lut = lut,
@@ -189,8 +226,62 @@ class ImageRenderer {
             gradingBalance = grading.balance / 100f,
             sharpenFine = fineAmount,
             sharpenClarity = clarityAmount,
-            clarityRadius = clarityRadius
+            clarityRadius = clarityRadius,
+            adjustToneLut = adjustToneLut,
+            whiteBalance = whiteBalance,
+            vibrance = vibrance,
+            texture = texture,
+            adjustmentClarity = adjustmentClarity,
+            textureRadius = textureRadius
         )
+    }
+
+    /**
+     * Builds the user-adjustment tone map. The preset's own LUT has already
+     * been applied at this point, so this map only contains the extra exposure,
+     * contrast, zone and dehaze controls.
+     */
+    private fun buildAdjustmentToneLut(adjustments: EditAdjustments): IntArray {
+        val exposure = adjustments.exposure.coerceIn(
+            -EditAdjustments.EXPOSURE_RANGE,
+            EditAdjustments.EXPOSURE_RANGE
+        )
+        val exposureScale = 2f.pow(exposure)
+        val contrast = adjustments.contrast / EditAdjustments.TONE_RANGE
+        val highlights = adjustments.highlights / EditAdjustments.TONE_RANGE
+        val shadows = adjustments.shadows / EditAdjustments.TONE_RANGE
+        val whites = adjustments.whites / EditAdjustments.TONE_RANGE
+        val blacks = adjustments.blacks / EditAdjustments.TONE_RANGE
+        val dehaze = adjustments.dehaze / EditAdjustments.TONE_RANGE
+
+        return IntArray(256) { i ->
+            var x = i / 255f
+            if (abs(exposure) > 0.001f) {
+                // Exposure belongs in linear light; the rest of the pipeline is
+                // display-referred, so convert in and out of gamma space.
+                x = (x.pow(2.2f) * exposureScale).pow(1f / 2.2f)
+            }
+            if (abs(dehaze) > 0.001f) {
+                x = ((x - 0.5f) * (1f + dehaze * 0.55f) + 0.5f).coerceIn(0f, 1f)
+                if (dehaze > 0f) {
+                    x -= dehaze * (1f - smoothstep(0f, 0.45f, x)) * 0.06f
+                }
+            }
+            x = contrastCurve(x, contrast * 0.75f)
+            if (abs(highlights) > 0.001f) {
+                x += highlights * smoothstep(0.48f, 1f, x) * 0.24f
+            }
+            if (abs(shadows) > 0.001f) {
+                x += shadows * (1f - smoothstep(0f, 0.52f, x)) * 0.24f
+            }
+            if (abs(whites) > 0.001f) {
+                x += whites * smoothstep(0.70f, 1f, x) * 0.18f
+            }
+            if (abs(blacks) > 0.001f) {
+                x += blacks * (1f - smoothstep(0f, 0.30f, x)) * 0.18f
+            }
+            (x.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+        }
     }
 
     private fun buildToneLut(preset: Preset, baseContrast: Float, contrastScale: Float): IntArray {
@@ -244,6 +335,9 @@ class ImageRenderer {
         val gradingChroma = plan.gradingChroma
         val gradingTint = plan.gradingTint
         val gradingBright = plan.gradingBright
+        val whiteBalance = plan.whiteBalance
+        val adjustToneLut = plan.adjustToneLut
+        val vibrance = plan.vibrance
 
         for (y in from until to) {
             if ((y and 0x0F) == 0) checkCancelled(job)
@@ -267,87 +361,124 @@ class ImageRenderer {
                     } else {
                         r = luma.roundToInt(); g = r; b = r
                     }
-                    pixels[index] = pack(r, g, b)
-                    index++
-                    continue
+                } else {
+                    if (abs(sat - 1f) > 0.001f) {
+                        val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                        r = (luma + (r - luma) * sat).roundToInt()
+                        g = (luma + (g - luma) * sat).roundToInt()
+                        b = (luma + (b - luma) * sat).roundToInt()
+                    }
+
+                    if (hueMatrix != null) {
+                        val nr = r * hueMatrix[0] + g * hueMatrix[1] + b * hueMatrix[2]
+                        val ng = r * hueMatrix[3] + g * hueMatrix[4] + b * hueMatrix[5]
+                        val nb = r * hueMatrix[6] + g * hueMatrix[7] + b * hueMatrix[8]
+                        r = nr.roundToInt(); g = ng.roundToInt(); b = nb.roundToInt()
+                    }
+
+                    if (blender != null) {
+                        rgbToHsl(r, g, b, hsl)
+                        var h = hsl[0]
+                        var s = hsl[1]
+                        var l = hsl[2]
+                        var hueShift = 0f
+                        var chromaAdd = 0f
+                        var brightAdd = 0f
+                        for (band in 0 until 8) {
+                            var diff = abs(h - BAND_CENTERS[band])
+                            if (diff > 180f) diff = 360f - diff
+                            if (diff >= BAND_WIDTH) continue
+                            val weight = 1f - diff / BAND_WIDTH
+                            hueShift += blender[band * 3] * weight
+                            chromaAdd += blender[band * 3 + 1] * weight
+                            brightAdd += blender[band * 3 + 2] * weight
+                        }
+                        if (hueShift != 0f || chromaAdd != 0f || brightAdd != 0f) {
+                            h = (h + hueShift * 28f + 360f) % 360f
+                            s = (s * (1f + chromaAdd * 0.75f)).coerceIn(0f, 1f)
+                            l = (l + brightAdd * 0.075f).coerceIn(0f, 1f)
+                            val packed = hslToRgb(h, s, l)
+                            r = (packed shr 16) and 0xFF
+                            g = (packed shr 8) and 0xFF
+                            b = packed and 0xFF
+                        }
+                    }
+
+                    if (gradingChroma != null && gradingTint != null) {
+                        val luma = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
+                        val adjusted = (luma + plan.gradingBalance * 0.18f).coerceIn(0f, 1f)
+                        val soft = 0.18f + plan.gradingBlend * 0.42f
+                        val high = smoothstep(0.58f - soft * 0.35f, 1f, adjusted)
+                        val shadow = 1f - smoothstep(0f, 0.42f + soft * 0.35f, adjusted)
+                        val mid = (1f - high - shadow).coerceAtLeast(0f)
+                        val w0 = high
+                        val w1 = mid
+                        val w2 = shadow
+                        var dr = 0f
+                        var dg = 0f
+                        var db = 0f
+                        val s0 = gradingChroma[0] * w0
+                        val s1 = gradingChroma[1] * w1
+                        val s2 = gradingChroma[2] * w2
+                        dr += (gradingTint[0] - 0.5f) * s0 * 0.55f
+                        dg += (gradingTint[1] - 0.5f) * s0 * 0.55f
+                        db += (gradingTint[2] - 0.5f) * s0 * 0.55f
+                        dr += (gradingTint[3] - 0.5f) * s1 * 0.55f
+                        dg += (gradingTint[4] - 0.5f) * s1 * 0.55f
+                        db += (gradingTint[5] - 0.5f) * s1 * 0.55f
+                        dr += (gradingTint[6] - 0.5f) * s2 * 0.55f
+                        dg += (gradingTint[7] - 0.5f) * s2 * 0.55f
+                        db += (gradingTint[8] - 0.5f) * s2 * 0.55f
+                        val bright = gradingBright!![0] * w0 + gradingBright[1] * w1 + gradingBright[2] * w2
+                        if (bright != 0f) {
+                            dr += bright * 0.09f
+                            dg += bright * 0.09f
+                            db += bright * 0.09f
+                        }
+                        r = (r + dr * 255f).roundToInt()
+                        g = (g + dg * 255f).roundToInt()
+                        b = (b + db * 255f).roundToInt()
+                    }
                 }
 
-                if (abs(sat - 1f) > 0.001f) {
+                // User white balance is applied after the Picture Control
+                // colour work so it can also tint a monochrome preset.
+                if (whiteBalance != null) {
+                    r = (r * whiteBalance[0]).roundToInt()
+                    g = (g * whiteBalance[1]).roundToInt()
+                    b = (b * whiteBalance[2]).roundToInt()
+                }
+
+                // Apply the extra exposure / contrast / zone adjustments through
+                // luminance so hue and saturation stay close to the preset look.
+                if (adjustToneLut != null) {
                     val luma = r * 0.299f + g * 0.587f + b * 0.114f
-                    r = (luma + (r - luma) * sat).roundToInt()
-                    g = (luma + (g - luma) * sat).roundToInt()
-                    b = (luma + (b - luma) * sat).roundToInt()
-                }
-
-                if (hueMatrix != null) {
-                    val nr = r * hueMatrix[0] + g * hueMatrix[1] + b * hueMatrix[2]
-                    val ng = r * hueMatrix[3] + g * hueMatrix[4] + b * hueMatrix[5]
-                    val nb = r * hueMatrix[6] + g * hueMatrix[7] + b * hueMatrix[8]
-                    r = nr.roundToInt(); g = ng.roundToInt(); b = nb.roundToInt()
-                }
-
-                if (blender != null) {
-                    rgbToHsl(r, g, b, hsl)
-                    var h = hsl[0]
-                    var s = hsl[1]
-                    var l = hsl[2]
-                    var hueShift = 0f
-                    var chromaAdd = 0f
-                    var brightAdd = 0f
-                    for (band in 0 until 8) {
-                        var diff = abs(h - BAND_CENTERS[band])
-                        if (diff > 180f) diff = 360f - diff
-                        if (diff >= BAND_WIDTH) continue
-                        val weight = 1f - diff / BAND_WIDTH
-                        hueShift += blender[band * 3] * weight
-                        chromaAdd += blender[band * 3 + 1] * weight
-                        brightAdd += blender[band * 3 + 2] * weight
-                    }
-                    if (hueShift != 0f || chromaAdd != 0f || brightAdd != 0f) {
-                        h = (h + hueShift * 28f + 360f) % 360f
-                        s = (s * (1f + chromaAdd * 0.75f)).coerceIn(0f, 1f)
-                        l = (l + brightAdd * 0.075f).coerceIn(0f, 1f)
-                        val packed = hslToRgb(h, s, l)
-                        r = (packed shr 16) and 0xFF
-                        g = (packed shr 8) and 0xFF
-                        b = packed and 0xFF
+                    val toneIndex = luma.roundToInt().coerceIn(0, 255)
+                    val mapped = adjustToneLut[toneIndex].toFloat()
+                    if (abs(mapped - luma) > 0.01f) {
+                        val scale = if (luma > 8f) mapped / luma else 1f
+                        val lift = mapped - luma * scale
+                        r = (r * scale + lift).roundToInt()
+                        g = (g * scale + lift).roundToInt()
+                        b = (b * scale + lift).roundToInt()
                     }
                 }
 
-                if (gradingChroma != null && gradingTint != null) {
-                    val luma = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
-                    val adjusted = (luma + plan.gradingBalance * 0.18f).coerceIn(0f, 1f)
-                    val soft = 0.18f + plan.gradingBlend * 0.42f
-                    val high = smoothstep(0.58f - soft * 0.35f, 1f, adjusted)
-                    val shadow = 1f - smoothstep(0f, 0.42f + soft * 0.35f, adjusted)
-                    val mid = (1f - high - shadow).coerceAtLeast(0f)
-                    val w0 = high
-                    val w1 = mid
-                    val w2 = shadow
-                    var dr = 0f
-                    var dg = 0f
-                    var db = 0f
-                    val s0 = gradingChroma[0] * w0
-                    val s1 = gradingChroma[1] * w1
-                    val s2 = gradingChroma[2] * w2
-                    dr += (gradingTint[0] - 0.5f) * s0 * 0.55f
-                    dg += (gradingTint[1] - 0.5f) * s0 * 0.55f
-                    db += (gradingTint[2] - 0.5f) * s0 * 0.55f
-                    dr += (gradingTint[3] - 0.5f) * s1 * 0.55f
-                    dg += (gradingTint[4] - 0.5f) * s1 * 0.55f
-                    db += (gradingTint[5] - 0.5f) * s1 * 0.55f
-                    dr += (gradingTint[6] - 0.5f) * s2 * 0.55f
-                    dg += (gradingTint[7] - 0.5f) * s2 * 0.55f
-                    db += (gradingTint[8] - 0.5f) * s2 * 0.55f
-                    val bright = gradingBright!![0] * w0 + gradingBright[1] * w1 + gradingBright[2] * w2
-                    if (bright != 0f) {
-                        dr += bright * 0.09f
-                        dg += bright * 0.09f
-                        db += bright * 0.09f
+                if (abs(vibrance) > 0.001f) {
+                    val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                    val maxChannel = max(r, max(g, b)).toFloat()
+                    val minChannel = min(r, min(g, b)).toFloat()
+                    val chroma = (maxChannel - minChannel) / 255f
+                    val amount = if (vibrance >= 0f) {
+                        vibrance * (1f - chroma) * 0.85f
+                    } else {
+                        vibrance * 0.85f
                     }
-                    r = (r + dr * 255f).roundToInt()
-                    g = (g + dg * 255f).roundToInt()
-                    b = (b + db * 255f).roundToInt()
+                    if (abs(amount) > 0.001f) {
+                        r = (luma + (r - luma) * (1f + amount)).roundToInt()
+                        g = (luma + (g - luma) * (1f + amount)).roundToInt()
+                        b = (luma + (b - luma) * (1f + amount)).roundToInt()
+                    }
                 }
 
                 pixels[index] = pack(r, g, b)
@@ -356,9 +487,9 @@ class ImageRenderer {
         }
     }
 
-    // ---------------------------------------------------------- sharpening
+    // ------------------------------------------------------------- detail
 
-    private fun applySharpening(pixels: IntArray, width: Int, height: Int, plan: Plan, job: Job?) {
+    private fun applyDetail(pixels: IntArray, width: Int, height: Int, plan: Plan, job: Job?) {
         val luma = ByteArray(pixels.size)
         for (i in pixels.indices) {
             if ((i and 0xFFFF) == 0) checkCancelled(job)
@@ -370,8 +501,10 @@ class ImageRenderer {
         }
 
         val fine = plan.sharpenFine
-        val clarity = plan.sharpenClarity
+        val clarity = plan.sharpenClarity + plan.adjustmentClarity * 0.85f
+        val texture = plan.texture
         val radius = plan.clarityRadius
+        val textureRadius = plan.textureRadius
 
         for (y in 0 until height) {
             if ((y and 0x0F) == 0) checkCancelled(job)
@@ -379,11 +512,15 @@ class ImageRenderer {
             for (x in 0 until width) {
                 val center = (luma[i].toInt() and 0xFF).toFloat()
                 var delta = 0f
-                if (fine > 0.01f) {
+                if (abs(fine) > 0.01f) {
                     val avg = neighborAverage(luma, width, height, x, y, 1)
                     delta += (center - avg) * fine * 1.35f
                 }
-                if (clarity > 0.01f) {
+                if (abs(texture) > 0.01f) {
+                    val avg = neighborAverage(luma, width, height, x, y, textureRadius)
+                    delta += (center - avg) * texture * 0.95f
+                }
+                if (abs(clarity) > 0.01f) {
                     val avg = neighborAverage(luma, width, height, x, y, radius)
                     delta += (center - avg) * clarity * 0.9f
                 }

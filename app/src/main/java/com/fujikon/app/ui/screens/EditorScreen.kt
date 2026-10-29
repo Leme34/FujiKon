@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
@@ -79,6 +80,7 @@ import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
+import com.fujikon.app.ui.components.AdjustmentsSheet
 import com.fujikon.app.ui.components.ExportOptionsSheet
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.components.ToneCurveEditorSheet
@@ -113,7 +115,9 @@ fun EditorScreen(
     var showPicker by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
     var showCurve by remember { mutableStateOf(false) }
+    var showAdjustments by remember { mutableStateOf(false) }
     var savingCurve by remember { mutableStateOf(false) }
+    var savingAdjustments by remember { mutableStateOf(false) }
     var pendingOptions by remember { mutableStateOf<ExportManager.Options?>(null) }
 
     val writePermissionLauncher = rememberLauncherForActivityResult(
@@ -229,24 +233,43 @@ fun EditorScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         OutlinedButton(
                             onClick = { showPicker = true },
                             enabled = !exporting,
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp),
-                            modifier = Modifier.weight(0.9f).height(50.dp)
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                            modifier = Modifier.weight(1f).height(50.dp)
                         ) {
                             Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("换预设", color = TextPrimary)
+                            Spacer(Modifier.width(3.dp))
+                            Text("预设", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = { showAdjustments = true },
+                            enabled = !exporting && preset != null,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (state.hasAdjustments) Amber.copy(alpha = 0.7f) else Outline
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.hasAdjustments) Amber else TextPrimary
+                            ),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Icon(Icons.Filled.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("调节", style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
                             onClick = { showCurve = true },
                             enabled = !exporting && preset != null,
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
                             border = BorderStroke(
                                 1.dp,
                                 if (state.hasToneCurve) Amber.copy(alpha = 0.7f) else Outline
@@ -254,23 +277,27 @@ fun EditorScreen(
                             colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = if (state.hasToneCurve) Amber else TextPrimary
                             ),
-                            modifier = Modifier.weight(0.9f).height(50.dp)
+                            modifier = Modifier.weight(1f).height(50.dp)
                         ) {
                             Icon(Icons.Filled.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("调曲线")
+                            Spacer(Modifier.width(3.dp))
+                            Text("曲线", style = MaterialTheme.typography.labelMedium)
                         }
                         Button(
                             onClick = { showExport = true },
                             enabled = !exporting && preset != null && state.photos.isNotEmpty(),
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink),
-                            modifier = Modifier.weight(1.2f).height(50.dp)
+                            modifier = Modifier.weight(1f).height(50.dp)
                         ) {
                             Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("导出 ${state.photos.size} 张", fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                "导出",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -337,8 +364,13 @@ fun EditorScreen(
                         color = Color.Black.copy(alpha = 0.55f),
                         shape = RoundedCornerShape(50)
                     ) {
+                        val badges = buildList {
+                            if (state.hasToneCurve) add("曲线")
+                            if (state.hasAdjustments) add("调节")
+                        }
                         Text(
-                            if (state.hasToneCurve) "${preset.name} · 曲线" else preset.name,
+                            if (badges.isEmpty()) preset.name
+                            else "${preset.name} · ${badges.joinToString(" · ")}",
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.labelMedium,
                             color = TextPrimary,
@@ -366,7 +398,7 @@ fun EditorScreen(
                     }
                 }
 
-                if (state.loading && rendered != null && !showCurve) {
+                if (state.loading && rendered != null && !showCurve && !showAdjustments) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -485,7 +517,7 @@ fun EditorScreen(
                 savingCurve = true
                 scope.launch {
                     val saved = try {
-                        viewModel.saveCurvePreset(name)
+                        viewModel.saveCurrentLookPreset(name)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -501,6 +533,36 @@ fun EditorScreen(
                 }
             },
             onDismiss = { if (!savingCurve) showCurve = false }
+        )
+    }
+
+    if (showAdjustments && preset != null) {
+        AdjustmentsSheet(
+            presetName = preset.name,
+            initialAdjustments = state.adjustments,
+            rendering = state.loading,
+            saving = savingAdjustments,
+            onPreview = viewModel::setAdjustments,
+            onSave = { name ->
+                savingAdjustments = true
+                scope.launch {
+                    val saved = try {
+                        viewModel.saveCurrentLookPreset(name)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        null
+                    }
+                    savingAdjustments = false
+                    if (saved != null) {
+                        showAdjustments = false
+                        snackbar.showSnackbar("已保存并切换到「${saved.name}」")
+                    } else {
+                        snackbar.showSnackbar("保存失败，请重试")
+                    }
+                }
+            },
+            onDismiss = { if (!savingAdjustments) showAdjustments = false }
         )
     }
 
