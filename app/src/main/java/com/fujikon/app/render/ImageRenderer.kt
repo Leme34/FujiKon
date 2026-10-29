@@ -3,10 +3,13 @@ package com.fujikon.app.render
 import android.graphics.Bitmap
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.BaseProfiles
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
@@ -27,6 +30,7 @@ import kotlin.math.sin
 class ImageRenderer {
 
     suspend fun render(source: Bitmap, preset: Preset, forExport: Boolean): Bitmap {
+        val job = currentCoroutineContext()[Job]
         val width = source.width
         val height = source.height
         val pixels = IntArray(width * height)
@@ -36,16 +40,18 @@ class ImageRenderer {
             // keeps peak memory low on high-resolution photos.
             source.recycle()
         }
+        checkCancelled(job)
 
         val plan = buildPlan(preset, forExport, width, height)
 
         parallelRows(height) { from, to ->
-            processRows(pixels, width, from, to, plan)
+            processRows(pixels, width, from, to, plan, job)
         }
 
         if (plan.sharpenFine > 0.01f || plan.sharpenClarity > 0.01f) {
-            applySharpening(pixels, width, height, plan)
+            applySharpening(pixels, width, height, plan, job)
         }
+        checkCancelled(job)
 
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         output.setPixels(pixels, 0, width, 0, 0, width, height)
@@ -196,6 +202,7 @@ class ImageRenderer {
         val shadows = preset.shadows / 100f
         val whites = preset.whites / 100f
         val blacks = preset.blacks / 100f
+        val toneCurve = preset.toneCurve
 
         return IntArray(256) { i ->
             var x = if (curve != null && curve.size >= 256) {
@@ -209,13 +216,22 @@ class ImageRenderer {
             if (abs(shadows) > 0.001f) x += shadows * (1f - smoothstep(0f, 0.52f, x)) * 0.22f
             if (abs(whites) > 0.001f) x += whites * smoothstep(0.72f, 1f, x) * 0.16f
             if (abs(blacks) > 0.001f) x += blacks * (1f - smoothstep(0f, 0.28f, x)) * 0.16f
-            (x.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+            x = x.coerceIn(0f, 1f)
+            if (toneCurve != null) x = toneCurve.apply(x)
+            (x * 255f).roundToInt().coerceIn(0, 255)
         }
     }
 
     // -------------------------------------------------------------- pixels
 
-    private fun processRows(pixels: IntArray, width: Int, from: Int, to: Int, plan: Plan) {
+    private fun processRows(
+        pixels: IntArray,
+        width: Int,
+        from: Int,
+        to: Int,
+        plan: Plan,
+        job: Job?
+    ) {
         val hsl = FloatArray(3)
         val low = plan.lut
         val sat = plan.saturation
@@ -230,6 +246,7 @@ class ImageRenderer {
         val gradingBright = plan.gradingBright
 
         for (y in from until to) {
+            if ((y and 0x0F) == 0) checkCancelled(job)
             var index = y * width
             val end = index + width
             while (index < end) {
@@ -341,9 +358,10 @@ class ImageRenderer {
 
     // ---------------------------------------------------------- sharpening
 
-    private fun applySharpening(pixels: IntArray, width: Int, height: Int, plan: Plan) {
+    private fun applySharpening(pixels: IntArray, width: Int, height: Int, plan: Plan, job: Job?) {
         val luma = ByteArray(pixels.size)
         for (i in pixels.indices) {
+            if ((i and 0xFFFF) == 0) checkCancelled(job)
             val color = pixels[i]
             val r = (color shr 16) and 0xFF
             val g = (color shr 8) and 0xFF
@@ -356,6 +374,7 @@ class ImageRenderer {
         val radius = plan.clarityRadius
 
         for (y in 0 until height) {
+            if ((y and 0x0F) == 0) checkCancelled(job)
             var i = y * width
             for (x in 0 until width) {
                 val center = (luma[i].toInt() and 0xFF).toFloat()
@@ -406,6 +425,10 @@ class ImageRenderer {
     }
 
     // --------------------------------------------------------------- utils
+
+    private fun checkCancelled(job: Job?) {
+        if (job != null && !job.isActive) throw CancellationException("Render cancelled")
+    }
 
     private suspend fun parallelRows(height: Int, block: (Int, Int) -> Unit) = coroutineScope {
         val threads = min(8, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))

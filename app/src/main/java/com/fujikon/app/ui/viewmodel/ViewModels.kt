@@ -15,17 +15,29 @@ import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.Preset
 import com.fujikon.app.data.PresetRepository
+import com.fujikon.app.data.PresetRepository.BinaryImportResult
+import com.fujikon.app.data.PresetRepository.IncomingPreset
 import com.fujikon.app.data.SelectionStore
+import com.fujikon.app.data.ToneCurve
+import com.fujikon.app.nikonpc.NikonPcPreset
+import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.render.BitmapLoader
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.Collections
 
 class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
     val presets: StateFlow<List<Preset>> = repository.presets
@@ -42,6 +54,350 @@ class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
     suspend fun update(preset: Preset) = repository.update(preset)
 
     suspend fun delete(id: String) = repository.delete(id)
+}
+
+class NikonPcViewModel(
+    private val service: NikonPcService,
+    private val repository: PresetRepository
+) : ViewModel() {
+
+    sealed interface ItemState {
+        data object Idle : ItemState
+        data object Importing : ItemState
+        data object Imported : ItemState
+        data object Duplicate : ItemState
+        data class Failed(val message: String) : ItemState
+    }
+
+    data class UiState(
+        val catalog: List<NikonPcPreset> = emptyList(),
+        val loading: Boolean = false,
+        val error: String? = null,
+        val query: String = "",
+        val statuses: Map<String, ItemState> = emptyMap(),
+        val importingAll: Boolean = false,
+        val progressDone: Int = 0,
+        val progressTotal: Int = 0,
+        val progressName: String = "",
+        val notice: String? = null,
+        val errors: List<String> = emptyList()
+    ) {
+        val filteredCatalog: List<NikonPcPreset>
+            get() {
+                val search = query.trim()
+                if (search.isEmpty()) return catalog
+                return catalog.filter { preset ->
+                    preset.name.contains(search, ignoreCase = true) ||
+                        preset.category.contains(search, ignoreCase = true) ||
+                        preset.path.contains(search, ignoreCase = true) ||
+                        preset.slot.contains(search, ignoreCase = true)
+                }
+            }
+
+        val importableCount: Int
+            get() = catalog.count { preset ->
+                val status = statuses[preset.path]
+                status !is ItemState.Imported && status !is ItemState.Duplicate
+            }
+
+        val allDone: Boolean
+            get() = catalog.isNotEmpty() && importableCount == 0
+    }
+
+    private data class DownloadedPreset(
+        val item: NikonPcPreset,
+        val bytes: ByteArray
+    )
+
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state.asStateFlow()
+
+    private var importAllJob: Job? = null
+
+    init {
+        loadCatalog()
+    }
+
+    fun loadCatalog(force: Boolean = false) {
+        val current = _state.value
+        if (current.loading) return
+        if (!force && current.catalog.isNotEmpty()) return
+        viewModelScope.launch {
+            _state.update { it.copy(loading = true, error = null) }
+            try {
+                val catalog = service.fetchCatalog()
+                _state.update { it.copy(catalog = catalog, loading = false, error = null) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        error = e.message ?: "加载 nikonpc 预设失败"
+                    )
+                }
+            }
+        }
+    }
+
+    fun setQuery(query: String) {
+        _state.update { it.copy(query = query) }
+    }
+
+    fun importOne(item: NikonPcPreset) {
+        val current = _state.value
+        if (current.importingAll) {
+            _state.update { it.copy(notice = "请等待批量导入完成") }
+            return
+        }
+        when (current.statuses[item.path]) {
+            ItemState.Importing, ItemState.Imported, ItemState.Duplicate -> return
+            else -> Unit
+        }
+
+        setStatus(item.path, ItemState.Importing)
+        viewModelScope.launch {
+            val bytes = try {
+                service.download(item)
+            } catch (e: CancellationException) {
+                setStatus(item.path, ItemState.Idle)
+                throw e
+            } catch (e: Exception) {
+                val message = e.message ?: "下载失败"
+                setStatus(item.path, ItemState.Failed(message))
+                _state.update { it.copy(notice = "${item.name}：$message") }
+                return@launch
+            }
+
+            val result = try {
+                repository.importBinaries(
+                    listOf(IncomingPreset(item.path, item.name, bytes, item.path))
+                )[item.path]
+            } catch (e: CancellationException) {
+                setStatus(item.path, ItemState.Idle)
+                throw e
+            } catch (e: Exception) {
+                val message = e.message ?: "保存失败"
+                setStatus(item.path, ItemState.Failed(message))
+                _state.update { it.copy(notice = "${item.name}：$message") }
+                return@launch
+            }
+
+            when (result) {
+                is BinaryImportResult.Imported -> {
+                    setStatus(item.path, ItemState.Imported)
+                    _state.update { it.copy(notice = "已导入「${result.preset.name}」") }
+                }
+                is BinaryImportResult.Duplicate -> {
+                    setStatus(item.path, ItemState.Duplicate)
+                    _state.update { it.copy(notice = "「${item.name}」已在预设列表中") }
+                }
+                is BinaryImportResult.Failed -> {
+                    setStatus(item.path, ItemState.Failed(result.message))
+                    _state.update { it.copy(notice = result.message) }
+                }
+                null -> {
+                    val message = "${item.name}：保存失败"
+                    setStatus(item.path, ItemState.Failed(message))
+                    _state.update { it.copy(notice = message) }
+                }
+            }
+        }
+    }
+
+    fun importAll() {
+        val current = _state.value
+        if (importAllJob?.isActive == true || current.importingAll) return
+        if (current.catalog.isEmpty()) {
+            _state.update { it.copy(notice = "在线预设尚未加载") }
+            return
+        }
+        if (current.statuses.values.any { it is ItemState.Importing }) {
+            _state.update { it.copy(notice = "请等待当前导入完成") }
+            return
+        }
+
+        val target = current.catalog.filter { preset ->
+            val status = current.statuses[preset.path]
+            status !is ItemState.Imported && status !is ItemState.Duplicate
+        }
+        if (target.isEmpty()) {
+            _state.update { it.copy(notice = "全部预设都已导入") }
+            return
+        }
+
+        _state.update {
+            it.copy(
+                importingAll = true,
+                progressDone = 0,
+                progressTotal = target.size,
+                progressName = "",
+                errors = emptyList(),
+                statuses = it.statuses + target.associate { preset ->
+                    preset.path to ItemState.Importing
+                }
+            )
+        }
+        importAllJob = viewModelScope.launch {
+            runImportAll(target)
+        }
+    }
+
+    fun cancelImportAll() {
+        if (importAllJob?.isActive != true) return
+        importAllJob?.cancel()
+        _state.update { current ->
+            current.copy(
+                progressName = "正在取消…",
+                notice = "正在取消导入"
+            )
+        }
+    }
+
+    fun clearNotice() {
+        _state.update { if (it.notice == null) it else it.copy(notice = null) }
+    }
+
+    fun clearErrors() {
+        _state.update { if (it.errors.isEmpty()) it else it.copy(errors = emptyList()) }
+    }
+
+    private suspend fun runImportAll(target: List<NikonPcPreset>) {
+        val downloaded = Collections.synchronizedList(mutableListOf<DownloadedPreset>())
+        val failures = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+        try {
+            val semaphore = Semaphore(4)
+            supervisorScope {
+                target.map { item ->
+                    async {
+                        semaphore.withPermit {
+                            ensureActive()
+                            try {
+                                val bytes = service.download(item)
+                                downloaded += DownloadedPreset(item, bytes)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                val message = e.message ?: "下载失败"
+                                failures += item.path to "${item.name}：$message"
+                                setStatus(item.path, ItemState.Failed(message))
+                            } finally {
+                                _state.update { current ->
+                                    current.copy(
+                                        progressDone = (current.progressDone + 1)
+                                            .coerceAtMost(current.progressTotal),
+                                        progressName = item.name
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            if (downloaded.isEmpty()) {
+                val errors = failures.map { it.second }
+                _state.update {
+                    it.copy(
+                        notice = importSummary(0, 0, errors.size),
+                        errors = errors.take(12)
+                    )
+                }
+                return
+            }
+
+            _state.update { it.copy(progressName = "正在保存到预设列表…") }
+            val files = downloaded.map { downloadedPreset ->
+                IncomingPreset(
+                    key = downloadedPreset.item.path,
+                    displayName = downloadedPreset.item.name,
+                    bytes = downloadedPreset.bytes,
+                    sourceName = downloadedPreset.item.path
+                )
+            }
+            val results = repository.importBinaries(files)
+            val errors = mutableListOf<String>()
+            failures.forEach { (_, message) -> errors += message }
+
+            var imported = 0
+            var duplicates = 0
+            files.forEach { file ->
+                when (val result = results[file.key]) {
+                    is BinaryImportResult.Imported -> {
+                        imported++
+                        setStatus(file.key, ItemState.Imported)
+                    }
+                    is BinaryImportResult.Duplicate -> {
+                        duplicates++
+                        setStatus(file.key, ItemState.Duplicate)
+                    }
+                    is BinaryImportResult.Failed -> {
+                        errors += result.message
+                        setStatus(file.key, ItemState.Failed(result.message))
+                    }
+                    null -> {
+                        val message = "${file.displayName}：保存失败"
+                        errors += message
+                        setStatus(file.key, ItemState.Failed(message))
+                    }
+                }
+            }
+
+            _state.update {
+                it.copy(
+                    notice = importSummary(imported, duplicates, errors.size),
+                    errors = errors.take(12)
+                )
+            }
+        } catch (e: CancellationException) {
+            resetImportingStatuses(target)
+            _state.update { it.copy(notice = "已取消导入") }
+            throw e
+        } catch (e: Exception) {
+            val message = e.message ?: "批量导入失败"
+            target.forEach { setStatus(it.path, ItemState.Failed(message)) }
+            _state.update {
+                it.copy(
+                    notice = message,
+                    errors = listOf(message)
+                )
+            }
+        } finally {
+            _state.update { it.copy(importingAll = false, progressName = "") }
+            importAllJob = null
+        }
+    }
+
+    private fun resetImportingStatuses(target: List<NikonPcPreset>) {
+        _state.update { current ->
+            val statuses = current.statuses.toMutableMap()
+            target.forEach { preset ->
+                if (statuses[preset.path] is ItemState.Importing) {
+                    statuses[preset.path] = ItemState.Idle
+                }
+            }
+            current.copy(statuses = statuses)
+        }
+    }
+
+    private fun setStatus(path: String, status: ItemState) {
+        _state.update { current ->
+            current.copy(statuses = current.statuses + (path to status))
+        }
+    }
+
+    private fun importSummary(imported: Int, duplicates: Int, failed: Int): String = buildString {
+        if (imported > 0) append("已导入 $imported 个预设")
+        if (duplicates > 0) {
+            if (isNotEmpty()) append("，")
+            append("$duplicates 个已存在")
+        }
+        if (failed > 0) {
+            if (isNotEmpty()) append("，")
+            append("$failed 个失败")
+        }
+        if (isEmpty()) append("没有导入任何预设")
+    }
 }
 
 class GalleryViewModel(
@@ -144,10 +500,18 @@ class EditorViewModel(
         val loading: Boolean = true,
         val error: String? = null,
         val export: ExportState = ExportState.Idle,
-        val seenCompareHint: Boolean = false
+        val seenCompareHint: Boolean = false,
+        /** Non-null while the user has an unsaved curve edit for the session. */
+        val toneCurveOverride: ToneCurve? = null
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
-        val currentPreset: Preset? get() = presets.firstOrNull { it.id == presetId }
+        val selectedPreset: Preset? get() = presets.firstOrNull { it.id == presetId }
+        val currentPreset: Preset? get() = selectedPreset?.let { base ->
+            if (toneCurveOverride != null) base.copy(toneCurve = toneCurveOverride) else base
+        }
+        val effectiveToneCurve: ToneCurve
+            get() = toneCurveOverride ?: selectedPreset?.toneCurve ?: ToneCurve.linear()
+        val hasToneCurve: Boolean get() = !effectiveToneCurve.isLinear()
     }
 
     private val _state = MutableStateFlow(UiState(seenCompareHint = settings.hasSeenCompareHint))
@@ -162,6 +526,7 @@ class EditorViewModel(
 
     private var renderJob: Job? = null
     private var exportJob: Job? = null
+    private var renderGeneration = 0
 
     init {
         viewModelScope.launch {
@@ -185,7 +550,8 @@ class EditorViewModel(
                     val stillThere = list.any { it.id == current.presetId }
                     current.copy(
                         presets = list,
-                        presetId = if (stillThere) current.presetId else list.firstOrNull()?.id
+                        presetId = if (stillThere) current.presetId else list.firstOrNull()?.id,
+                        toneCurveOverride = if (stillThere) current.toneCurveOverride else null
                     )
                 }
             }
@@ -199,9 +565,59 @@ class EditorViewModel(
 
     fun selectPreset(id: String) {
         if (_state.value.presetId == id) return
-        _state.update { it.copy(presetId = id) }
+        _state.update { it.copy(presetId = id, toneCurveOverride = null) }
         selectionStore.setPreset(id)
         renderCurrent()
+    }
+
+    fun setToneCurve(curve: ToneCurve) {
+        _state.update { it.copy(toneCurveOverride = curve) }
+        renderCurrent()
+    }
+
+    /** Reverts to the selected preset's own curve (usually the Nikon LUT). */
+    fun clearToneCurveOverride() {
+        if (_state.value.toneCurveOverride == null) return
+        _state.update { it.copy(toneCurveOverride = null) }
+        renderCurrent()
+    }
+
+    /**
+     * Saves the current look as a new, binary-less preset. The original preset
+     * and its NCP/NP3 file are left untouched.
+     */
+    suspend fun saveCurvePreset(name: String): Preset? {
+        val snapshot = _state.value
+        val base = snapshot.selectedPreset ?: return null
+        val curve = snapshot.effectiveToneCurve
+        val saved = presetRepository.add(
+            base.copy(
+                name = name.trim().ifBlank { "${base.name} 曲线" }.take(40),
+                fileName = "",
+                fileSize = 0,
+                sourceName = "由 ${base.name} 调整",
+                toneCurve = curve.takeUnless { it.isLinear() },
+                note = base.note,
+                importedAt = System.currentTimeMillis(),
+                isSample = false,
+                contentHash = ""
+            )
+        )
+        // Keep working with the saved copy on the next launch instead of the
+        // original preset plus a transient override.
+        _state.update {
+            it.copy(
+                presets = presetRepository.presets.value,
+                presetId = saved.id,
+                toneCurveOverride = null
+            )
+        }
+        selectionStore.setPreset(saved.id)
+        // The saved copy has a new ID, so an in-flight render for the original
+        // preset will be discarded by the generation guard. Render again with
+        // the persisted curve.
+        renderCurrent()
+        return saved
     }
 
     fun show(index: Int) {
@@ -218,12 +634,17 @@ class EditorViewModel(
 
     private fun renderCurrent() {
         val snapshot = _state.value
-        val photo = snapshot.currentPhoto ?: return
+        val photo = snapshot.currentPhoto ?: run {
+            renderJob?.cancel()
+            renderGeneration++
+            return
+        }
+        renderJob?.cancel()
+        val generation = ++renderGeneration
         val preset = snapshot.currentPreset ?: run {
             _state.update { it.copy(loading = false, error = "请先导入一个预设") }
             return
         }
-        renderJob?.cancel()
         renderJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
@@ -235,7 +656,10 @@ class EditorViewModel(
                 }
                 val rendered = renderer.render(original, preset, forExport = false)
                 _state.update { current ->
-                    if (current.currentPhoto?.id == photo.id && current.presetId == preset.id) {
+                    if (generation == renderGeneration &&
+                        current.currentPhoto?.id == photo.id &&
+                        current.presetId == preset.id
+                    ) {
                         current.copy(original = original, rendered = rendered, loading = false)
                     } else {
                         current
@@ -244,10 +668,22 @@ class EditorViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
-                _state.update { it.copy(loading = false, error = "内存不足，无法渲染这张照片") }
+                _state.update { current ->
+                    if (generation == renderGeneration) {
+                        current.copy(loading = false, error = "内存不足，无法渲染这张照片")
+                    } else {
+                        current
+                    }
+                }
                 System.gc()
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false, error = e.message ?: "渲染失败") }
+                _state.update { current ->
+                    if (generation == renderGeneration) {
+                        current.copy(loading = false, error = e.message ?: "渲染失败")
+                    } else {
+                        current
+                    }
+                }
             }
         }
     }
@@ -317,6 +753,8 @@ class FujiKonViewModelFactory(private val container: AppContainer) : ViewModelPr
     override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
         modelClass.isAssignableFrom(PresetsViewModel::class.java) ->
             PresetsViewModel(container.presetRepository) as T
+        modelClass.isAssignableFrom(NikonPcViewModel::class.java) ->
+            NikonPcViewModel(container.nikonPcService, container.presetRepository) as T
         modelClass.isAssignableFrom(GalleryViewModel::class.java) ->
             GalleryViewModel(container.photoRepository, container.selectionStore) as T
         modelClass.isAssignableFrom(EditorViewModel::class.java) ->

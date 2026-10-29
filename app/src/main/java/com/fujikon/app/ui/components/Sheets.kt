@@ -123,7 +123,7 @@ fun PresetPickerSheet(
                                     .padding(5.dp)
                             ) {
                                 CurveChart(
-                                    points = previewPoints(preset),
+                                    points = preset.effectiveCurvePoints(32),
                                     modifier = Modifier.fillMaxWidth().height(36.dp),
                                     showSpectrum = false,
                                     showDiagonal = false,
@@ -296,13 +296,5 @@ fun ExportOptionsSheet(
             }
             Spacer(Modifier.height(18.dp))
         }
-    }
-}
-
-private fun previewPoints(preset: Preset): List<Pair<Float, Float>> {
-    val curve = preset.curve ?: return listOf(0f to 0f, 1f to 1f)
-    return (0..32).map { i ->
-        val idx = (i * 255 / 32).coerceIn(0, 255)
-        (idx / 255f) to (curve[idx] / 32767f)
     }
 }

@@ -255,7 +255,7 @@ fun SettingsScreen(
                             Column {
                                 Text("FujiKon", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                                 Text(
-                                    "版本 ${BuildConfig.VERSION_NAME} · 本地处理",
+                                    "版本 ${BuildConfig.VERSION_NAME} · 本地渲染",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextSecondary
                                 )
@@ -263,7 +263,7 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.height(14.dp))
                         Text(
-                            "所有照片与预设都只在本机处理，应用不申请网络权限，不会上传任何内容。",
+                            "照片与预设都保留在本机；只有在“从 nikonpc 下载”时才会访问 nikonpc.com 获取公开预设，不会上传照片或本地预设。",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )

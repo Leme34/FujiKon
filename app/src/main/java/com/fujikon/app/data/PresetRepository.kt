@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.fujikon.app.ncp.PictureControlParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,23 @@ class PresetRepository(private val context: Context) {
         val errors: List<String>
     ) {
         val total: Int get() = imported.size + duplicates.size + errors.size
+    }
+
+    /**
+     * A preset downloaded from outside the app. [key] lets a batch importer map
+     * each result back to its remote row even when two presets share a name.
+     */
+    data class IncomingPreset(
+        val key: String,
+        val displayName: String,
+        val bytes: ByteArray,
+        val sourceName: String = displayName
+    )
+
+    sealed interface BinaryImportResult {
+        data class Imported(val preset: Preset) : BinaryImportResult
+        data class Duplicate(val name: String) : BinaryImportResult
+        data class Failed(val message: String) : BinaryImportResult
     }
 
     private val mutex = Mutex()
@@ -99,7 +117,8 @@ class PresetRepository(private val context: Context) {
                             fileName = storedName,
                             fileSize = bytes.size,
                             isSample = false,
-                            contentHash = hash
+                            contentHash = hash,
+                            sourceName = displayName
                         )
                         list.add(preset)
                         imported.add(preset)
@@ -113,6 +132,96 @@ class PresetRepository(private val context: Context) {
             }
         }
         return ImportResult(imported, duplicates, errors)
+    }
+
+    /**
+     * Imports already-downloaded preset bytes as one batch. The index is written
+     * once, and [IncomingPreset.key] is used to report an outcome per remote row.
+     */
+    suspend fun importBinaries(files: List<IncomingPreset>): Map<String, BinaryImportResult> {
+        load()
+        if (files.isEmpty()) return emptyMap()
+        val results = linkedMapOf<String, BinaryImportResult>()
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val existingHashes = _presets.value
+                    .map { it.contentHash }
+                    .filter { it.isNotBlank() }
+                    .toMutableSet()
+                val list = _presets.value.toMutableList()
+                var changed = false
+
+                files.forEach { file ->
+                    val displayName = file.displayName.ifBlank { "nikonpc_preset" }
+                    try {
+                        if (file.bytes.size > MAX_FILE_BYTES) {
+                            throw IllegalArgumentException("文件超过 4MB，可能不是预设文件")
+                        }
+                        val control = PictureControlParser.parse(file.bytes, displayName)
+                        val hash = sha256(file.bytes)
+                        if (hash in existingHashes) {
+                            results[file.key] = BinaryImportResult.Duplicate(displayName)
+                            return@forEach
+                        }
+                        val id = UUID.randomUUID().toString()
+                        val extension = when (control.format) {
+                            com.fujikon.app.ncp.PictureControlFormat.NP3 -> "np3"
+                            com.fujikon.app.ncp.PictureControlFormat.NP2 -> "np2"
+                            else -> "ncp"
+                        }
+                        val storedName = "$id.$extension"
+                        File(filesDir, storedName).writeBytes(file.bytes)
+                        val preset = Preset.from(
+                            control = control,
+                            id = id,
+                            fileName = storedName,
+                            fileSize = file.bytes.size,
+                            isSample = false,
+                            contentHash = hash,
+                            sourceName = file.sourceName.ifBlank { displayName }
+                        )
+                        list.add(preset)
+                        existingHashes.add(hash)
+                        results[file.key] = BinaryImportResult.Imported(preset)
+                        changed = true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        results[file.key] = BinaryImportResult.Failed(
+                            "$displayName：${e.message ?: "解析失败"}"
+                        )
+                    }
+                }
+
+                if (changed) {
+                    publish(list)
+                    writeIndex(list)
+                }
+            }
+        }
+        return results
+    }
+
+    /**
+     * Adds an in-app preset (for example a curve-adjusted copy). The ID and
+     * display name are made unique here so callers cannot overwrite an imported
+     * NCP/NP3 preset by accident.
+     */
+    suspend fun add(preset: Preset): Preset {
+        load()
+        return mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val list = _presets.value.toMutableList()
+                val saved = preset.copy(
+                    id = UUID.randomUUID().toString(),
+                    name = uniqueName(preset.name, list)
+                )
+                list.add(saved)
+                publish(list)
+                writeIndex(list)
+                saved
+            }
+        }
     }
 
     suspend fun update(preset: Preset) {
@@ -135,7 +244,9 @@ class PresetRepository(private val context: Context) {
         mutex.withLock {
             withContext(Dispatchers.IO) {
                 val preset = _presets.value.firstOrNull { it.id == id } ?: return@withContext
-                File(filesDir, preset.fileName).delete()
+                if (preset.fileName.isNotBlank()) {
+                    File(filesDir, preset.fileName).delete()
+                }
                 val list = _presets.value.filterNot { it.id == id }
                 publish(list)
                 writeIndex(list)
@@ -227,6 +338,18 @@ class PresetRepository(private val context: Context) {
         compareByDescending<Preset> { it.favorite }
             .thenBy { it.name.lowercase() }
     )
+
+    private fun uniqueName(desired: String, list: List<Preset>): String {
+        val base = desired.trim().ifBlank { "曲线调整" }.take(40)
+        if (list.none { it.name.equals(base, ignoreCase = true) }) return base
+        var index = 2
+        while (true) {
+            val suffix = " ($index)"
+            val candidate = base.take(40 - suffix.length).trimEnd() + suffix
+            if (list.none { it.name.equals(candidate, ignoreCase = true) }) return candidate
+            index++
+        }
+    }
 
     private fun readIndex(): List<Preset> {
         if (!indexFile.exists()) return emptyList()

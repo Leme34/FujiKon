@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
@@ -170,6 +171,7 @@ fun PresetsScreen(
 
                 presets.isEmpty() -> EmptyHome(
                     onImport = ::openImport,
+                    onNikonPc = { navController.navigate(Routes.NIKONPC) },
                     onSamples = {
                         scope.launch {
                             val count = viewModel.restoreSamples()
@@ -189,17 +191,29 @@ fun PresetsScreen(
                             count = presets.size,
                             importing = importing,
                             onStart = ::startFlow,
-                            onImport = ::openImport
+                            onImport = ::openImport,
+                            onNikonPc = { navController.navigate(Routes.NIKONPC) }
                         )
                     }
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         SectionHeader(
                             title = "我的预设 (${presets.size})",
                             action = {
-                                TextButton(onClick = ::openImport) {
-                                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("导入")
+                                Row {
+                                    TextButton(onClick = { navController.navigate(Routes.NIKONPC) }) {
+                                        Icon(
+                                            Icons.Filled.CloudDownload,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("nikonpc")
+                                    }
+                                    TextButton(onClick = ::openImport) {
+                                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("导入")
+                                    }
                                 }
                             }
                         )
@@ -268,7 +282,8 @@ private fun HeroCard(
     count: Int,
     importing: Boolean,
     onStart: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onNikonPc: () -> Unit
 ) {
     Box(
         Modifier
@@ -295,7 +310,7 @@ private fun HeroCard(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "导入 .NCP / .NP3 预设，批量套用到相册照片。长按对比原图，双指缩放细节，尽量保留原图尺寸并保留相机信息。",
+                "导入 .NCP / .NP3 预设，或从 nikonpc.com 获取社区预设，批量套用到相册照片。长按对比原图，双指缩放细节，尽量保留原图尺寸并保留相机信息。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
@@ -317,9 +332,25 @@ private fun HeroCard(
                     Text("导入预设", color = TextPrimary)
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = onNikonPc,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(12.dp),
+                enabled = !importing
+            ) {
+                Icon(
+                    Icons.Filled.CloudDownload,
+                    contentDescription = null,
+                    tint = Amber,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("从 nikonpc 下载", color = TextPrimary)
+            }
             Spacer(Modifier.height(14.dp))
             Text(
-                if (importing) "正在解析预设…" else "本地处理 · 不上传照片 · $count 个预设",
+                if (importing) "正在解析预设…" else "照片不上传 · $count 个预设",
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
@@ -330,6 +361,7 @@ private fun HeroCard(
 @Composable
 private fun EmptyHome(
     onImport: () -> Unit,
+    onNikonPc: () -> Unit,
     onSamples: () -> Unit
 ) {
     Column(
@@ -363,7 +395,7 @@ private fun EmptyHome(
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            "支持 Nikon Picture Control 的 .NCP 与 .NP3 文件。\n你可以从文件管理器或微信中选择文件导入。",
+            "支持 Nikon Picture Control 的 .NCP 与 .NP3 文件。\n也可以直接从 nikonpc.com 在线获取社区预设。",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
             textAlign = TextAlign.Center
@@ -376,6 +408,21 @@ private fun EmptyHome(
             colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
         ) {
             Text("导入预设文件", fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onNikonPc,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(
+                Icons.Filled.CloudDownload,
+                contentDescription = null,
+                tint = Amber,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text("从 nikonpc 下载", color = TextPrimary)
         }
         Spacer(Modifier.height(10.dp))
         OutlinedButton(

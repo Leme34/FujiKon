@@ -28,6 +28,7 @@ class AppUiSmokeTest {
         }
         composeRule.onNodeWithText("选照片套用").assertExists()
         composeRule.onNodeWithText("导入预设").assertExists()
+        composeRule.onNodeWithText("从 nikonpc 下载").assertExists()
         composeRule.onNodeWithText("Agfa Optima").assertExists()
     }
 
@@ -41,5 +42,18 @@ class AppUiSmokeTest {
             composeRule.onAllNodesWithText("选择预设").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText("选择预设").assertExists()
+    }
+
+    @Test
+    fun nikonPcPickerOpensFromHome() {
+        composeRule.waitUntil(15_000) {
+            composeRule.onAllNodesWithText("选照片套用").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("从 nikonpc 下载").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("nikonpc 在线预设").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("nikonpc 在线预设").assertExists()
+        composeRule.onNodeWithText("全部导入").assertExists()
     }
 }

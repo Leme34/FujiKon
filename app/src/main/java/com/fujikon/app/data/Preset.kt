@@ -8,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.util.Base64
+import kotlin.math.roundToInt
 
 /**
  * App-side preset. It keeps the original binary for re-export, the decoded
@@ -24,6 +25,8 @@ data class Preset(
     val baseProfile: Int,
     val baseProfileName: String,
     val curve: IntArray?,
+    /** Optional RGB master curve layered on top of the Nikon rendering. */
+    val toneCurve: ToneCurve? = null,
     val sharpening: Float,
     val clarity: Float,
     val midRangeSharpening: Float,
@@ -49,6 +52,11 @@ data class Preset(
 ) {
     val hasCurve: Boolean get() = curve != null && curve.size >= 256
 
+    val hasToneCurve: Boolean get() = toneCurve != null && !toneCurve.isLinear()
+
+    /** Presets saved from the in-app curve editor have no binary source file. */
+    val isDerived: Boolean get() = fileName.isBlank()
+
     val hasColorBlender: Boolean
         get() = colorBlender.size >= 8 && colorBlender.any {
             it.hue != 0 || it.chroma != 0 || it.brightness != 0
@@ -57,6 +65,29 @@ data class Preset(
     val hasColorGrading: Boolean
         get() = listOf(colorGrading.highlights, colorGrading.midtones, colorGrading.shadows)
             .any { it.hue != 0 || it.chroma != 0 || it.brightness != 0 }
+
+    /** Curve points of the original Nikon LUT, used as the editor reference. */
+    fun baseCurvePoints(count: Int = 64): List<Pair<Float, Float>> {
+        val safeCount = count.coerceAtLeast(2)
+        val source = curve
+        return (0..safeCount).map { i ->
+            val x = i / safeCount.toFloat()
+            val y = if (source != null && source.size >= 256) {
+                source[(x * 255f).roundToInt().coerceIn(0, 255)] / 32767f
+            } else {
+                x
+            }
+            x to y.coerceIn(0f, 1f)
+        }
+    }
+
+    /** Effective curve shown in cards and the preset detail screen. */
+    fun effectiveCurvePoints(count: Int = 64): List<Pair<Float, Float>> {
+        val curveOverride = toneCurve
+        return baseCurvePoints(count).map { (x, y) ->
+            x to (curveOverride?.apply(y) ?: y).coerceIn(0f, 1f)
+        }
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -69,6 +100,7 @@ data class Preset(
         put("baseProfile", baseProfile)
         put("baseProfileName", baseProfileName)
         put("curve", curve?.let { encodeCurve(it) } ?: JSONObject.NULL)
+        put("toneCurve", toneCurve?.toJson() ?: JSONObject.NULL)
         put("sharpening", sharpening.toDouble())
         put("clarity", clarity.toDouble())
         put("midRangeSharpening", midRangeSharpening.toDouble())
@@ -98,18 +130,19 @@ data class Preset(
     }
 
     companion object {
-        fun from(control: PictureControl, id: String, fileName: String, fileSize: Int, isSample: Boolean, importedAt: Long = System.currentTimeMillis(), contentHash: String = ""): Preset =
+        fun from(control: PictureControl, id: String, fileName: String, fileSize: Int, isSample: Boolean, importedAt: Long = System.currentTimeMillis(), contentHash: String = "", sourceName: String = fileName): Preset =
             Preset(
                 id = id,
                 name = control.name,
                 format = control.format.name,
                 version = control.version,
-                sourceName = fileName,
+                sourceName = sourceName,
                 fileName = fileName,
                 fileSize = fileSize,
                 baseProfile = control.baseProfile,
                 baseProfileName = control.baseProfileName,
                 curve = control.curve,
+                toneCurve = null,
                 sharpening = control.sharpening,
                 clarity = control.clarity,
                 midRangeSharpening = control.midRangeSharpening,
@@ -145,6 +178,9 @@ data class Preset(
             baseProfile = json.optInt("baseProfile", 0x03C2),
             baseProfileName = json.optString("baseProfileName", "未知"),
             curve = if (json.isNull("curve")) null else decodeCurve(json.optString("curve")),
+            toneCurve = if (json.isNull("toneCurve")) null else {
+                json.optJSONObject("toneCurve")?.let(ToneCurve::fromJson)
+            },
             sharpening = json.optDouble("sharpening", 0.0).toFloat(),
             clarity = json.optDouble("clarity", 0.0).toFloat(),
             midRangeSharpening = json.optDouble("midRangeSharpening", 0.0).toFloat(),

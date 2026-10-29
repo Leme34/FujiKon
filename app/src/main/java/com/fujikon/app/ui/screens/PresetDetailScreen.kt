@@ -186,7 +186,12 @@ fun PresetDetailScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             MetaChip(preset.format)
                             MetaChip(preset.baseProfileName)
-                            if (preset.hasCurve) MetaChip("自定义曲线", Amber)
+                            if (preset.hasToneCurve) {
+                                MetaChip("曲线调整", Amber)
+                            } else if (preset.hasCurve) {
+                                MetaChip("自定义曲线", Amber)
+                            }
+                            if (preset.isDerived) MetaChip("副本")
                         }
                     }
                 }
@@ -202,9 +207,13 @@ fun PresetDetailScreen(
                             Text("色调曲线", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
                             Spacer(Modifier.weight(1f))
                             Text(
-                                if (preset.hasCurve) "256 点 LUT" else "线性",
+                                when {
+                                    preset.hasToneCurve -> "预设 + 曲线调整"
+                                    preset.hasCurve -> "256 点 LUT"
+                                    else -> "线性"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary
+                                color = if (preset.hasToneCurve) Amber else TextSecondary
                             )
                         }
                         Spacer(Modifier.height(12.dp))
@@ -216,7 +225,7 @@ fun PresetDetailScreen(
                                 .padding(14.dp)
                         ) {
                             CurveChart(
-                                points = previewPoints(preset),
+                                points = preset.effectiveCurvePoints(64),
                                 modifier = Modifier.fillMaxSize(),
                                 lineColor = Amber,
                                 showSpectrum = true
@@ -229,6 +238,14 @@ fun PresetDetailScreen(
                             Text("输入亮度", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                             Spacer(Modifier.weight(1f))
                             Text("255", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        }
+                        if (preset.hasToneCurve) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "可在预览页的「调曲线」中继续调整，并保存为新的预设副本。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
                         }
                     }
                 }
@@ -368,9 +385,13 @@ fun PresetDetailScreen(
                 ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         InfoRow("格式", "${preset.format} · 版本 ${preset.version.ifBlank { "—" }}")
+                        if (preset.isDerived) InfoRow("类型", "曲线副本（应用内）")
                         InfoRow("基准", preset.baseProfileName)
-                        InfoRow("源文件", preset.sourceName)
-                        InfoRow("大小", "%.1f KB".format(Locale.US, preset.fileSize / 1024f))
+                        InfoRow("源文件", if (preset.isDerived) "应用内曲线副本" else preset.sourceName)
+                        InfoRow(
+                            "大小",
+                            if (preset.isDerived) "—" else "%.1f KB".format(Locale.US, preset.fileSize / 1024f)
+                        )
                         InfoRow(
                             "导入时间",
                             SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(preset.importedAt))
@@ -491,14 +512,6 @@ private fun NameDialog(
             TextButton(onClick = onDismiss) { Text("取消", color = TextSecondary) }
         }
     )
-}
-
-private fun previewPoints(preset: Preset): List<Pair<Float, Float>> {
-    val curve = preset.curve ?: return listOf(0f to 0f, 1f to 1f)
-    return (0..64).map { i ->
-        val idx = (i * 255 / 64).coerceIn(0, 255)
-        (idx / 255f) to (curve[idx] / 32767f)
-    }
 }
 
 private fun parameterList(preset: Preset): List<Pair<String, String>> {

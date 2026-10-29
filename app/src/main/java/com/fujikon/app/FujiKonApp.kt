@@ -6,12 +6,14 @@ import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.PresetRepository
 import com.fujikon.app.data.SelectionStore
+import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.io.File
 
 class AppContainer(context: Context) {
     val appContext: Context = context.applicationContext
@@ -23,6 +25,7 @@ class AppContainer(context: Context) {
     val settings = AppSettings(appContext)
     val imageRenderer = ImageRenderer()
     val exportManager = ExportManager(appContext, imageRenderer, settings)
+    val nikonPcService = NikonPcService(cacheDir = File(appContext.cacheDir, "nikonpc"))
 
     init {
         scope.launch { presetRepository.load() }

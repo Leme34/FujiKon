@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -75,9 +77,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.components.ExportOptionsSheet
 import com.fujikon.app.ui.components.PresetPickerSheet
+import com.fujikon.app.ui.components.ToneCurveEditorSheet
 import com.fujikon.app.ui.components.ZoomableImage
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
@@ -90,6 +94,7 @@ import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 import com.fujikon.app.ui.viewmodel.EditorViewModel
 import com.fujikon.app.ui.viewmodel.FujiKonViewModelFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,6 +112,8 @@ fun EditorScreen(
     var comparing by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
+    var showCurve by remember { mutableStateOf(false) }
+    var savingCurve by remember { mutableStateOf(false) }
     var pendingOptions by remember { mutableStateOf<ExportManager.Options?>(null) }
 
     val writePermissionLauncher = rememberLauncherForActivityResult(
@@ -228,21 +235,41 @@ fun EditorScreen(
                             onClick = { showPicker = true },
                             enabled = !exporting,
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).height(50.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            modifier = Modifier.weight(0.9f).height(50.dp)
                         ) {
-                            Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
+                            Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
                             Text("换预设", color = TextPrimary)
+                        }
+                        OutlinedButton(
+                            onClick = { showCurve = true },
+                            enabled = !exporting && preset != null,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (state.hasToneCurve) Amber.copy(alpha = 0.7f) else Outline
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.hasToneCurve) Amber else TextPrimary
+                            ),
+                            modifier = Modifier.weight(0.9f).height(50.dp)
+                        ) {
+                            Icon(Icons.Filled.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("调曲线")
                         }
                         Button(
                             onClick = { showExport = true },
                             enabled = !exporting && preset != null && state.photos.isNotEmpty(),
                             shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink),
-                            modifier = Modifier.weight(1f).height(50.dp)
+                            modifier = Modifier.weight(1.2f).height(50.dp)
                         ) {
-                            Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
+                            Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
                             Text("导出 ${state.photos.size} 张", fontWeight = FontWeight.Bold)
                         }
                     }
@@ -311,11 +338,12 @@ fun EditorScreen(
                         shape = RoundedCornerShape(50)
                     ) {
                         Text(
-                            preset.name,
+                            if (state.hasToneCurve) "${preset.name} · 曲线" else preset.name,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.labelMedium,
                             color = TextPrimary,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -338,7 +366,7 @@ fun EditorScreen(
                     }
                 }
 
-                if (state.loading && rendered != null) {
+                if (state.loading && rendered != null && !showCurve) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -440,6 +468,39 @@ fun EditorScreen(
                 startExport(options)
             },
             onDismiss = { showExport = false }
+        )
+    }
+
+    if (showCurve && preset != null) {
+        ToneCurveEditorSheet(
+            presetName = preset.name,
+            baseCurve = preset.baseCurvePoints(),
+            presetCurve = state.selectedPreset?.toneCurve ?: ToneCurve.linear(),
+            curve = state.effectiveToneCurve,
+            rendering = state.loading,
+            saving = savingCurve,
+            onPreview = viewModel::setToneCurve,
+            onClearOverride = viewModel::clearToneCurveOverride,
+            onSave = { name ->
+                savingCurve = true
+                scope.launch {
+                    val saved = try {
+                        viewModel.saveCurvePreset(name)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        null
+                    }
+                    savingCurve = false
+                    if (saved != null) {
+                        showCurve = false
+                        snackbar.showSnackbar("已保存并切换到「${saved.name}」")
+                    } else {
+                        snackbar.showSnackbar("保存失败，请重试")
+                    }
+                }
+            },
+            onDismiss = { if (!savingCurve) showCurve = false }
         )
     }
 

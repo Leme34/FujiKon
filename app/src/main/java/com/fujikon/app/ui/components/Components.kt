@@ -136,12 +136,7 @@ fun PresetCard(
                     .padding(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 CurveChart(
-                    points = preset.curve?.let { curve ->
-                        (0..32).map { i ->
-                            val idx = (i * 255 / 32).coerceIn(0, 255)
-                            (idx / 255f) to (curve[idx] / 32767f)
-                        }
-                    } ?: listOf(0f to 0f, 1f to 1f),
+                    points = preset.effectiveCurvePoints(32),
                     modifier = Modifier.fillMaxSize(),
                     showSpectrum = false,
                     showDiagonal = false,
@@ -181,8 +176,14 @@ fun PresetCard(
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 MetaChip(preset.format)
-                MetaChip(if (preset.hasCurve) "曲线" else "参数")
-                if (preset.isSample) MetaChip("示例")
+                MetaChip(
+                    if (preset.hasCurve || preset.hasToneCurve) "曲线" else "参数",
+                    tint = if (preset.hasToneCurve) Amber else TextSecondary
+                )
+                when {
+                    preset.isDerived -> MetaChip("副本")
+                    preset.isSample -> MetaChip("示例")
+                }
             }
         }
     }

@@ -346,7 +346,7 @@ private fun PermissionGate(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "FujiKon 只在本机读取你选择的照片，不会上传任何内容。请授予照片访问权限后继续。",
+            "FujiKon 只在本机读取你选择的照片，不会上传照片或本地预设。请授予照片访问权限后继续。",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
             textAlign = TextAlign.Center

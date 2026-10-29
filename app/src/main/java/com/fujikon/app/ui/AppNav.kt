@@ -11,10 +11,12 @@ import androidx.navigation.compose.rememberNavController
 import com.fujikon.app.FujiKonApp
 import com.fujikon.app.ui.screens.EditorScreen
 import com.fujikon.app.ui.screens.GalleryScreen
+import com.fujikon.app.ui.screens.NikonPcScreen
 import com.fujikon.app.ui.screens.PresetDetailScreen
 import com.fujikon.app.ui.screens.PresetsScreen
 import com.fujikon.app.ui.screens.SettingsScreen
 import com.fujikon.app.ui.viewmodel.FujiKonViewModelFactory
+import com.fujikon.app.ui.viewmodel.NikonPcViewModel
 import com.fujikon.app.ui.viewmodel.PresetsViewModel
 
 object Routes {
@@ -23,6 +25,7 @@ object Routes {
     const val GALLERY = "gallery"
     const val EDITOR = "editor"
     const val SETTINGS = "settings"
+    const val NIKONPC = "nikonpc"
 
     fun presetDetail(id: String) = "preset/$id"
 }
@@ -48,6 +51,13 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
                 presetId = entry.arguments?.getString("id"),
                 viewModel = presetsViewModel,
                 factory = factory
+            )
+        }
+        composable(Routes.NIKONPC) {
+            val viewModel: NikonPcViewModel = viewModel(factory = factory)
+            NikonPcScreen(
+                navController = navController,
+                viewModel = viewModel
             )
         }
         composable(Routes.GALLERY) {
