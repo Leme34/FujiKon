@@ -40,17 +40,24 @@ gradlew.bat :app:assembleDebug
 sdk.dir=D:/Android/Sdk
 ```
 
-产物：
+产物按应用版本号命名，不使用 `debug` 后缀：
 
 ```
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/debug/FujiKon-1.3.0.apk
+app/build/outputs/apk/release/FujiKon-1.3.0.apk
 ```
 
 安装：
 
 ```bat
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/FujiKon-1.3.0.apk
 ```
+
+版本规范：
+
+- `versionName` 使用语义化版本 `MAJOR.MINOR.PATCH`，`versionCode` 单调递增。
+- APK 统一命名为 `FujiKon-<versionName>.apk`，例如 `FujiKon-1.3.0.apk`。
+- 每次提交新版本代码时创建对应的 annotated Git tag，例如 `v1.3.0`。
 
 ## 使用
 

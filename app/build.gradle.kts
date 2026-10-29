@@ -50,6 +50,16 @@ android {
             isIncludeAndroidResources = true
         }
     }
+
+    applicationVariants.all {
+        val appVersionName = versionName
+        outputs.all {
+            // Name every APK by the app version, never by the build type.
+            // Debug and release builds still live in separate directories.
+            (this as com.android.build.gradle.internal.api.ApkVariantOutputImpl)
+                .outputFileName = "FujiKon-$appVersionName.apk"
+        }
+    }
 }
 
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
