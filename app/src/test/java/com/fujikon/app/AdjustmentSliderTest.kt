@@ -59,6 +59,32 @@ class AdjustmentSliderTest {
     }
 
     @Test
+    fun verticalDragDoesNotChangeValue() {
+        var value by mutableStateOf(0f)
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "对比度",
+                value = value,
+                valueRange = -100f..100f,
+                onValueChange = { value = it },
+                onValueChangeFinished = { },
+                modifier = Modifier.size(240.dp, 48.dp).testTag("vertical")
+            )
+        }
+
+        rule.onNodeWithTag("vertical").performTouchInput {
+            down(center)
+            moveTo(center + Offset(0f, 80f))
+            moveTo(center + Offset(4f, 90f))
+            up()
+        }
+        rule.waitForIdle()
+
+        assertEquals("a vertical scroll gesture must not edit the slider", 0f, value, 0.001f)
+    }
+
+    @Test
     fun doubleTapResetsTheSlider() {
         var value by mutableStateOf(40f)
         var resets = 0

@@ -112,7 +112,7 @@ fun AdjustmentSlider(
                         val width = size.width
                         val downX = down.position.x
                         var dragging = false
-                        var moved = 0f
+                        var verticalGesture = false
                         var lastX = downX
                         var upChange: PointerInputChange? = null
 
@@ -124,9 +124,17 @@ fun AdjustmentSlider(
                                 upChange = change
                                 break
                             }
-                            if (!dragging) {
-                                moved += change.positionChangeIgnoreConsumed().getDistance()
-                                if (moved > viewConfiguration.touchSlop) dragging = true
+                            if (!dragging && !verticalGesture) {
+                                // Only claim the gesture once it is clearly
+                                // horizontal. A vertical swipe belongs to the
+                                // sheet's scroll container, not to the slider.
+                                val dx = abs(change.position.x - downX)
+                                val dy = abs(change.position.y - down.position.y)
+                                if (dx > viewConfiguration.touchSlop && dx > dy) {
+                                    dragging = true
+                                } else if (dy > viewConfiguration.touchSlop && dy >= dx) {
+                                    verticalGesture = true
+                                }
                             }
                             if (dragging) {
                                 change.consume()
@@ -144,6 +152,10 @@ fun AdjustmentSlider(
                         if (dragging) {
                             currentOnChange(valueAt(lastX, width, valueRange, safeStep))
                             currentOnFinished()
+                            lastTapTime = 0L
+                            return@awaitEachGesture
+                        }
+                        if (verticalGesture) {
                             lastTapTime = 0L
                             return@awaitEachGesture
                         }

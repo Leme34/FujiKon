@@ -12,6 +12,8 @@ import com.fujikon.app.AppContainer
 import com.fujikon.app.data.Album
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.EditHistory
+import com.fujikon.app.data.EditSnapshot
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.Preset
@@ -505,7 +507,10 @@ class EditorViewModel(
         /** Non-null while the user has an unsaved curve edit for the session. */
         val toneCurveOverride: ToneCurve? = null,
         /** Global Lightroom-style adjustments for the current look. */
-        val adjustments: EditAdjustments = EditAdjustments.Neutral
+        val adjustments: EditAdjustments = EditAdjustments.Neutral,
+        /** Global undo/redo stack shared by every photo in this edit session. */
+        val historyEntries: List<EditHistory.Entry> = emptyList(),
+        val historyIndex: Int = -1
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
         val selectedPreset: Preset? get() = presets.firstOrNull { it.id == presetId }
@@ -519,6 +524,9 @@ class EditorViewModel(
             get() = toneCurveOverride ?: selectedPreset?.toneCurve ?: ToneCurve.linear()
         val hasToneCurve: Boolean get() = !effectiveToneCurve.isLinear()
         val hasAdjustments: Boolean get() = !adjustments.isNeutral()
+        val canUndo: Boolean get() = historyIndex > 0
+        val canRedo: Boolean get() = historyIndex in 0 until historyEntries.lastIndex
+        val currentHistoryLabel: String? get() = historyEntries.getOrNull(historyIndex)?.label
     }
 
     private val _state = MutableStateFlow(UiState(seenCompareHint = settings.hasSeenCompareHint))
@@ -534,6 +542,7 @@ class EditorViewModel(
     private var renderJob: Job? = null
     private var exportJob: Job? = null
     private var renderGeneration = 0
+    private val editHistory = EditHistory()
 
     init {
         viewModelScope.launch {
@@ -552,6 +561,8 @@ class EditorViewModel(
             if (_state.value.photos.isEmpty()) {
                 _state.update { it.copy(loading = false, error = "没有待处理的照片") }
             } else {
+                selectionStore.setCurrentPhoto(_state.value.currentPhoto)
+                resetHistory("打开照片")
                 renderCurrent()
             }
         }
@@ -581,6 +592,74 @@ class EditorViewModel(
         _state.update { it.copy(seenCompareHint = true) }
     }
 
+    // ------------------------------------------------------------- history
+
+    private fun currentSnapshot(): EditSnapshot? {
+        val snapshot = _state.value
+        val photo = snapshot.currentPhoto ?: return null
+        return EditSnapshot(
+            photoId = photo.id,
+            presetId = snapshot.presetId,
+            toneCurve = snapshot.toneCurveOverride,
+            adjustments = snapshot.adjustments
+        )
+    }
+
+    private fun resetHistory(label: String) {
+        val snapshot = currentSnapshot() ?: return
+        editHistory.reset(snapshot, label)
+        syncHistoryState()
+    }
+
+    private fun recordHistory(label: String, coalesceKey: String? = null) {
+        val snapshot = currentSnapshot() ?: return
+        editHistory.record(label, snapshot, coalesceKey)
+        syncHistoryState()
+    }
+
+    private fun syncHistoryState() {
+        val entries = editHistory.entries.toList()
+        val index = editHistory.index
+        _state.update { it.copy(historyEntries = entries, historyIndex = index) }
+    }
+
+    /** Restores one step, including the photo it belonged to. */
+    private fun jumpHistory(target: Int): Boolean {
+        val entry = editHistory.entries.getOrNull(target) ?: return false
+        val snapshot = entry.snapshot
+        val photoIndex = _state.value.photos.indexOfFirst { it.id == snapshot.photoId }
+        if (photoIndex < 0) return false
+
+        val presetStillExists = _state.value.presets.any { it.id == snapshot.presetId }
+        _state.update { current ->
+            current.copy(
+                index = photoIndex,
+                presetId = if (presetStillExists) snapshot.presetId else current.presetId,
+                toneCurveOverride = snapshot.toneCurve,
+                adjustments = snapshot.adjustments
+            )
+        }
+        editHistory.jumpTo(target)
+        selectionStore.setPreset(_state.value.presetId)
+        selectionStore.setCurrentPhoto(_state.value.currentPhoto)
+        syncHistoryState()
+        renderCurrent()
+        return true
+    }
+
+    fun undo() {
+        if (editHistory.canUndo) jumpHistory(editHistory.index - 1)
+    }
+
+    fun redo() {
+        if (editHistory.canRedo) jumpHistory(editHistory.index + 1)
+    }
+
+    fun jumpToHistory(index: Int) {
+        if (index == editHistory.index) return
+        jumpHistory(index)
+    }
+
     fun selectPreset(id: String) {
         if (_state.value.presetId == id) return
         val preset = _state.value.presets.firstOrNull { it.id == id }
@@ -592,18 +671,25 @@ class EditorViewModel(
             )
         }
         selectionStore.setPreset(id)
+        recordHistory("套用预设：${preset?.name ?: "未知预设"}")
         renderCurrent()
     }
 
     fun setToneCurve(curve: ToneCurve) {
-        _state.update { it.copy(toneCurveOverride = curve) }
+        val normalized = ToneCurve(curve.normalizedPoints)
+        if (_state.value.toneCurveOverride == normalized) return
+        _state.update { it.copy(toneCurveOverride = normalized) }
+        recordHistory("曲线调整", coalesceKey = "tone-curve")
         renderCurrent()
     }
 
-    fun setAdjustments(adjustments: EditAdjustments) {
+    fun setAdjustments(adjustments: EditAdjustments, changedField: String? = null) {
         val normalized = adjustments.normalized()
         if (_state.value.adjustments == normalized) return
         _state.update { it.copy(adjustments = normalized) }
+        val label = if (changedField.isNullOrBlank()) "调节" else "调节 · $changedField"
+        val key = if (changedField.isNullOrBlank()) "adjust" else "adjust:$changedField"
+        recordHistory(label, coalesceKey = key)
         renderCurrent()
     }
 
@@ -611,6 +697,7 @@ class EditorViewModel(
     fun clearToneCurveOverride() {
         if (_state.value.toneCurveOverride == null) return
         _state.update { it.copy(toneCurveOverride = null) }
+        recordHistory("还原预设曲线")
         renderCurrent()
     }
 
@@ -647,6 +734,7 @@ class EditorViewModel(
             )
         }
         selectionStore.setPreset(saved.id)
+        recordHistory("保存预设：${saved.name}")
         // The saved copy has a new ID, so an in-flight render for the original
         // preset will be discarded by the generation guard. Render again with
         // the persisted look.
@@ -657,6 +745,7 @@ class EditorViewModel(
     fun show(index: Int) {
         if (index !in _state.value.photos.indices || index == _state.value.index) return
         _state.update { it.copy(index = index) }
+        selectionStore.setCurrentPhoto(_state.value.currentPhoto)
         renderCurrent()
     }
 

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -40,11 +41,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
 import com.fujikon.app.render.ExportManager
+import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
@@ -59,7 +63,9 @@ fun PresetPickerSheet(
     presets: List<Preset>,
     selectedId: String?,
     onSelect: (Preset) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    photo: PhotoItem? = null,
+    thumbnailStore: PresetThumbnailStore? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -86,9 +92,11 @@ fun PresetPickerSheet(
             Text("选择预设", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
             Spacer(Modifier.height(4.dp))
             Text(
-                "长按照片可查看原图，双指缩放查看细节",
+                "预览：${photo?.displayName ?: "内置样张"} · 长按照片可查看原图，双指缩放查看细节",
                 style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Spacer(Modifier.height(16.dp))
             if (presets.isEmpty()) {
@@ -118,17 +126,33 @@ fun PresetPickerSheet(
                         ) {
                             Box(
                                 Modifier
-                                    .size(46.dp)
-                                    .background(Card, RoundedCornerShape(10.dp))
-                                    .padding(5.dp)
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Card)
                             ) {
-                                CurveChart(
-                                    points = preset.effectiveCurvePoints(32),
-                                    modifier = Modifier.fillMaxWidth().height(36.dp),
-                                    showSpectrum = false,
-                                    showDiagonal = false,
-                                    gridAlpha = 0.2f
-                                )
+                                val fallback: @Composable () -> Unit = {
+                                    Box(Modifier.fillMaxSize().padding(7.dp)) {
+                                        CurveChart(
+                                            points = preset.effectiveCurvePoints(32),
+                                            modifier = Modifier.fillMaxSize(),
+                                            showSpectrum = false,
+                                            showDiagonal = false,
+                                            gridAlpha = 0.2f
+                                        )
+                                    }
+                                }
+                                if (thumbnailStore != null) {
+                                    PresetThumbnail(
+                                        photo = photo,
+                                        preset = preset,
+                                        store = thumbnailStore,
+                                        modifier = Modifier.fillMaxSize(),
+                                        targetSize = 180,
+                                        placeholder = fallback
+                                    )
+                                } else {
+                                    fallback()
+                                }
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {

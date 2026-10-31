@@ -32,10 +32,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
@@ -81,6 +84,7 @@ import coil.compose.AsyncImage
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.components.AdjustmentsSheet
+import com.fujikon.app.ui.components.EditHistorySheet
 import com.fujikon.app.ui.components.ExportOptionsSheet
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.components.ToneCurveEditorSheet
@@ -106,6 +110,7 @@ fun EditorScreen(
     factory: FujiKonViewModelFactory
 ) {
     val context = LocalContext.current
+    val app = context.applicationContext as com.fujikon.app.FujiKonApp
     val viewModel: EditorViewModel = viewModel(factory = factory)
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -116,6 +121,7 @@ fun EditorScreen(
     var showExport by remember { mutableStateOf(false) }
     var showCurve by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
     var savingCurve by remember { mutableStateOf(false) }
     var savingAdjustments by remember { mutableStateOf(false) }
     var pendingOptions by remember { mutableStateOf<ExportManager.Options?>(null) }
@@ -179,6 +185,36 @@ fun EditorScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { viewModel.undo() },
+                        enabled = state.canUndo && !exporting
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = "上一步",
+                            tint = if (state.canUndo) TextPrimary else TextSecondary.copy(alpha = 0.45f)
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.redo() },
+                        enabled = state.canRedo && !exporting
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Redo,
+                            contentDescription = "下一步",
+                            tint = if (state.canRedo) TextPrimary else TextSecondary.copy(alpha = 0.45f)
+                        )
+                    }
+                    IconButton(
+                        onClick = { showHistory = true },
+                        enabled = state.historyEntries.isNotEmpty() && !exporting
+                    ) {
+                        Icon(
+                            Icons.Filled.History,
+                            contentDescription = "历史步骤",
+                            tint = if (state.historyEntries.isNotEmpty()) TextPrimary else TextSecondary.copy(alpha = 0.45f)
+                        )
+                    }
                     if (preset != null) {
                         TextButton(onClick = { showPicker = true }, enabled = !exporting) {
                             Text(
@@ -186,7 +222,7 @@ fun EditorScreen(
                                 color = Amber,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.width(96.dp)
+                                modifier = Modifier.width(76.dp)
                             )
                         }
                     }
@@ -488,7 +524,9 @@ fun EditorScreen(
                 viewModel.selectPreset(selected.id)
                 showPicker = false
             },
-            onDismiss = { showPicker = false }
+            onDismiss = { showPicker = false },
+            photo = current,
+            thumbnailStore = app.container.presetThumbnailStore
         )
     }
 
@@ -542,7 +580,9 @@ fun EditorScreen(
             initialAdjustments = state.adjustments,
             rendering = state.loading,
             saving = savingAdjustments,
-            onPreview = viewModel::setAdjustments,
+            onPreview = { adjustments, field ->
+                viewModel.setAdjustments(adjustments, field)
+            },
             onSave = { name ->
                 savingAdjustments = true
                 scope.launch {
@@ -563,6 +603,23 @@ fun EditorScreen(
                 }
             },
             onDismiss = { if (!savingAdjustments) showAdjustments = false }
+        )
+    }
+
+    if (showHistory) {
+        EditHistorySheet(
+            entries = state.historyEntries,
+            currentIndex = state.historyIndex,
+            photos = state.photos,
+            canUndo = state.canUndo,
+            canRedo = state.canRedo,
+            onSelect = { index ->
+                viewModel.jumpToHistory(index)
+                showHistory = false
+            },
+            onUndo = viewModel::undo,
+            onRedo = viewModel::redo,
+            onDismiss = { showHistory = false }
         )
     }
 

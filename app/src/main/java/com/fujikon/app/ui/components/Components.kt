@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -37,7 +38,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
+import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card as CardColor
 import com.fujikon.app.ui.theme.CardHigh
@@ -120,6 +123,8 @@ fun PresetCard(
     preset: Preset,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    photo: PhotoItem? = null,
+    thumbnailStore: PresetThumbnailStore? = null,
     onFavoriteClick: (() -> Unit)? = null
 ) {
     Card(
@@ -131,17 +136,37 @@ fun PresetCard(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(86.dp)
-                    .background(CardHigh, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .height(112.dp)
+                    .clip(RoundedCornerShape(14.dp))
             ) {
-                CurveChart(
-                    points = preset.effectiveCurvePoints(32),
-                    modifier = Modifier.fillMaxSize(),
-                    showSpectrum = false,
-                    showDiagonal = false,
-                    gridAlpha = 0.3f
-                )
+                val fallback: @Composable () -> Unit = {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(CardHigh)
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        CurveChart(
+                            points = preset.effectiveCurvePoints(32),
+                            modifier = Modifier.fillMaxSize(),
+                            showSpectrum = false,
+                            showDiagonal = false,
+                            gridAlpha = 0.3f
+                        )
+                    }
+                }
+                if (thumbnailStore != null) {
+                    PresetThumbnail(
+                        photo = photo,
+                        preset = preset,
+                        store = thumbnailStore,
+                        modifier = Modifier.fillMaxSize(),
+                        targetSize = 320,
+                        placeholder = fallback
+                    )
+                } else {
+                    fallback()
+                }
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {

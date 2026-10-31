@@ -49,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.EditAdjustments
@@ -122,11 +123,18 @@ fun AdjustmentsSheet(
     initialAdjustments: EditAdjustments,
     rendering: Boolean,
     saving: Boolean,
-    onPreview: (EditAdjustments) -> Unit,
+    onPreview: (EditAdjustments, String?) -> Unit,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        // The panel is a fixed half-screen inspector now. Swiping down must not
+        // dismiss it (and must not turn a vertical scroll into a slider change).
+        // Only the Hidden transition is blocked so the sheet can still be shown.
+        confirmValueChange = { it != SheetValue.Hidden }
+    )
+    val sheetHeight = (LocalConfiguration.current.screenHeightDp * 0.56f).dp
     var draft by remember { mutableStateOf(initialAdjustments.normalized()) }
     var expandedGroups by remember {
         mutableStateOf(AdjustmentGroups.map { it.title }.toSet())
@@ -135,16 +143,19 @@ fun AdjustmentsSheet(
     var draftName by remember { mutableStateOf("") }
     var lastPreviewAt by remember { mutableLongStateOf(0L) }
     var livePreviewPending by remember { mutableStateOf(false) }
+    var pendingField by remember { mutableStateOf<String?>(null) }
     val latestDraft by rememberUpdatedState(draft)
     val latestRendering by rememberUpdatedState(rendering)
+    val latestPendingField by rememberUpdatedState(pendingField)
 
-    fun previewNow() {
+    fun previewNow(field: String? = pendingField) {
         livePreviewPending = false
         lastPreviewAt = SystemClock.elapsedRealtime()
-        onPreview(draft)
+        onPreview(draft, field)
     }
 
-    fun previewDuringDrag() {
+    fun previewDuringDrag(field: String?) {
+        pendingField = field
         if (latestRendering) {
             livePreviewPending = true
             return
@@ -152,7 +163,7 @@ fun AdjustmentsSheet(
         val now = SystemClock.elapsedRealtime()
         if (now - lastPreviewAt < AdjustmentPreviewIntervalMs) return
         lastPreviewAt = now
-        onPreview(draft)
+        onPreview(draft, field)
     }
 
     // Publish the latest values after a render finishes so a fast drag never
@@ -161,13 +172,13 @@ fun AdjustmentsSheet(
         if (!rendering && livePreviewPending) {
             livePreviewPending = false
             lastPreviewAt = SystemClock.elapsedRealtime()
-            onPreview(latestDraft)
+            onPreview(latestDraft, latestPendingField)
         }
     }
 
-    fun updateDraft(update: (EditAdjustments) -> EditAdjustments) {
+    fun updateDraft(field: String?, update: (EditAdjustments) -> EditAdjustments) {
         draft = update(draft).normalized()
-        previewDuringDrag()
+        previewDuringDrag(field)
     }
 
     ModalBottomSheet(
@@ -183,28 +194,23 @@ fun AdjustmentsSheet(
         Column(
             Modifier
                 .fillMaxWidth()
+                .height(sheetHeight)
                 .background(
                     brush = Brush.verticalGradient(
-                        0f to InkElevated.copy(alpha = 0.06f),
-                        0.30f to InkElevated.copy(alpha = 0.18f),
-                        1f to InkElevated.copy(alpha = 0.40f)
+                        0f to InkElevated.copy(alpha = 0.10f),
+                        0.30f to InkElevated.copy(alpha = 0.28f),
+                        1f to InkElevated.copy(alpha = 0.52f)
                     ),
                     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
                 )
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
                 .navigationBarsPadding()
         ) {
-            Box(
-                Modifier
-                    .padding(top = 8.dp, bottom = 2.dp)
-                    .width(38.dp)
-                    .height(4.dp)
-                    .background(CardHigh, RoundedCornerShape(50))
-                    .align(Alignment.CenterHorizontally)
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, top = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(Modifier.weight(1f)) {
                     Text(
                         "调节",
@@ -215,7 +221,7 @@ fun AdjustmentsSheet(
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        "实时叠加在当前预设上 · 双击滑块归零",
+                        "固定半屏 · 上下滚动查看 · 双击滑块归零",
                         style = MaterialTheme.typography.bodySmall.copy(
                             shadow = Shadow(Color.Black.copy(alpha = 0.72f), blurRadius = 4f)
                         ),
@@ -242,8 +248,12 @@ fun AdjustmentsSheet(
                 }
             }
 
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
                     "原图 → 预设 → 当前调节",
                     style = MaterialTheme.typography.labelSmall,
@@ -253,7 +263,7 @@ fun AdjustmentsSheet(
                 TextButton(
                     onClick = {
                         draft = EditAdjustments.Neutral
-                        previewNow()
+                        previewNow(null)
                     },
                     enabled = !saving && !draft.isNeutral()
                 ) {
@@ -264,86 +274,97 @@ fun AdjustmentsSheet(
                 }
             }
 
-            AdjustmentGroups.forEach { group ->
-                val expanded = group.title in expandedGroups
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            expandedGroups = if (expanded) {
-                                expandedGroups - group.title
-                            } else {
-                                expandedGroups + group.title
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+            ) {
+                AdjustmentGroups.forEach { group ->
+                    val expanded = group.title in expandedGroups
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                expandedGroups = if (expanded) {
+                                    expandedGroups - group.title
+                                } else {
+                                    expandedGroups + group.title
+                                }
+                            }
+                            .padding(top = 8.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            group.title,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                shadow = Shadow(Color.Black.copy(alpha = 0.7f), blurRadius = 4f)
+                            ),
+                            color = TextPrimary
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (expanded) "收起" else "展开",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary
+                        )
+                        Icon(
+                            imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = null,
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    if (expanded) {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    CardHigh.copy(alpha = 0.16f),
+                                    RoundedCornerShape(14.dp)
+                                )
+                                .border(
+                                    1.dp,
+                                    Color.White.copy(alpha = 0.07f),
+                                    RoundedCornerShape(14.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            group.specs.forEach { spec ->
+                                AdjustmentSlider(
+                                    label = spec.label,
+                                    value = spec.get(draft),
+                                    valueRange = spec.range,
+                                    step = spec.step,
+                                    onValueChange = { value ->
+                                        updateDraft(spec.label) { spec.set(it, value) }
+                                    },
+                                    onValueChangeFinished = { previewNow(spec.label) },
+                                    onReset = {
+                                        draft = spec.set(draft, 0f).normalized()
+                                        previewNow(spec.label)
+                                    },
+                                    enabled = !saving
+                                )
                             }
                         }
-                        .padding(top = 8.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        group.title,
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            shadow = Shadow(Color.Black.copy(alpha = 0.7f), blurRadius = 4f)
-                        ),
-                        color = TextPrimary
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        if (expanded) "收起" else "展开",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary
-                    )
-                    Icon(
-                        imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        tint = TextSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                if (expanded) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(
-                                CardHigh.copy(alpha = 0.16f),
-                                RoundedCornerShape(14.dp)
-                            )
-                            .border(
-                                1.dp,
-                                Color.White.copy(alpha = 0.07f),
-                                RoundedCornerShape(14.dp)
-                            )
-                            .padding(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        group.specs.forEach { spec ->
-                            AdjustmentSlider(
-                                label = spec.label,
-                                value = spec.get(draft),
-                                valueRange = spec.range,
-                                step = spec.step,
-                                onValueChange = { value ->
-                                    updateDraft { spec.set(it, value) }
-                                },
-                                onValueChangeFinished = { previewNow() },
-                                onReset = {
-                                    draft = spec.set(draft, 0f).normalized()
-                                    previewNow()
-                                },
-                                enabled = !saving
-                            )
-                        }
                     }
+                    Spacer(Modifier.height(2.dp))
                 }
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(8.dp))
             }
 
-            Spacer(Modifier.height(12.dp))
             Button(
                 onClick = {
                     draftName = "${presetName.take(30)} 调节"
                     showSaveDialog = true
                 },
                 enabled = !saving,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
+                    .height(48.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
             ) {
@@ -359,7 +380,6 @@ fun AdjustmentsSheet(
                     Text("保存为新预设", fontWeight = FontWeight.Bold)
                 }
             }
-            Spacer(Modifier.height(12.dp))
         }
     }
 
@@ -399,7 +419,7 @@ fun AdjustmentsSheet(
                             showSaveDialog = false
                             // Make sure the repository snapshots the newest
                             // slider value even if a throttled preview is pending.
-                            onPreview(draft)
+                            onPreview(draft, null)
                             onSave(name)
                         }
                     },

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,13 +24,18 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -37,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -87,9 +94,11 @@ fun GalleryScreen(
     val albumFilter by viewModel.albumFilter.collectAsStateWithLifecycle()
     val presets by app.container.presetRepository.presets.collectAsStateWithLifecycle()
     val presetId by app.container.selectionStore.presetId.collectAsStateWithLifecycle()
+    val currentPhoto by app.container.selectionStore.currentPhoto.collectAsStateWithLifecycle()
     val preset = presets.firstOrNull { it.id == presetId }
 
     var showPicker by remember { mutableStateOf(false) }
+    var albumMenuOpen by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -108,6 +117,9 @@ fun GalleryScreen(
         selectedIds.toList().mapIndexed { index, id -> id to index + 1 }.toMap()
     }
     val allVisibleSelected = visible.isNotEmpty() && visible.all { it.id in selectedIds }
+    // Prefer the photo open in the editor, then the first selected photo, then
+    // the built-in sample used by PresetThumbnail.
+    val previewPhoto = currentPhoto ?: state.photos.firstOrNull { it.id in selectedIds }
 
     Scaffold(
         containerColor = Ink,
@@ -188,6 +200,9 @@ fun GalleryScreen(
                                 showPicker = true
                             } else {
                                 app.container.selectionStore.setPhotos(viewModel.chosenPhotos())
+                                app.container.selectionStore.setCurrentPhoto(
+                                    viewModel.chosenPhotos().firstOrNull()
+                                )
                                 navController.navigate(Routes.EDITOR)
                             }
                         },
@@ -254,32 +269,90 @@ fun GalleryScreen(
                             trackColor = CardHigh
                         )
                     }
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    val selectedAlbum = state.albums.firstOrNull { it.id == albumFilter }
+                    val albumLabel = selectedAlbum
+                        ?.let { "${it.name} (${it.count})" }
+                        ?: "全部照片 (${state.photos.size})"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        item {
-                            FilterChip(
-                                selected = albumFilter == null,
-                                onClick = { viewModel.setAlbum(null) },
-                                label = { Text("全部 ${state.photos.size}") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Amber,
-                                    selectedLabelColor = Ink
+                        Box(Modifier.weight(1f)) {
+                            OutlinedButton(
+                                onClick = { albumMenuOpen = true },
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    Icons.Filled.PhotoLibrary,
+                                    contentDescription = null,
+                                    tint = Amber,
+                                    modifier = Modifier.size(16.dp)
                                 )
-                            )
-                        }
-                        items(state.albums, key = { it.id }) { album ->
-                            FilterChip(
-                                selected = albumFilter == album.id,
-                                onClick = { viewModel.setAlbum(album.id) },
-                                label = { Text("${album.name} ${album.count}", maxLines = 1) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Amber,
-                                    selectedLabelColor = Ink
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "相册：$albumLabel",
+                                    color = TextPrimary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
-                            )
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = "选择相册",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = albumMenuOpen,
+                                onDismissRequest = { albumMenuOpen = false },
+                                modifier = Modifier.heightIn(max = 420.dp)
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("全部照片 (${state.photos.size})") },
+                                    onClick = {
+                                        viewModel.setAlbum(null)
+                                        albumMenuOpen = false
+                                    },
+                                    trailingIcon = {
+                                        if (albumFilter == null) {
+                                            Icon(Icons.Filled.Check, contentDescription = null, tint = Amber)
+                                        }
+                                    }
+                                )
+                                state.albums.forEach { album ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "${album.name} (${album.count})",
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        },
+                                        onClick = {
+                                            viewModel.setAlbum(album.id)
+                                            albumMenuOpen = false
+                                        },
+                                        trailingIcon = {
+                                            if (albumFilter == album.id) {
+                                                Icon(Icons.Filled.Check, contentDescription = null, tint = Amber)
+                                            }
+                                        }
+                                    )
+                                }
+                            }
                         }
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "${visible.size} 张",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary
+                        )
                     }
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
@@ -310,7 +383,9 @@ fun GalleryScreen(
                 app.container.selectionStore.setPreset(selected.id)
                 showPicker = false
             },
-            onDismiss = { showPicker = false }
+            onDismiss = { showPicker = false },
+            photo = previewPhoto,
+            thumbnailStore = app.container.presetThumbnailStore
         )
     }
 }

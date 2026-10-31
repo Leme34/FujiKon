@@ -9,6 +9,7 @@ import com.fujikon.app.data.SelectionStore
 import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
+import com.fujikon.app.render.PresetThumbnailStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,6 +25,7 @@ class AppContainer(context: Context) {
     val selectionStore = SelectionStore()
     val settings = AppSettings(appContext)
     val imageRenderer = ImageRenderer()
+    val presetThumbnailStore = PresetThumbnailStore(appContext, imageRenderer)
     val exportManager = ExportManager(appContext, imageRenderer, settings)
     val nikonPcService = NikonPcService(cacheDir = File(appContext.cacheDir, "nikonpc"))
 
