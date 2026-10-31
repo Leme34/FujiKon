@@ -65,7 +65,7 @@ fun PresetPickerSheet(
     onSelect: (Preset) -> Unit,
     onDismiss: () -> Unit,
     photo: PhotoItem? = null,
-    thumbnailStore: PresetThumbnailStore? = null
+    thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -148,7 +148,7 @@ fun PresetPickerSheet(
                                         store = thumbnailStore,
                                         modifier = Modifier.fillMaxSize(),
                                         targetSize = 180,
-                                        placeholder = fallback
+                                        placeholder = if (photo != null) { { Box(Modifier.fillMaxSize()) } } else fallback
                                     )
                                 } else {
                                     fallback()

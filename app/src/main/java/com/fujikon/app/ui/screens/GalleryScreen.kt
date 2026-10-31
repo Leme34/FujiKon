@@ -55,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -99,10 +100,27 @@ fun GalleryScreen(
 
     var showPicker by remember { mutableStateOf(false) }
     var albumMenuOpen by remember { mutableStateOf(false) }
+    var showingPhotoPicker by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { viewModel.refresh() }
+    val scope = rememberCoroutineScope()
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        viewModel.refresh()
+        showingPhotoPicker = false
+        showPicker = true
+    }
+
+    LaunchedEffect(showingPhotoPicker) {
+        if (showingPhotoPicker) {
+            photoPickerLauncher.launch("image/*")
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (!app.container.photoRepository.hasReadPermission()) {
@@ -195,8 +213,9 @@ fun GalleryScreen(
                     }
                     Button(
                         onClick = {
-                            if (selectedIds.isEmpty()) return@Button
-                            if (preset == null) {
+                            if (selectedIds.isEmpty()) {
+                                showingPhotoPicker = true
+                            } else if (preset == null) {
                                 showPicker = true
                             } else {
                                 app.container.selectionStore.setPhotos(viewModel.chosenPhotos())
@@ -206,7 +225,7 @@ fun GalleryScreen(
                                 navController.navigate(Routes.EDITOR)
                             }
                         },
-                        enabled = selectedIds.isNotEmpty(),
+                        enabled = true,
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
                     ) {

@@ -125,7 +125,8 @@ fun PresetsScreen(
     fun openImport() = importLauncher.launch(arrayOf("*/*"))
 
     fun startFlow() {
-        if (presets.isEmpty()) openImport() else showPicker = true
+        // 先去相册选照片，再选预设
+        navController.navigate(Routes.GALLERY)
     }
 
     Scaffold(
@@ -223,8 +224,6 @@ fun PresetsScreen(
                         PresetCard(
                             preset = preset,
                             modifier = Modifier.fillMaxWidth(),
-                            photo = currentPhoto,
-                            thumbnailStore = app.container.presetThumbnailStore,
                             onClick = { navController.navigate(Routes.presetDetail(preset.id)) }
                         )
                     }

@@ -40,7 +40,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
-import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card as CardColor
 import com.fujikon.app.ui.theme.CardHigh
@@ -123,8 +122,6 @@ fun PresetCard(
     preset: Preset,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    photo: PhotoItem? = null,
-    thumbnailStore: PresetThumbnailStore? = null,
     onFavoriteClick: (() -> Unit)? = null
 ) {
     Card(
@@ -139,34 +136,14 @@ fun PresetCard(
                     .height(112.dp)
                     .clip(RoundedCornerShape(14.dp))
             ) {
-                val fallback: @Composable () -> Unit = {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(CardHigh)
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                    ) {
-                        CurveChart(
-                            points = preset.effectiveCurvePoints(32),
-                            modifier = Modifier.fillMaxSize(),
-                            showSpectrum = false,
-                            showDiagonal = false,
-                            gridAlpha = 0.3f
-                        )
-                    }
-                }
-                if (thumbnailStore != null) {
-                    PresetThumbnail(
-                        photo = photo,
-                        preset = preset,
-                        store = thumbnailStore,
-                        modifier = Modifier.fillMaxSize(),
-                        targetSize = 320,
-                        placeholder = fallback
-                    )
-                } else {
-                    fallback()
-                }
+                // 仅显示曲线图，不再渲染缩略图
+                CurveChart(
+                    points = preset.effectiveCurvePoints(32),
+                    modifier = Modifier.fillMaxSize(),
+                    showSpectrum = false,
+                    showDiagonal = false,
+                    gridAlpha = 0.3f
+                )
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
