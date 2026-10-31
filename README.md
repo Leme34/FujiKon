@@ -20,6 +20,71 @@ FujiKon 是一个 Android 端的尼康 Picture Control 预设工具：导入 `.N
 - 导出到 `Pictures/<相册名>`，原图尺寸（受设备内存限制时自动降到可处理的最大尺寸）
 - 深色界面，适配 Android 13/14/15 的照片权限（含“仅选择部分照片”）
 
+
+---
+
+## App 功能截图（v1.4.0）
+
+### 完整流程图文版
+
+**1 · 首页**
+- 点击“从 nikonpc 下载”进入在线预设列表  
+  <img src="docs/screenshots/step1_home.jpg" width="30%">
+
+
+---
+
+**2 · 在线预设列表**
+- nikonpc.com 公开预设列表，可选择单个或全部导入  
+  <img src="docs/screenshots/step2_nikonpc.jpg" width="30%">
+
+
+---
+
+**3 · 预设列表**
+- 导入完成后显示在首页预设列表，曲线图展示 
+  <div style="display: flex; justify-content: center; gap: 10px;">
+    <img src="docs/screenshots/step3_preset_list1.jpg" width="25%">
+    <img src="docs/screenshots/step3_preset_list2.jpg" width="25%">
+  </div>
+
+
+---
+
+**4 · 相册选照片，选预设套用**
+- 从系统相册选择多张照片（含相册下拉 + 批量勾选），选择完成后底部弹窗展示选定照片的预设缩略图预览  
+  <img src="docs/screenshots/step4_gallery.jpg" width="30%">
+
+
+---
+
+**5 · 套用预设**
+- 预设套用后的实时预览界面，可切换预设  
+  <div style="display: flex; justify-content: center; gap: 10px;">
+    <img src="docs/screenshots/step5_after_apply1.jpg" width="25%">
+    <img src="docs/screenshots/step5_after_apply2.jpg" width="25%">
+  </div>
+
+---
+
+**6 · 手动调整参数**
+- 手动调节色彩参数面板，光线/颜色/细节分组，双击归零，可保存为新预设  
+  <img src="docs/screenshots/step6_adjustments.jpg" width="30%">
+
+
+---
+
+**7 · RGB 曲线编辑**
+- 半透明曲线编辑器，拖动控制点实时刷新预览  
+  <img src="docs/screenshots/step7_curve.jpg" width="30%">
+
+
+---
+
+**8 · 导出**
+- 批量导出JPG/PNG格式，保留EXIF  
+  <img src="docs/screenshots/step8_export.jpg" width="30%">
+
 ## 构建
 
 环境：
@@ -93,10 +158,10 @@ adb install -r app/build/outputs/apk/debug/FujiKon-1.3.0.apk
 "NCP\0" [id:u32][size:u32][body...] ... [0x00000000]
 ```
 
-| 格式 | 识别方式 | 主要记录 |
-| --- | --- | --- |
-| NCP 0100 | 文件头 `NCP\0`，版本 `01xx` | `1` 设置、`2` 578 字节曲线体 |
-| NP2 0200 | 文件头 `NP2\0` 或版本 `02xx` | 尽力按 NCP 记录 `1` 解析 |
+| 格式            | 识别方式                          | 主要记录                                                                                                                                                         |
+| ------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| NCP 0100      | 文件头 `NCP\0`，版本 `01xx`         | `1` 设置、`2` 578 字节曲线体                                                                                                                                         |
+| NP2 0200      | 文件头 `NP2\0` 或版本 `02xx`        | 尽力按 NCP 记录 `1` 解析                                                                                                                                            |
 | NP3 0300/0310 | 文件头 `NCP\0`/`NP3\0`，版本 `03xx` | `0x0100` 版本、`0x0200` 名称、`0x0300` 基准、`0x0600` 锐化、`0x0700` 清晰度、`0x1600` 中间锐度、`0x1900`~`0x1E00` 影调/色彩、`0x1F00` Color Blender、`0x2000` Color Grading、可选记录 `2` 曲线 |
 
 曲线体：`body[8]` 为控制点数量，`body[66]` 起为 256 个 big-endian `u16` LUT（0..32767）。完全水平的 LUT 视为“无曲线”。
