@@ -51,7 +51,9 @@ fun PresetThumbnail(
             val rendered = withContext(Dispatchers.Default) {
                 store.thumbnail(photo, preset, targetSize)
             }
-            if (rendered != null) {
+            // Reject black tiles: a failed off-screen render can produce an
+            // all-zero bitmap that would read as a black thumbnail.
+            if (rendered != null && !isBitmapBlack(rendered)) {
                 bitmap = rendered
                 return@LaunchedEffect
             }
@@ -59,7 +61,7 @@ fun PresetThumbnail(
         }
     }
 
-    val image = bitmap
+    val image = bitmap?.takeIf { !isBitmapBlack(it) }
     if (image != null) {
         Image(
             bitmap = image.asImageBitmap(),
@@ -72,4 +74,35 @@ fun PresetThumbnail(
             Box(Modifier.fillMaxSize()) { placeholder() }
         }
     }
+}
+
+/**
+ * Black-tile guard: an off-screen thumbnail render that fails can return an
+ * all-zero bitmap. Sampling 9 points across the tile catches it cheaply
+ * without a full-pixel scan; each sampled pixel must exceed [threshold]
+ * on average, or the tile is treated as failed and the placeholder is used.
+ */
+private fun isBitmapBlack(
+    bmp: Bitmap,
+    sampleCount: Int = 9,
+    threshold: Int = 30,
+): Boolean {
+    if (bmp.width <= 0 || bmp.height <= 0) return true
+    val rows = sampleCount.coerceAtLeast(1)
+    val cols = (sampleCount - 1) / rows + 1
+    var sum = 0L
+    for (r in 0 until rows) {
+        val y = (r * bmp.height) / rows
+        for (c in 0 until cols) {
+            val x = (c * bmp.width) / cols
+            val pixel = bmp.getPixel(
+                x.coerceIn(0, bmp.width - 1),
+                y.coerceIn(0, bmp.height - 1),
+            )
+            val luminance = ((pixel and 0xFF) + ((pixel shr 8) and 0xFF) + ((pixel shr 16) and 0xFF)) / 3
+            sum += luminance
+        }
+    }
+    val avg = sum / (rows.toLong() * cols)
+    return avg < threshold
 }
