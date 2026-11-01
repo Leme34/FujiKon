@@ -148,7 +148,7 @@ fun PresetPickerSheet(
                                         store = thumbnailStore,
                                         modifier = Modifier.fillMaxSize(),
                                         targetSize = 180,
-                                        placeholder = if (photo != null) { { Box(Modifier.fillMaxSize()) } } else fallback
+                                        placeholder = fallback
                                     )
                                 } else {
                                     fallback()

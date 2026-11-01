@@ -19,6 +19,7 @@ import com.fujikon.app.data.Preset
 import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.CardHigh
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -42,10 +43,19 @@ fun PresetThumbnail(
     }
 
     LaunchedEffect(signature, sourceKey, targetSize) {
-        if (bitmap == null) {
-            bitmap = withContext(Dispatchers.Default) {
+        if (bitmap != null) return@LaunchedEffect
+        // A render can be cancelled while the sheet is scrolling, or fail once
+        // while the photo is still being decoded. Retry a few times before
+        // settling on the curve placeholder.
+        repeat(3) { attempt ->
+            val rendered = withContext(Dispatchers.Default) {
                 store.thumbnail(photo, preset, targetSize)
             }
+            if (rendered != null) {
+                bitmap = rendered
+                return@LaunchedEffect
+            }
+            delay(140L * (attempt + 1))
         }
     }
 

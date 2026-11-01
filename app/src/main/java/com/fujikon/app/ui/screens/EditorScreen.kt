@@ -86,6 +86,7 @@ import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.components.AdjustmentsSheet
 import com.fujikon.app.ui.components.EditHistorySheet
 import com.fujikon.app.ui.components.ExportOptionsSheet
+import com.fujikon.app.ui.components.HistogramCard
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.components.ToneCurveEditorSheet
 import com.fujikon.app.ui.components.ZoomableImage
@@ -392,28 +393,18 @@ fun EditorScreen(
                     }
                 }
 
+                // Histogram overlay: floating at top of preview image area,
+                // full-width, transparent background matching adjustments panel.
                 if (preset != null && rendered != null) {
-                    Surface(
+                    HistogramCard(
+                        bitmap = rendered,
+                        currentAdjustments = state.adjustments,
+                        onApplyAdjustments = { viewModel.setAdjustments(it) },
                         modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(12.dp),
-                        color = Color.Black.copy(alpha = 0.55f),
-                        shape = RoundedCornerShape(50)
-                    ) {
-                        val badges = buildList {
-                            if (state.hasToneCurve) add("曲线")
-                            if (state.hasAdjustments) add("调节")
-                        }
-                        Text(
-                            if (badges.isEmpty()) preset.name
-                            else "${preset.name} · ${badges.joinToString(" · ")}",
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth(0.92f)
+                            .padding(top = 4.dp)
+                    )
                 }
 
                 if (comparing) {

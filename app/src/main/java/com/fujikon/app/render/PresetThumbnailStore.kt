@@ -40,6 +40,7 @@ class PresetThumbnailStore(
 
     private val renderSlots = Semaphore(2)
     private val sourceMutex = Mutex()
+    private val decodeMutex = Mutex()
     private var sourceKey: String? = null
     private var sourceBitmap: Bitmap? = null
 
@@ -52,20 +53,32 @@ class PresetThumbnailStore(
         val key = cacheKey(photo, preset, size)
         cache.get(key)?.let { return it }
 
-        val source = sourceFor(photo, size) ?: return null
-        return renderSlots.withPermit {
-            cache.get(key)?.let { return@withPermit it }
-            try {
-                val rendered = renderer.render(source, preset, forExport = false)
-                val scaled = BitmapLoader.scaleForPreview(rendered, size)
-                if (scaled !== rendered) rendered.recycle()
-                cache.put(key, scaled)
-                scaled
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                null
-            }
+        val source = sourceFor(photo, size) ?: run {
+            // Never leave the picker with an empty tile: fall back to the
+            // built-in sample scene when the gallery photo cannot be decoded.
+            val side = max(480, size * 2)
+            withContext(Dispatchers.Default) { SamplePhoto.create(side, side) }
+        }
+        return renderInto(source, preset, size, key)
+    }
+
+    private suspend fun renderInto(
+        source: Bitmap,
+        preset: Preset,
+        size: Int,
+        key: String
+    ): Bitmap? = renderSlots.withPermit {
+        cache.get(key)?.let { return@withPermit it }
+        try {
+            val rendered = renderer.render(source, preset, forExport = false)
+            val scaled = BitmapLoader.scaleForPreview(rendered, size)
+            if (scaled !== rendered) rendered.recycle()
+            cache.put(key, scaled)
+            scaled
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            null
         }
     }
 
@@ -114,26 +127,40 @@ class PresetThumbnailStore(
             if (sourceKey == key && cached != null && !cached.isRecycled) return cached
         }
 
-        val decoded = withContext(Dispatchers.IO) {
-            if (photo == null) {
-                SamplePhoto.create()
-            } else {
-                BitmapLoader.decodePreview(
-                    appContext,
-                    photo.uri,
-                    max(480, targetSize * 2)
-                )
+        // Single-flight decode: a preset list asks for the same photo dozens of
+        // times at once. Decoding once avoids memory spikes that used to make
+        // BitmapFactory return null and leave black tiles in the picker.
+        return decodeMutex.withLock {
+            sourceMutex.withLock {
+                val cached = sourceBitmap
+                if (sourceKey == key && cached != null && !cached.isRecycled) return cached
             }
-        } ?: return null
 
-        sourceMutex.withLock {
-            if (sourceKey == key) {
-                sourceBitmap?.let { if (it !== decoded && !it.isRecycled) it.recycle() }
+            val decoded = withContext(Dispatchers.IO) {
+                if (photo == null) {
+                    SamplePhoto.create()
+                } else {
+                    BitmapLoader.decodePreview(
+                        appContext,
+                        photo.uri,
+                        max(480, targetSize * 2)
+                    )
+                }
             }
-            sourceKey = key
-            sourceBitmap = decoded
+
+            if (decoded == null) {
+                null
+            } else {
+                sourceMutex.withLock {
+                    if (sourceKey == key) {
+                        sourceBitmap?.let { if (it !== decoded && !it.isRecycled) it.recycle() }
+                    }
+                    sourceKey = key
+                    sourceBitmap = decoded
+                }
+                decoded
+            }
         }
-        return decoded
     }
 }
 
