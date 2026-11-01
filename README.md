@@ -17,6 +17,7 @@ FujiKon 是一个 Android 端的尼康 Picture Control 预设工具：导入 `.N
 - 套用预设后可调整 Lightroom 风格 RGB 主通道色调曲线：点击空白加点、拖动控制点、双击删除；近乎透明的面板让照片保持可见，拖动过程中持续刷新预览
 - 将当前调节、曲线与预设参数保存为预设列表中的新副本，不修改原始 NCP/NP3 文件
 - 批量导出：JPEG（最高画质、保留 EXIF）或 PNG（无损、不写 EXIF）
+- 显示RGB直方图，并根据当前RGB直方图分布情况，动态显示修图提示，以及增加一键自动AI修图按钮
 - 导出到 `Pictures/<相册名>`，原图尺寸（受设备内存限制时自动降到可处理的最大尺寸）
 - 深色界面，适配 Android 13/14/15 的照片权限（含“仅选择部分照片”）
 
@@ -84,6 +85,14 @@ FujiKon 是一个 Android 端的尼康 Picture Control 预设工具：导入 `.N
 **8 · 导出**
 - 批量导出JPG/PNG格式，保留EXIF  
   <img src="docs/screenshots/step8_export.jpg" width="30%">
+
+
+---
+
+**9 · RGB直方图，修图提示，一键修图**
+- 显示RGB直方图，并根据当前RGB直方图分布情况，动态显示修图提示，以及增加一键自动AI修图按钮  
+  <img src="docs/screenshots/step9_RGB_Histogram1.jpg" width="30%">
+  <img src="docs/screenshots/step9_RGB_Histogram2.jpg" width="30%">
 
 ## 构建
 

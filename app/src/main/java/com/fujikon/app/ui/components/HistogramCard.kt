@@ -304,24 +304,35 @@ private fun autoFixSuggestion(
     var contrast = current.contrast
     var vibrance = current.vibrance
 
+    // Lightroom-style Auto Tone: gentle, preserve detail.
+    val mean = data.meanLuma
     when {
-        data.meanLuma < 0.32f -> exposure += 0.60f
-        data.meanLuma > 0.72f -> exposure -= 0.55f
-        data.meanLuma < 0.40f -> exposure += 0.20f
+        mean < 0.28f -> exposure += 0.30f
+        mean > 0.75f -> exposure -= 0.25f
+        mean < 0.38f -> exposure += 0.15f
+        mean > 0.65f -> exposure -= 0.10f
     }
-    if (data.highlightClip > 0.03f) highlights -= 34f
-    if (data.highlightClip > 0.07f) highlights -= 22f
-    if (data.highlightClip > 0.03f) whites -= 16f
-    if (data.shadowClip > 0.04f) shadows += 32f
-    if (data.shadowClip > 0.09f) shadows += 22f
-    if (data.shadowClip > 0.05f) blacks += 10f
 
+    // Recover highlights only when genuinely clipped
+    if (data.highlightClip > 0.05f) highlights -= 12f
+    else if (data.highlightClip > 0.02f) highlights -= 6f
+    if (data.highlightClip > 0.04f) whites -= 8f
+
+    // Lift shadows gently; avoid crushed blacks becoming grey
+    if (data.shadowClip > 0.08f) shadows += 14f
+    else if (data.shadowClip > 0.04f) shadows += 8f
+    if (data.shadowClip > 0.06f) blacks += 6f
+
+    // Contrast: widen narrow distributions, tame overly wide ones
     when {
-        data.spread < 0.42f -> contrast += 26f
-        data.spread < 0.52f -> contrast += 14f
-        data.spread > 0.92f -> contrast -= 12f
+        data.spread < 0.35f -> contrast += 10f
+        data.spread < 0.45f -> contrast += 6f
+        data.spread > 0.88f -> contrast -= 8f
     }
-    if (data.saturation < 0.18f) vibrance += 16f
+
+    // Saturation: modest boost only when clearly muted
+    if (data.saturation < 0.12f) vibrance += 8f
+    else if (data.saturation < 0.18f) vibrance += 4f
 
     return EditAdjustments(
         temperature = current.temperature,
