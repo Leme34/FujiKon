@@ -54,6 +54,8 @@ data class Preset(
 ) {
     val hasCurve: Boolean get() = curve != null && curve.size >= 256
 
+    val isNone: Boolean get() = id == NONE_ID
+
     val hasToneCurve: Boolean get() = toneCurve != null && !toneCurve.isLinear()
 
     val hasAdjustments: Boolean get() = !adjustments.isNeutral()
@@ -135,6 +137,46 @@ data class Preset(
     }
 
     companion object {
+        const val NONE_ID = "__none__"
+
+        /** Picker-only sentinel that leaves the source photo untouched. */
+        fun none(): Preset = Preset(
+            id = NONE_ID,
+            name = "无",
+            format = "NONE",
+            version = "",
+            sourceName = "原图",
+            fileName = "",
+            fileSize = 0,
+            baseProfile = 0,
+            baseProfileName = "原图",
+            curve = null,
+            toneCurve = null,
+            adjustments = EditAdjustments.Neutral,
+            sharpening = 0f,
+            clarity = 0f,
+            midRangeSharpening = 0f,
+            contrast = 0,
+            brightness = 0,
+            saturation = 0,
+            hue = 0,
+            highlights = 0,
+            shadows = 0,
+            whites = 0,
+            blacks = 0,
+            filter = 0,
+            toning = 0,
+            toningStrength = 0,
+            colorBlender = emptyList(),
+            colorGrading = ColorGrading(),
+            description = null,
+            note = "",
+            favorite = false,
+            importedAt = 0L,
+            isSample = false,
+            contentHash = ""
+        )
+
         fun from(control: PictureControl, id: String, fileName: String, fileSize: Int, isSample: Boolean, importedAt: Long = System.currentTimeMillis(), contentHash: String = "", sourceName: String = fileName): Preset =
             Preset(
                 id = id,

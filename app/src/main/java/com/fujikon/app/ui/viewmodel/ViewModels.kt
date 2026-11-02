@@ -513,7 +513,10 @@ class EditorViewModel(
         val historyIndex: Int = -1
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
-        val selectedPreset: Preset? get() = presets.firstOrNull { it.id == presetId }
+        val selectedPreset: Preset? get() = when (presetId) {
+            Preset.NONE_ID -> Preset.none()
+            else -> presets.firstOrNull { it.id == presetId }
+        }
         val currentPreset: Preset? get() = selectedPreset?.let { base ->
             base.copy(
                 toneCurve = toneCurveOverride ?: base.toneCurve,
@@ -524,6 +527,7 @@ class EditorViewModel(
             get() = toneCurveOverride ?: selectedPreset?.toneCurve ?: ToneCurve.linear()
         val hasToneCurve: Boolean get() = !effectiveToneCurve.isLinear()
         val hasAdjustments: Boolean get() = !adjustments.isNeutral()
+        val hasCrop: Boolean get() = !adjustments.crop.isFull()
         val canUndo: Boolean get() = historyIndex > 0
         val canRedo: Boolean get() = historyIndex in 0 until historyEntries.lastIndex
         val currentHistoryLabel: String? get() = historyEntries.getOrNull(historyIndex)?.label
@@ -548,8 +552,17 @@ class EditorViewModel(
         viewModelScope.launch {
             presetRepository.load()
             val loaded = presetRepository.presets.value
-            val selectedId = selectionStore.presetId.value ?: loaded.firstOrNull()?.id
-            val selected = loaded.firstOrNull { it.id == selectedId }
+            val requestedId = selectionStore.presetId.value
+            val selectedId = when {
+                requestedId == Preset.NONE_ID -> Preset.NONE_ID
+                requestedId != null && loaded.any { it.id == requestedId } -> requestedId
+                else -> loaded.firstOrNull()?.id
+            }
+            val selected = if (selectedId == Preset.NONE_ID) {
+                Preset.none()
+            } else {
+                loaded.firstOrNull { it.id == selectedId }
+            }
             _state.update {
                 it.copy(
                     photos = selectionStore.photos.value,
@@ -569,9 +582,14 @@ class EditorViewModel(
         viewModelScope.launch {
             presetRepository.presets.collect { list ->
                 _state.update { current ->
-                    val stillThere = list.any { it.id == current.presetId }
+                    val stillThere = current.presetId == Preset.NONE_ID ||
+                        list.any { it.id == current.presetId }
                     val nextId = if (stillThere) current.presetId else list.firstOrNull()?.id
-                    val nextPreset = list.firstOrNull { it.id == nextId }
+                    val nextPreset = if (nextId == Preset.NONE_ID) {
+                        Preset.none()
+                    } else {
+                        list.firstOrNull { it.id == nextId }
+                    }
                     current.copy(
                         presets = list,
                         presetId = nextId,
@@ -630,7 +648,8 @@ class EditorViewModel(
         val photoIndex = _state.value.photos.indexOfFirst { it.id == snapshot.photoId }
         if (photoIndex < 0) return false
 
-        val presetStillExists = _state.value.presets.any { it.id == snapshot.presetId }
+        val presetStillExists = snapshot.presetId == Preset.NONE_ID ||
+            _state.value.presets.any { it.id == snapshot.presetId }
         _state.update { current ->
             current.copy(
                 index = photoIndex,
@@ -662,7 +681,11 @@ class EditorViewModel(
 
     fun selectPreset(id: String) {
         if (_state.value.presetId == id) return
-        val preset = _state.value.presets.firstOrNull { it.id == id }
+        val preset = if (id == Preset.NONE_ID) {
+            Preset.none()
+        } else {
+            _state.value.presets.firstOrNull { it.id == id }
+        }
         _state.update {
             it.copy(
                 presetId = id,

@@ -334,18 +334,13 @@ private fun autoFixSuggestion(
     if (data.saturation < 0.12f) vibrance += 8f
     else if (data.saturation < 0.18f) vibrance += 4f
 
-    return EditAdjustments(
-        temperature = current.temperature,
-        tint = current.tint,
-        vibrance = vibrance,
+    return current.copy(
         exposure = exposure,
         contrast = contrast,
         highlights = highlights,
         shadows = shadows,
         whites = whites,
         blacks = blacks,
-        texture = current.texture,
-        clarity = current.clarity,
-        dehaze = current.dehaze
+        vibrance = vibrance
     ).normalized()
 }

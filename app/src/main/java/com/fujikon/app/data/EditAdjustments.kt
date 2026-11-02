@@ -22,7 +22,15 @@ data class EditAdjustments(
     val blacks: Float = 0f,
     val texture: Float = 0f,
     val clarity: Float = 0f,
-    val dehaze: Float = 0f
+    val dehaze: Float = 0f,
+    /** Lightroom-style eight-band HSL colour mixer. */
+    val hsl: HslAdjustments = HslAdjustments.Neutral,
+    /** Non-destructive crop framing. */
+    val crop: EditCrop = EditCrop.Full,
+    /** Film-inspired creative look id. Use [CreativeFilter.NONE.id] for no look. */
+    val creativeFilter: String = CreativeFilter.NONE.id,
+    /** 0..100 blend for [creativeFilter]. */
+    val filterStrength: Float = 100f
 ) {
     fun normalized(): EditAdjustments = copy(
         temperature = temperature.coerceIn(-TONE_RANGE, TONE_RANGE),
@@ -36,7 +44,11 @@ data class EditAdjustments(
         blacks = blacks.coerceIn(-TONE_RANGE, TONE_RANGE),
         texture = texture.coerceIn(-TONE_RANGE, TONE_RANGE),
         clarity = clarity.coerceIn(-TONE_RANGE, TONE_RANGE),
-        dehaze = dehaze.coerceIn(-TONE_RANGE, TONE_RANGE)
+        dehaze = dehaze.coerceIn(-TONE_RANGE, TONE_RANGE),
+        hsl = hsl.normalized(),
+        crop = crop.normalized(),
+        creativeFilter = CreativeFilter.fromId(creativeFilter).id,
+        filterStrength = filterStrength.coerceIn(0f, 100f)
     )
 
     fun isNeutral(tolerance: Float = 0.005f): Boolean =
@@ -51,7 +63,10 @@ data class EditAdjustments(
             abs(blacks) <= tolerance &&
             abs(texture) <= tolerance &&
             abs(clarity) <= tolerance &&
-            abs(dehaze) <= tolerance
+            abs(dehaze) <= tolerance &&
+            hsl.isNeutral(tolerance) &&
+            crop.isFull(tolerance) &&
+            (creativeFilter == CreativeFilter.NONE.id || filterStrength <= tolerance)
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("temperature", temperature.toDouble())
@@ -66,6 +81,10 @@ data class EditAdjustments(
         put("texture", texture.toDouble())
         put("clarity", clarity.toDouble())
         put("dehaze", dehaze.toDouble())
+        put("hsl", hsl.toJson())
+        put("crop", crop.toJson())
+        put("creativeFilter", creativeFilter)
+        put("filterStrength", filterStrength.toDouble())
     }
 
     companion object {
@@ -88,7 +107,11 @@ data class EditAdjustments(
                 blacks = json.optDouble("blacks", 0.0).toFloat(),
                 texture = json.optDouble("texture", 0.0).toFloat(),
                 clarity = json.optDouble("clarity", 0.0).toFloat(),
-                dehaze = json.optDouble("dehaze", 0.0).toFloat()
+                dehaze = json.optDouble("dehaze", 0.0).toFloat(),
+                hsl = HslAdjustments.fromJson(json.optJSONObject("hsl")),
+                crop = EditCrop.fromJson(json.optJSONObject("crop")),
+                creativeFilter = json.optString("creativeFilter", CreativeFilter.NONE.id),
+                filterStrength = json.optDouble("filterStrength", 100.0).toFloat()
             ).normalized()
         }
     }

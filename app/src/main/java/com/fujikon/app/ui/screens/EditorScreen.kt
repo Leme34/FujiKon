@@ -36,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.History
@@ -84,6 +85,7 @@ import coil.compose.AsyncImage
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.components.AdjustmentsSheet
+import com.fujikon.app.ui.components.CropSheet
 import com.fujikon.app.ui.components.EditHistorySheet
 import com.fujikon.app.ui.components.ExportOptionsSheet
 import com.fujikon.app.ui.components.HistogramCard
@@ -122,6 +124,7 @@ fun EditorScreen(
     var showExport by remember { mutableStateOf(false) }
     var showCurve by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
+    var showCrop by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var savingCurve by remember { mutableStateOf(false) }
     var savingAdjustments by remember { mutableStateOf(false) }
@@ -303,6 +306,24 @@ fun EditorScreen(
                             Text("调节", style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
+                            onClick = { showCrop = true },
+                            enabled = !exporting && preset != null,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (state.hasCrop) Amber.copy(alpha = 0.7f) else Outline
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.hasCrop) Amber else TextPrimary
+                            ),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Icon(Icons.Filled.Crop, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("裁剪", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
                             onClick = { showCurve = true },
                             enabled = !exporting && preset != null,
                             shape = RoundedCornerShape(12.dp),
@@ -425,7 +446,7 @@ fun EditorScreen(
                     }
                 }
 
-                if (state.loading && rendered != null && !showCurve && !showAdjustments) {
+                if (state.loading && rendered != null && !showCurve && !showAdjustments && !showCrop) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -569,11 +590,16 @@ fun EditorScreen(
         AdjustmentsSheet(
             presetName = preset.name,
             initialAdjustments = state.adjustments,
+            initialToneCurve = state.effectiveToneCurve,
+            presetToneCurve = state.selectedPreset?.toneCurve ?: ToneCurve.linear(),
+            baseCurve = preset.baseCurvePoints(),
             rendering = state.loading,
             saving = savingAdjustments,
             onPreview = { adjustments, field ->
                 viewModel.setAdjustments(adjustments, field)
             },
+            onToneCurvePreview = viewModel::setToneCurve,
+            onClearToneCurve = viewModel::clearToneCurveOverride,
             onSave = { name ->
                 savingAdjustments = true
                 scope.launch {
@@ -594,6 +620,21 @@ fun EditorScreen(
                 }
             },
             onDismiss = { if (!savingAdjustments) showAdjustments = false }
+        )
+    }
+
+    if (showCrop && preset != null) {
+        CropSheet(
+            bitmap = state.original,
+            initialCrop = state.adjustments.crop,
+            rendering = state.loading,
+            onPreview = { crop ->
+                viewModel.setAdjustments(
+                    viewModel.state.value.adjustments.copy(crop = crop),
+                    "裁剪"
+                )
+            },
+            onDismiss = { showCrop = false }
         )
     }
 

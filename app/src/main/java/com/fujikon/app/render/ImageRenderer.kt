@@ -1,7 +1,9 @@
 package com.fujikon.app.render
 
 import android.graphics.Bitmap
+import com.fujikon.app.data.CreativeFilter
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.FilterProfile
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.BaseProfiles
 import kotlinx.coroutines.CancellationException
@@ -55,6 +57,20 @@ class ImageRenderer {
         }
         checkCancelled(job)
 
+        val crop = preset.adjustments.normalized().crop
+        if (!crop.isFull()) {
+            val rect = crop.rect(width.toFloat(), height.toFloat())
+            val left = (rect.left * width).roundToInt().coerceIn(0, width - 1)
+            val top = (rect.top * height).roundToInt().coerceIn(0, height - 1)
+            val right = (rect.right * width).roundToInt().coerceIn(left + 1, width)
+            val bottom = (rect.bottom * height).roundToInt().coerceIn(top + 1, height)
+            val cropWidth = right - left
+            val cropHeight = bottom - top
+            val cropped = Bitmap.createBitmap(cropWidth, cropHeight, Bitmap.Config.ARGB_8888)
+            cropped.setPixels(pixels, top * width + left, width, 0, 0, cropWidth, cropHeight)
+            return cropped
+        }
+
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         output.setPixels(pixels, 0, width, 0, 0, width, height)
         return output
@@ -84,16 +100,29 @@ class ImageRenderer {
         val vibrance: Float,
         val texture: Float,
         val adjustmentClarity: Float,
-        val textureRadius: Int
+        val textureRadius: Int,
+        val hsl: FloatArray?,
+        val filter: FilterPlan?
     ) {
         val needsColor: Boolean
             get() = monochrome || abs(saturation - 1f) > 0.001f || hueMatrix != null ||
-                blender != null || gradingChroma != null
+                blender != null || gradingChroma != null || hsl != null || filter != null
 
         val needsDetail: Boolean
             get() = abs(sharpenFine) > 0.01f || abs(sharpenClarity) > 0.01f ||
                 abs(texture) > 0.01f || abs(adjustmentClarity) > 0.01f
     }
+
+    private class FilterPlan(
+        val toneLut: IntArray?,
+        val whiteBalance: FloatArray?,
+        val vibrance: Float,
+        val saturation: Float,
+        val monochrome: Float,
+        val shadowTint: FloatArray?,
+        val highlightTint: FloatArray?,
+        val splitStrength: Float
+    )
 
     private fun buildPlan(preset: Preset, forExport: Boolean, width: Int, height: Int): Plan {
         val isNcp = preset.format == "NCP" || preset.format == "NP2"
@@ -198,6 +227,8 @@ class ImageRenderer {
             adjustments.dehaze / EditAdjustments.TONE_RANGE * 0.18f
         val texture = adjustments.texture / EditAdjustments.TONE_RANGE
         val adjustmentClarity = adjustments.clarity / EditAdjustments.TONE_RANGE
+        val hsl = buildUserHsl(adjustments)
+        val filter = buildFilterPlan(adjustments)
 
         val maxDimension = max(width, height)
         val unit = (maxDimension / 1400f).coerceIn(0.35f, 4f)
@@ -232,7 +263,9 @@ class ImageRenderer {
             vibrance = vibrance,
             texture = texture,
             adjustmentClarity = adjustmentClarity,
-            textureRadius = textureRadius
+            textureRadius = textureRadius,
+            hsl = hsl,
+            filter = filter
         )
     }
 
@@ -284,6 +317,101 @@ class ImageRenderer {
         }
     }
 
+    private fun buildUserHsl(adjustments: EditAdjustments): FloatArray? {
+        if (adjustments.hsl.isNeutral()) return null
+        val hsl = adjustments.hsl.normalized()
+        return FloatArray(24) { index ->
+            val band = hsl.band(index / 3)
+            when (index % 3) {
+                0 -> band.hue / EditAdjustments.TONE_RANGE
+                1 -> band.saturation / EditAdjustments.TONE_RANGE
+                else -> band.luminance / EditAdjustments.TONE_RANGE
+            }
+        }
+    }
+
+    private fun buildFilterPlan(adjustments: EditAdjustments): FilterPlan? {
+        val choice = CreativeFilter.fromId(adjustments.creativeFilter)
+        val strength = (adjustments.filterStrength / 100f).coerceIn(0f, 1f)
+        if (choice.isNone || strength <= 0.001f) return null
+        val profile = choice.profile
+
+        val toneLut = buildFilterToneLut(profile, strength)
+        val temperature = profile.temperature
+        val tint = profile.tint
+        val whiteBalance = if (abs(temperature) > 0.001f || abs(tint) > 0.001f) {
+            floatArrayOf(
+                1f + (temperature * 0.12f + tint * 0.035f) * strength,
+                1f + (temperature * 0.004f - tint * 0.065f) * strength,
+                1f + (-temperature * 0.12f + tint * 0.035f) * strength
+            )
+        } else null
+        val vibrance = profile.vibrance * strength
+        val saturation = (1f + profile.saturation * strength).coerceIn(0f, 2f)
+        val monochrome = if (profile.monochrome) strength else 0f
+        val shadowTint = profile.shadowTint?.let(::filterColorChannels)
+        val highlightTint = profile.highlightTint?.let(::filterColorChannels)
+        val splitStrength = profile.splitStrength * strength
+
+        val hasColor = abs(vibrance) > 0.001f || abs(saturation - 1f) > 0.001f ||
+            monochrome > 0.001f || shadowTint != null || highlightTint != null
+        if (toneLut == null && whiteBalance == null && !hasColor) return null
+
+        return FilterPlan(
+            toneLut = toneLut,
+            whiteBalance = whiteBalance,
+            vibrance = vibrance,
+            saturation = saturation,
+            monochrome = monochrome,
+            shadowTint = shadowTint,
+            highlightTint = highlightTint,
+            splitStrength = splitStrength
+        )
+    }
+
+    private fun buildFilterToneLut(profile: FilterProfile, strength: Float): IntArray? {
+        val hasTone = abs(profile.exposure) > 0.001f ||
+            abs(profile.contrast) > 0.001f ||
+            abs(profile.highlights) > 0.001f ||
+            abs(profile.shadows) > 0.001f ||
+            abs(profile.whites) > 0.001f ||
+            abs(profile.blacks) > 0.001f ||
+            abs(profile.fade) > 0.001f
+        if (!hasTone) return null
+
+        return IntArray(256) { i ->
+            val original = i / 255f
+            var x = original
+            if (abs(profile.exposure) > 0.001f) {
+                x = (x.pow(2.2f) * 2f.pow(profile.exposure)).pow(1f / 2.2f)
+            }
+            x = contrastCurve(x, profile.contrast * 0.8f)
+            if (abs(profile.highlights) > 0.001f) {
+                x += profile.highlights * smoothstep(0.48f, 1f, x) * 0.20f
+            }
+            if (abs(profile.shadows) > 0.001f) {
+                x += profile.shadows * (1f - smoothstep(0f, 0.52f, x)) * 0.20f
+            }
+            if (abs(profile.whites) > 0.001f) {
+                x += profile.whites * smoothstep(0.70f, 1f, x) * 0.14f
+            }
+            if (abs(profile.blacks) > 0.001f) {
+                x += profile.blacks * (1f - smoothstep(0f, 0.30f, x)) * 0.14f
+            }
+            if (profile.fade > 0.001f) {
+                x = x * (1f - profile.fade * 0.35f) + profile.fade * 0.10f
+            }
+            x = original + (x.coerceIn(0f, 1f) - original) * strength
+            (x.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+        }
+    }
+
+    private fun filterColorChannels(color: Int): FloatArray = floatArrayOf(
+        ((color shr 16) and 0xFF) / 255f,
+        ((color shr 8) and 0xFF) / 255f,
+        (color and 0xFF) / 255f
+    )
+
     private fun buildToneLut(preset: Preset, baseContrast: Float, contrastScale: Float): IntArray {
         val curve = preset.curve
         val contrast = (preset.contrast / contrastScale + baseContrast).coerceIn(-1f, 1f)
@@ -323,7 +451,7 @@ class ImageRenderer {
         plan: Plan,
         job: Job?
     ) {
-        val hsl = FloatArray(3)
+        val hslScratch = FloatArray(3)
         val low = plan.lut
         val sat = plan.saturation
         val hueMatrix = plan.hueMatrix
@@ -338,6 +466,8 @@ class ImageRenderer {
         val whiteBalance = plan.whiteBalance
         val adjustToneLut = plan.adjustToneLut
         val vibrance = plan.vibrance
+        val userHsl = plan.hsl
+        val filter = plan.filter
 
         for (y in from until to) {
             if ((y and 0x0F) == 0) checkCancelled(job)
@@ -377,10 +507,10 @@ class ImageRenderer {
                     }
 
                     if (blender != null) {
-                        rgbToHsl(r, g, b, hsl)
-                        var h = hsl[0]
-                        var s = hsl[1]
-                        var l = hsl[2]
+                        rgbToHsl(r, g, b, hslScratch)
+                        var h = hslScratch[0]
+                        var s = hslScratch[1]
+                        var l = hslScratch[2]
                         var hueShift = 0f
                         var chromaAdd = 0f
                         var brightAdd = 0f
@@ -464,6 +594,36 @@ class ImageRenderer {
                     }
                 }
 
+                // User HSL is applied after the preset colour blender and before
+                // vibrance so the two colour stages remain independent.
+                if (userHsl != null && !mono) {
+                    rgbToHsl(r, g, b, hslScratch)
+                    var h = hslScratch[0]
+                    var s = hslScratch[1]
+                    var l = hslScratch[2]
+                    var hueShift = 0f
+                    var satAdd = 0f
+                    var lumAdd = 0f
+                    for (band in 0 until 8) {
+                        var diff = abs(h - BAND_CENTERS[band])
+                        if (diff > 180f) diff = 360f - diff
+                        if (diff >= BAND_WIDTH) continue
+                        val weight = 1f - diff / BAND_WIDTH
+                        hueShift += userHsl[band * 3] * weight
+                        satAdd += userHsl[band * 3 + 1] * weight
+                        lumAdd += userHsl[band * 3 + 2] * weight
+                    }
+                    if (hueShift != 0f || satAdd != 0f || lumAdd != 0f) {
+                        h = (h + hueShift * 30f + 360f) % 360f
+                        s = (s * (1f + satAdd * 0.85f)).coerceIn(0f, 1f)
+                        l = (l + lumAdd * 0.14f).coerceIn(0f, 1f)
+                        val packed = hslToRgb(h, s, l)
+                        r = (packed shr 16) and 0xFF
+                        g = (packed shr 8) and 0xFF
+                        b = packed and 0xFF
+                    }
+                }
+
                 if (abs(vibrance) > 0.001f) {
                     val luma = r * 0.299f + g * 0.587f + b * 0.114f
                     val maxChannel = max(r, max(g, b)).toFloat()
@@ -478,6 +638,79 @@ class ImageRenderer {
                         r = (luma + (r - luma) * (1f + amount)).roundToInt()
                         g = (luma + (g - luma) * (1f + amount)).roundToInt()
                         b = (luma + (b - luma) * (1f + amount)).roundToInt()
+                    }
+                }
+
+                if (filter != null) {
+                    if (filter.toneLut != null) {
+                        val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                        val mapped = filter.toneLut[luma.roundToInt().coerceIn(0, 255)].toFloat()
+                        if (abs(mapped - luma) > 0.01f) {
+                            val scale = if (luma > 8f) mapped / luma else 1f
+                            val lift = mapped - luma * scale
+                            r = (r * scale + lift).roundToInt()
+                            g = (g * scale + lift).roundToInt()
+                            b = (b * scale + lift).roundToInt()
+                        }
+                    }
+
+                    if (filter.whiteBalance != null) {
+                        r = (r * filter.whiteBalance[0]).roundToInt()
+                        g = (g * filter.whiteBalance[1]).roundToInt()
+                        b = (b * filter.whiteBalance[2]).roundToInt()
+                    }
+
+                    if (abs(filter.vibrance) > 0.001f) {
+                        val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                        val chroma = (max(r, max(g, b)) - min(r, min(g, b))) / 255f
+                        val amount = if (filter.vibrance >= 0f) {
+                            filter.vibrance * (1f - chroma) * 0.85f
+                        } else {
+                            filter.vibrance * 0.85f
+                        }
+                        r = (luma + (r - luma) * (1f + amount)).roundToInt()
+                        g = (luma + (g - luma) * (1f + amount)).roundToInt()
+                        b = (luma + (b - luma) * (1f + amount)).roundToInt()
+                    }
+
+                    if (abs(filter.saturation - 1f) > 0.001f) {
+                        val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                        r = (luma + (r - luma) * filter.saturation).roundToInt()
+                        g = (luma + (g - luma) * filter.saturation).roundToInt()
+                        b = (luma + (b - luma) * filter.saturation).roundToInt()
+                    }
+
+                    if (filter.monochrome > 0.001f) {
+                        val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                        r = (r + (luma - r) * filter.monochrome).roundToInt()
+                        g = (g + (luma - g) * filter.monochrome).roundToInt()
+                        b = (b + (luma - b) * filter.monochrome).roundToInt()
+                    }
+
+                    if (filter.splitStrength > 0.001f &&
+                        (filter.shadowTint != null || filter.highlightTint != null)
+                    ) {
+                        val luma = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
+                        val high = smoothstep(0.55f, 1f, luma)
+                        val shadow = 1f - smoothstep(0f, 0.45f, luma)
+                        var dr = 0f
+                        var dg = 0f
+                        var db = 0f
+                        val shadowAmount = filter.splitStrength * shadow
+                        val highlightAmount = filter.splitStrength * high
+                        filter.shadowTint?.let { tint ->
+                            dr += (tint[0] - 0.5f) * shadowAmount * 0.55f
+                            dg += (tint[1] - 0.5f) * shadowAmount * 0.55f
+                            db += (tint[2] - 0.5f) * shadowAmount * 0.55f
+                        }
+                        filter.highlightTint?.let { tint ->
+                            dr += (tint[0] - 0.5f) * highlightAmount * 0.55f
+                            dg += (tint[1] - 0.5f) * highlightAmount * 0.55f
+                            db += (tint[2] - 0.5f) * highlightAmount * 0.55f
+                        }
+                        r = (r + dr * 255f).roundToInt()
+                        g = (g + dg * 255f).roundToInt()
+                        b = (b + db * 255f).roundToInt()
                     }
                 }
 

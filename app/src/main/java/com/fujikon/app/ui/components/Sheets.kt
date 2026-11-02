@@ -68,6 +68,7 @@ fun PresetPickerSheet(
     thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val options = remember(presets) { listOf(Preset.none()) + presets }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -99,38 +100,39 @@ fun PresetPickerSheet(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(Modifier.height(16.dp))
-            if (presets.isEmpty()) {
-                Text(
-                    "还没有预设，请先在首页导入 .NCP / .NP3 文件",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(vertical = 24.dp)
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 480.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(presets, key = { it.id }) { preset ->
-                        val selected = preset.id == selectedId
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(
-                                    if (selected) CardHigh else Card.copy(alpha = 0.55f),
-                                    RoundedCornerShape(14.dp)
-                                )
-                                .clickable { onSelect(preset) }
-                                .padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 480.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(options, key = { it.id }) { preset ->
+                    val selected = preset.id == selectedId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                if (selected) CardHigh else Card.copy(alpha = 0.55f),
+                                RoundedCornerShape(14.dp)
+                            )
+                            .clickable { onSelect(preset) }
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Card)
                         ) {
-                            Box(
-                                Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(Card)
-                            ) {
-                                val fallback: @Composable () -> Unit = {
+                            val fallback: @Composable () -> Unit = {
+                                if (preset.isNone) {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text(
+                                            "原图",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = TextSecondary
+                                        )
+                                    }
+                                } else {
                                     Box(Modifier.fillMaxSize().padding(7.dp)) {
                                         CurveChart(
                                             points = preset.effectiveCurvePoints(32),
@@ -141,47 +143,59 @@ fun PresetPickerSheet(
                                         )
                                     }
                                 }
-                                if (thumbnailStore != null) {
-                                    PresetThumbnail(
-                                        photo = photo,
-                                        preset = preset,
-                                        store = thumbnailStore,
-                                        modifier = Modifier.fillMaxSize(),
-                                        targetSize = 180,
-                                        placeholder = fallback
-                                    )
+                            }
+                            if (thumbnailStore != null) {
+                                PresetThumbnail(
+                                    photo = photo,
+                                    preset = preset,
+                                    store = thumbnailStore,
+                                    modifier = Modifier.fillMaxSize(),
+                                    targetSize = 180,
+                                    placeholder = fallback
+                                )
+                            } else {
+                                fallback()
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (preset.isNone) "无（保留原图）" else preset.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                if (preset.isNone) {
+                                    "不套用预设 · 仍可裁剪、调色和加滤镜"
                                 } else {
-                                    fallback()
-                                }
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    preset.name,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    "${preset.format} · ${preset.baseProfileName}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            if (selected) {
-                                Icon(
-                                    Icons.Filled.Check,
-                                    contentDescription = null,
-                                    tint = Amber,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
+                                    "${preset.format} · ${preset.baseProfileName}"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (selected) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                tint = Amber,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 }
+            }
+            if (presets.isEmpty()) {
+                Text(
+                    "还没有导入预设；选择“无”可先直接编辑原图。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
             }
             Spacer(Modifier.height(20.dp))
         }

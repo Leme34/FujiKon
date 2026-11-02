@@ -73,6 +73,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.fujikon.app.FujiKonApp
+import com.fujikon.app.data.Preset
 import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.PhotoCell
 import com.fujikon.app.ui.components.PresetPickerSheet
@@ -103,6 +104,8 @@ fun GalleryScreen(
     val presetId by app.container.selectionStore.presetId.collectAsStateWithLifecycle()
     val currentPhoto by app.container.selectionStore.currentPhoto.collectAsStateWithLifecycle()
     val preset = presets.firstOrNull { it.id == presetId }
+    val hasPresetChoice = preset != null || presetId == Preset.NONE_ID
+    val presetLabel = preset?.name ?: if (presetId == Preset.NONE_ID) "无（原图）" else null
 
     var showPicker by remember { mutableStateOf(false) }
     var albumMenuOpen by remember { mutableStateOf(false) }
@@ -120,7 +123,9 @@ fun GalleryScreen(
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         viewModel.refresh()
         showingPhotoPicker = false
-        showPicker = true
+        // Keep the current choice (including "无") instead of forcing the
+        // preset picker again after the user adds photos.
+        if (!hasPresetChoice) showPicker = true
     }
 
     LaunchedEffect(showingPhotoPicker) {
@@ -164,9 +169,9 @@ fun GalleryScreen(
                     Column {
                         Text("选择照片", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                         Text(
-                            if (preset != null) "预设：${preset.name}" else "请选择预设",
+                            if (presetLabel != null) "预设：$presetLabel" else "请选择预设",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (preset != null) TextSecondary else Amber,
+                            color = if (hasPresetChoice) TextSecondary else Amber,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -229,13 +234,13 @@ fun GalleryScreen(
                             Icon(
                                 Icons.Filled.Tune,
                                 contentDescription = null,
-                                tint = if (preset != null) TextSecondary else Amber,
+                                tint = if (hasPresetChoice) TextSecondary else Amber,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                preset?.name ?: "选择预设",
-                                color = if (preset != null) TextSecondary else Amber,
+                                presetLabel ?: "选择预设",
+                                color = if (hasPresetChoice) TextSecondary else Amber,
                                 style = MaterialTheme.typography.labelMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -246,7 +251,7 @@ fun GalleryScreen(
                         onClick = {
                             if (selectedIds.isEmpty()) {
                                 showingPhotoPicker = true
-                            } else if (preset == null) {
+                            } else if (!hasPresetChoice) {
                                 showPicker = true
                             } else {
                                 app.container.selectionStore.setPhotos(viewModel.chosenPhotos())

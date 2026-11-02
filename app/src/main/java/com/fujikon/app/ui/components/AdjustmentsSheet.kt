@@ -3,8 +3,6 @@ package com.fujikon.app.ui.components
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,8 +18,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -54,6 +50,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
@@ -122,9 +119,14 @@ private val AdjustmentGroups = listOf(
 fun AdjustmentsSheet(
     presetName: String,
     initialAdjustments: EditAdjustments,
+    initialToneCurve: ToneCurve,
+    presetToneCurve: ToneCurve,
+    baseCurve: List<Pair<Float, Float>>,
     rendering: Boolean,
     saving: Boolean,
     onPreview: (EditAdjustments, String?) -> Unit,
+    onToneCurvePreview: (ToneCurve) -> Unit,
+    onClearToneCurve: () -> Unit,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -137,15 +139,23 @@ fun AdjustmentsSheet(
     )
     val sheetHeight = (LocalConfiguration.current.screenHeightDp * 0.56f).dp
     var draft by remember { mutableStateOf(initialAdjustments.normalized()) }
+    var curveDraft by remember { mutableStateOf(initialToneCurve.normalizedPoints) }
+    var curveDirty by remember { mutableStateOf(false) }
     var expandedGroups by remember {
-        mutableStateOf(AdjustmentGroups.map { it.title }.toSet())
+        mutableStateOf(
+            AdjustmentGroups.map { it.title }.toSet() + setOf("HSL", "影调", "滤镜")
+        )
     }
     var showSaveDialog by remember { mutableStateOf(false) }
     var draftName by remember { mutableStateOf("") }
     var lastPreviewAt by remember { mutableLongStateOf(0L) }
     var livePreviewPending by remember { mutableStateOf(false) }
     var pendingField by remember { mutableStateOf<String?>(null) }
+    var lastCurvePreviewAt by remember { mutableLongStateOf(0L) }
+    var curvePreviewPending by remember { mutableStateOf(false) }
+    var curvePendingField by remember { mutableStateOf("影调") }
     val latestDraft by rememberUpdatedState(draft)
+    val latestCurveDraft by rememberUpdatedState(curveDraft)
     val latestRendering by rememberUpdatedState(rendering)
     val latestPendingField by rememberUpdatedState(pendingField)
 
@@ -167,13 +177,49 @@ fun AdjustmentsSheet(
         onPreview(draft, field)
     }
 
+    fun previewCurveNow(field: String = "影调") {
+        curveDirty = true
+        curvePreviewPending = false
+        curvePendingField = field
+        lastCurvePreviewAt = SystemClock.elapsedRealtime()
+        onToneCurvePreview(ToneCurve(curveDraft))
+    }
+
+    fun previewCurveDuringDrag(field: String = "影调") {
+        curveDirty = true
+        curvePendingField = field
+        if (latestRendering) {
+            curvePreviewPending = true
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastCurvePreviewAt < AdjustmentPreviewIntervalMs) return
+        lastCurvePreviewAt = now
+        onToneCurvePreview(ToneCurve(curveDraft))
+    }
+
+    fun commitAndDismiss() {
+        if (curveDirty) {
+            onToneCurvePreview(ToneCurve(curveDraft))
+        }
+        onPreview(draft, null)
+        onDismiss()
+    }
+
     // Publish the latest values after a render finishes so a fast drag never
     // leaves the photo showing a stale intermediate value.
     LaunchedEffect(rendering) {
-        if (!rendering && livePreviewPending) {
-            livePreviewPending = false
-            lastPreviewAt = SystemClock.elapsedRealtime()
-            onPreview(latestDraft, latestPendingField)
+        if (!rendering) {
+            if (livePreviewPending) {
+                livePreviewPending = false
+                lastPreviewAt = SystemClock.elapsedRealtime()
+                onPreview(latestDraft, latestPendingField)
+            }
+            if (curvePreviewPending) {
+                curvePreviewPending = false
+                lastCurvePreviewAt = SystemClock.elapsedRealtime()
+                onToneCurvePreview(ToneCurve(latestCurveDraft))
+            }
         }
     }
 
@@ -182,8 +228,16 @@ fun AdjustmentsSheet(
         previewDuringDrag(field)
     }
 
+    fun toggleGroup(title: String) {
+        expandedGroups = if (title in expandedGroups) {
+            expandedGroups - title
+        } else {
+            expandedGroups + title
+        }
+    }
+
     ModalBottomSheet(
-        onDismissRequest = { if (!saving) onDismiss() },
+        onDismissRequest = { if (!saving) commitAndDismiss() },
         sheetState = sheetState,
         containerColor = Color.Transparent,
         contentColor = TextPrimary,
@@ -222,7 +276,7 @@ fun AdjustmentsSheet(
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        "固定半屏 · 上下滚动查看 · 双击滑块归零",
+                        "固定半屏 · HSL / 影调 / 滤镜 · 双击滑块归零",
                         style = MaterialTheme.typography.bodySmall.copy(
                             shadow = Shadow(Color.Black.copy(alpha = 0.72f), blurRadius = 4f)
                         ),
@@ -239,7 +293,7 @@ fun AdjustmentsSheet(
                     )
                 }
                 IconButton(
-                    onClick = { if (!saving) onDismiss() },
+                    onClick = { if (!saving) commitAndDismiss() },
                     enabled = !saving,
                     modifier = Modifier
                         .size(40.dp)
@@ -264,13 +318,17 @@ fun AdjustmentsSheet(
                 TextButton(
                     onClick = {
                         draft = EditAdjustments.Neutral
+                        curveDraft = presetToneCurve.normalizedPoints
+                        curveDirty = false
+                        curvePreviewPending = false
+                        onClearToneCurve()
                         previewNow(null)
                     },
-                    enabled = !saving && !draft.isNeutral()
+                    enabled = !saving && (!draft.isNeutral() || curveDirty)
                 ) {
                     Text(
                         "全部归零",
-                        color = if (draft.isNeutral()) TextSecondary else Amber
+                        color = if (draft.isNeutral() && !curveDirty) TextSecondary else Amber
                     )
                 }
             }
@@ -284,39 +342,11 @@ fun AdjustmentsSheet(
             ) {
                 AdjustmentGroups.forEach { group ->
                     val expanded = group.title in expandedGroups
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                expandedGroups = if (expanded) {
-                                    expandedGroups - group.title
-                                } else {
-                                    expandedGroups + group.title
-                                }
-                            }
-                            .padding(top = 8.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            group.title,
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                shadow = Shadow(Color.Black.copy(alpha = 0.7f), blurRadius = 4f)
-                            ),
-                            color = TextPrimary
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            if (expanded) "收起" else "展开",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary
-                        )
-                        Icon(
-                            imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                            contentDescription = null,
-                            tint = TextSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                    AdjustmentSectionHeader(
+                        title = group.title,
+                        expanded = expanded,
+                        onToggle = { toggleGroup(group.title) }
+                    )
                     if (expanded) {
                         Column(
                             Modifier
@@ -353,6 +383,57 @@ fun AdjustmentsSheet(
                     }
                     Spacer(Modifier.height(2.dp))
                 }
+
+                HslSection(
+                    hsl = draft.hsl,
+                    expanded = "HSL" in expandedGroups,
+                    onToggle = { toggleGroup("HSL") },
+                    onBandChange = { index, band ->
+                        updateDraft("HSL") { it.copy(hsl = it.hsl.withBand(index, band)) }
+                    },
+                    onFinished = { field -> previewNow(field) },
+                    enabled = !saving
+                )
+
+                ToneSection(
+                    points = curveDraft,
+                    baseCurve = baseCurve,
+                    expanded = "影调" in expandedGroups,
+                    onToggle = { toggleGroup("影调") },
+                    onPointsChange = { points ->
+                        curveDraft = points
+                        curveDirty = true
+                    },
+                    onDrag = { previewCurveDuringDrag("影调") },
+                    onFinished = { previewCurveNow("影调") },
+                    onReset = {
+                        curveDraft = presetToneCurve.normalizedPoints
+                        curveDirty = false
+                        curvePreviewPending = false
+                        onClearToneCurve()
+                    },
+                    enabled = !saving
+                )
+
+                CreativeFilterSection(
+                    selectedId = draft.creativeFilter,
+                    strength = draft.filterStrength,
+                    expanded = "滤镜" in expandedGroups,
+                    onToggle = { toggleGroup("滤镜") },
+                    onSelect = { filter ->
+                        draft = draft.copy(
+                            creativeFilter = filter.id,
+                            filterStrength = if (filter.isNone) 100f else draft.filterStrength
+                        ).normalized()
+                        previewNow("滤镜")
+                    },
+                    onStrengthChange = { value ->
+                        updateDraft("滤镜强度") { it.copy(filterStrength = value) }
+                    },
+                    onStrengthFinished = { previewNow("滤镜强度") },
+                    enabled = !saving
+                )
+
                 Spacer(Modifier.height(8.dp))
             }
 
@@ -419,7 +500,11 @@ fun AdjustmentsSheet(
                         if (name.isNotEmpty()) {
                             showSaveDialog = false
                             // Make sure the repository snapshots the newest
-                            // slider value even if a throttled preview is pending.
+                            // slider and curve values even if a throttled
+                            // preview is pending.
+                            if (curveDirty) {
+                                onToneCurvePreview(ToneCurve(curveDraft))
+                            }
                             onPreview(draft, null)
                             onSave(name)
                         }
