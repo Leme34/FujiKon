@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,10 +30,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -43,6 +46,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -59,6 +63,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -71,6 +76,7 @@ import com.fujikon.app.FujiKonApp
 import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.PhotoCell
 import com.fujikon.app.ui.components.PresetPickerSheet
+import com.fujikon.app.ui.components.SelectedPhotoTile
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
@@ -101,6 +107,7 @@ fun GalleryScreen(
     var showPicker by remember { mutableStateOf(false) }
     var albumMenuOpen by remember { mutableStateOf(false) }
     var showingPhotoPicker by remember { mutableStateOf(false) }
+    var showSelectedSheet by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -133,6 +140,11 @@ fun GalleryScreen(
     }
     val selectionOrder = remember(selectedIds) {
         selectedIds.toList().mapIndexed { index, id -> id to index + 1 }.toMap()
+    }
+    // Selected photos in the order they were picked, for the "已选" sheet.
+    val selectedPhotos = remember(selectedIds, state.photos) {
+        val byId = state.photos.associateBy { it.id }
+        selectedIds.mapNotNull { byId[it] }
     }
     val allVisibleSelected = visible.isNotEmpty() && visible.all { it.id in selectedIds }
     // Prefer the photo open in the editor, then the first selected photo, then
@@ -186,11 +198,30 @@ fun GalleryScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            "已选 ${selectedIds.size} 张",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary
-                        )
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = selectedIds.isNotEmpty()) {
+                                    showSelectedSheet = true
+                                }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "已选 ${selectedIds.size} 张",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextPrimary
+                            )
+                            if (selectedIds.isNotEmpty()) {
+                                Spacer(Modifier.width(2.dp))
+                                Icon(
+                                    Icons.Filled.KeyboardArrowUp,
+                                    contentDescription = "查看已选照片",
+                                    tint = Amber,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                         TextButton(
                             onClick = { showPicker = true },
                             contentPadding = PaddingValues(0.dp)
@@ -388,6 +419,78 @@ fun GalleryScreen(
                                 onClick = { viewModel.toggle(photo.id) }
                             )
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showSelectedSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSelectedSheet = false },
+            containerColor = InkElevated,
+            contentColor = TextPrimary,
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(color = TextSecondary.copy(alpha = 0.5f))
+            }
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 18.dp)
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "已选照片",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "共 ${selectedPhotos.size} 张",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                if (selectedPhotos.isEmpty()) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 28.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "还没有选择照片",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                    }
+                } else {
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(selectedPhotos, key = { it.id }) { photo ->
+                            SelectedPhotoTile(
+                                uri = photo.uri,
+                                index = selectionOrder[photo.id] ?: 0,
+                                onRemove = { viewModel.toggle(photo.id) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(
+                        onClick = { viewModel.clearSelection() },
+                        modifier = Modifier.padding(horizontal = 10.dp)
+                    ) {
+                        Text("清空已选", color = TextSecondary)
                     }
                 }
             }

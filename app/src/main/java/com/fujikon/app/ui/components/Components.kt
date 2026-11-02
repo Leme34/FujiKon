@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.Card
@@ -261,6 +262,61 @@ fun PhotoCell(
                     .padding(10.dp)
                     .size(14.dp)
                     .background(Color.White.copy(alpha = 0.75f), RoundedCornerShape(50))
+            )
+        }
+    }
+}
+
+@Composable
+fun SelectedPhotoTile(
+    uri: android.net.Uri,
+    index: Int,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(86.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(CardHigh)
+    ) {
+        AsyncImage(
+            model = uri,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        // Selection order badge
+        Box(
+            Modifier
+                .align(Alignment.BottomStart)
+                .padding(6.dp)
+                .size(20.dp)
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(50)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                index.toString(),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        // Remove button
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(5.dp)
+                .size(22.dp)
+                .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(50))
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "取消选择",
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
             )
         }
     }
