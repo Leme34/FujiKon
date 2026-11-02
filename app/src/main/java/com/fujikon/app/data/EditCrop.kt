@@ -2,8 +2,11 @@ package com.fujikon.app.data
 
 import org.json.JSONObject
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** Preset crop aspect ratios exposed by the crop editor. */
 enum class CropAspect(
@@ -39,44 +42,72 @@ data class CropRect(
 }
 
 /**
+ * Geometry for a rotated crop. The output dimensions are in source pixel units,
+ * and [cosAngle]/[sinAngle] map output pixels back into the source bitmap.
+ */
+data class CropGeometry(
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val cosAngle: Float,
+    val sinAngle: Float,
+    val targetAspect: Float
+)
+
+/**
  * Crop state stored with the rest of the non-destructive adjustments.
  *
- * The actual rectangle is calculated from the image aspect at render time, so
- * the same preset can be used on landscape and portrait photos without storing
- * pixel coordinates.
+ * Cropping is centered and non-destructive. [rotation] is a clockwise quarter
+ * turn (0/90/180/270) and [straighten] is a fine correction angle. The renderer
+ * automatically finds the largest crop that does not contain empty corners
+ * after the image is rotated.
  */
 data class EditCrop(
     val aspect: String = CropAspect.ORIGINAL.id,
-    /** 1.0 keeps the largest crop for the selected ratio; 4.0 crops to 25%. */
-    val zoom: Float = 1f,
-    /** -1..1 moves the crop within the available horizontal margin. */
-    val offsetX: Float = 0f,
-    /** -1..1 moves the crop within the available vertical margin. */
-    val offsetY: Float = 0f
+    /** Clockwise quarter turns: 0, 90, 180 or 270 degrees. */
+    val rotation: Int = 0,
+    /** Fine straighten angle in degrees, [-45, 45]. */
+    val straighten: Float = 0f
 ) {
-    fun normalized(): EditCrop = copy(
-        aspect = CropAspect.fromId(aspect).id,
-        zoom = zoom.coerceIn(MIN_ZOOM, MAX_ZOOM),
-        offsetX = offsetX.coerceIn(-1f, 1f),
-        offsetY = offsetY.coerceIn(-1f, 1f)
-    )
+    fun normalized(): EditCrop {
+        val safeStraighten = if (straighten.isFinite()) {
+            straighten.coerceIn(-STRAIGHTEN_RANGE, STRAIGHTEN_RANGE)
+        } else {
+            0f
+        }
+        val quarter = if (rotation == Int.MIN_VALUE) {
+            0
+        } else {
+            ((rotation / 90f).roundToInt() % 4 + 4) % 4
+        }
+        return copy(
+            aspect = CropAspect.fromId(aspect).id,
+            rotation = quarter * 90,
+            straighten = safeStraighten
+        )
+    }
 
-    fun isFull(tolerance: Float = 0.001f): Boolean =
-        aspect == CropAspect.ORIGINAL.id &&
-            abs(zoom - 1f) <= tolerance &&
-            abs(offsetX) <= tolerance &&
-            abs(offsetY) <= tolerance
+    fun isFull(tolerance: Float = 0.001f): Boolean {
+        val state = normalized()
+        return state.aspect == CropAspect.ORIGINAL.id &&
+            state.rotation == 0 &&
+            abs(state.straighten) <= tolerance
+    }
+
+    /** Total clockwise angle, including the fine straighten correction. */
+    fun effectiveAngleDegrees(): Float {
+        val state = normalized()
+        return state.rotation + state.straighten
+    }
 
     /**
-     * Calculates the normalized crop rectangle for an image. The ratio is
-     * applied in pixel space, then converted back to normalized coordinates.
+     * Axis-aligned crop rectangle for the selected ratio, before rotation or
+     * straightening. Used for fast, pixel-exact crops when the angle is zero.
      */
     fun rect(imageWidth: Float, imageHeight: Float): CropRect {
         val safeWidth = imageWidth.coerceAtLeast(1f)
         val safeHeight = imageHeight.coerceAtLeast(1f)
         val imageAspect = safeWidth / safeHeight
         val targetAspect = CropAspect.fromId(aspect).ratio ?: imageAspect
-        val state = normalized()
 
         var width = 1f
         var height = 1f
@@ -87,35 +118,74 @@ data class EditCrop(
             // Wider target: full height, narrower width.
             width = targetAspect / imageAspect
         }
-        val safeZoom = state.zoom.coerceAtLeast(MIN_ZOOM)
-        width = (width / safeZoom).coerceIn(MIN_SIZE, 1f)
-        height = (height / safeZoom).coerceIn(MIN_SIZE, 1f)
 
-        val marginX = (1f - width).coerceAtLeast(0f)
-        val marginY = (1f - height).coerceAtLeast(0f)
-        val left = (marginX * 0.5f + state.offsetX * marginX * 0.5f)
-            .coerceIn(0f, marginX)
-        val top = (marginY * 0.5f + state.offsetY * marginY * 0.5f)
-            .coerceIn(0f, marginY)
-
+        val left = (1f - width) * 0.5f
+        val top = (1f - height) * 0.5f
         return CropRect(
-            left = left,
-            top = top,
+            left = left.coerceIn(0f, 1f),
+            top = top.coerceIn(0f, 1f),
             right = (left + width).coerceAtMost(1f),
             bottom = (top + height).coerceAtMost(1f)
         )
     }
 
+    /**
+     * Calculates the largest centered crop with the requested aspect that fits
+     * inside the source after rotating by [effectiveAngleDegrees].
+     */
+    fun geometry(imageWidth: Int, imageHeight: Int): CropGeometry {
+        val state = normalized()
+        val width = max(1, imageWidth)
+        val height = max(1, imageHeight)
+        val angle = Math.toRadians((state.rotation + state.straighten).toDouble()).toFloat()
+        val cosAngle = cos(angle)
+        val sinAngle = sin(angle)
+        val absCos = abs(cosAngle)
+        val absSin = abs(sinAngle)
+
+        val selected = CropAspect.fromId(state.aspect)
+        val targetAspect = when {
+            selected == CropAspect.ORIGINAL -> {
+                if (state.rotation % 180 == 90) {
+                    height.toFloat() / width
+                } else {
+                    width.toFloat() / height
+                }
+            }
+            else -> selected.ratio ?: (width.toFloat() / height)
+        }.coerceIn(MIN_ASPECT, MAX_ASPECT)
+
+        val halfWidth = width * 0.5f
+        val halfHeight = height * 0.5f
+        val halfCropWidth = min(
+            halfWidth / (absCos + absSin / targetAspect),
+            halfHeight / (absSin + absCos / targetAspect)
+        ).coerceAtLeast(0.5f)
+
+        val outputWidth = (halfCropWidth * 2f).roundToInt()
+            .coerceIn(1, max(width, height))
+        val outputHeight = (outputWidth / targetAspect).roundToInt()
+            .coerceIn(1, max(width, height))
+
+        return CropGeometry(
+            outputWidth = outputWidth,
+            outputHeight = outputHeight,
+            cosAngle = cosAngle,
+            sinAngle = sinAngle,
+            targetAspect = targetAspect
+        )
+    }
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("aspect", aspect)
-        put("zoom", zoom.toDouble())
-        put("offsetX", offsetX.toDouble())
-        put("offsetY", offsetY.toDouble())
+        put("rotation", rotation)
+        put("straighten", straighten.toDouble())
     }
 
     companion object {
-        const val MIN_ZOOM = 1f
-        const val MAX_ZOOM = 4f
+        const val STRAIGHTEN_RANGE = 45f
+        private const val MIN_ASPECT = 0.01f
+        private const val MAX_ASPECT = 100f
         private const val MIN_SIZE = 0.12f
 
         val Full = EditCrop()
@@ -124,9 +194,8 @@ data class EditCrop(
             if (json == null) return Full
             return EditCrop(
                 aspect = json.optString("aspect", CropAspect.ORIGINAL.id),
-                zoom = json.optDouble("zoom", 1.0).toFloat(),
-                offsetX = json.optDouble("offsetX", 0.0).toFloat(),
-                offsetY = json.optDouble("offsetY", 0.0).toFloat()
+                rotation = json.optInt("rotation", 0),
+                straighten = json.optDouble("straighten", 0.0).toFloat()
             ).normalized()
         }
 

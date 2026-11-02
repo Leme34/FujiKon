@@ -2,6 +2,7 @@ package com.fujikon.app.render
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.Color
 import com.fujikon.app.data.CreativeFilter
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.EditCrop
@@ -36,7 +37,7 @@ class CreativeEffectsRendererTest {
         val source = gradientBitmap(40, 30)
         val preset = Preset.none().copy(
             adjustments = EditAdjustments(
-                crop = EditCrop(aspect = "1:1", zoom = 1f)
+                crop = EditCrop(aspect = "1:1")
             )
         )
         val output = ImageRenderer().render(source, preset, forExport = false)
@@ -47,6 +48,46 @@ class CreativeEffectsRendererTest {
         val rect = preset.adjustments.crop.rect(40f, 30f)
         val left = kotlin.math.round(rect.left * 40f).toInt()
         assertEquals(sourcePixels[left], output.getPixel(0, 0))
+    }
+
+    @Test
+    fun rotationSwapsTheRenderedCropDimensions() = runBlocking {
+        val source = gradientBitmap(40, 30)
+        val preset = Preset.none().copy(
+            adjustments = EditAdjustments(crop = EditCrop(rotation = 90))
+        )
+        val output = ImageRenderer().render(source, preset, forExport = false)
+
+        assertEquals(30, output.width)
+        assertEquals(40, output.height)
+    }
+
+    @Test
+    fun clockwiseRotationMapsTheSourceCorners() = runBlocking {
+        val source = Bitmap.createBitmap(2, 3, Bitmap.Config.ARGB_8888)
+        source.eraseColor(Color.BLUE)
+        source.setPixel(0, 2, Color.RED)
+        val preset = Preset.none().copy(
+            adjustments = EditAdjustments(crop = EditCrop(rotation = 90))
+        )
+        val output = ImageRenderer().render(source, preset, forExport = false)
+
+        assertEquals(3, output.width)
+        assertEquals(2, output.height)
+        assertEquals(Color.RED, output.getPixel(0, 0))
+    }
+
+    @Test
+    fun straightenShrinksTheRenderedCrop() = runBlocking {
+        val source = gradientBitmap(40, 30)
+        val preset = Preset.none().copy(
+            adjustments = EditAdjustments(crop = EditCrop(straighten = 8f))
+        )
+        val output = ImageRenderer().render(source, preset, forExport = false)
+
+        assertTrue(output.width < 40)
+        assertTrue(output.height < 30)
+        assertEquals(4f / 3f, output.width.toFloat() / output.height, 0.03f)
     }
 
     @Test

@@ -51,7 +51,10 @@ class PresetThumbnailStore(
     ): Bitmap? {
         val size = targetSize.coerceIn(64, 512)
         val key = cacheKey(photo, preset, size)
-        cache.get(key)?.let { return it }
+        cache.get(key)?.let { cached ->
+            if (cached.hasVisiblePixels()) return cached
+            cache.remove(key)
+        }
 
         val source = sourceFor(photo, size) ?: run {
             // Never leave the picker with an empty tile: fall back to the
@@ -68,23 +71,39 @@ class PresetThumbnailStore(
         size: Int,
         key: String
     ): Bitmap? = renderSlots.withPermit {
-        cache.get(key)?.let { return@withPermit it }
-        try {
-            val rendered = renderer.render(source, preset, forExport = false)
-            val scaled = BitmapLoader.scaleForPreview(rendered, size)
-            if (scaled !== rendered) rendered.recycle()
-            cache.put(key, scaled)
-            scaled
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            null
+        cache.get(key)?.let { cached ->
+            if (cached.hasVisiblePixels()) return@withPermit cached
+            cache.remove(key)
         }
+        repeat(2) {
+            try {
+                val rendered = renderer.render(source, preset, forExport = false)
+                val scaled = BitmapLoader.scaleForPreview(rendered, size)
+                if (scaled !== rendered) rendered.recycle()
+                if (!scaled.hasVisiblePixels()) {
+                    scaled.recycle()
+                    return@repeat
+                }
+                cache.put(key, scaled)
+                return@withPermit scaled
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Retry once; a cancelled background render can leave a
+                // partially-written bitmap behind.
+            }
+        }
+        null
     }
 
     /** Cache hit without rendering, used to avoid flashing a placeholder. */
-    fun cached(photo: PhotoItem?, preset: Preset, targetSize: Int = 280): Bitmap? =
-        cache.get(cacheKey(photo, preset, targetSize.coerceIn(64, 512)))
+    fun cached(photo: PhotoItem?, preset: Preset, targetSize: Int = 280): Bitmap? {
+        val key = cacheKey(photo, preset, targetSize.coerceIn(64, 512))
+        val cached = cache.get(key) ?: return null
+        if (cached.hasVisiblePixels()) return cached
+        cache.remove(key)
+        return null
+    }
 
     private fun cacheKey(photo: PhotoItem?, preset: Preset, size: Int): String =
         "${sourceKey(photo)}|${visualSignature(preset)}|$size"
@@ -98,7 +117,10 @@ class PresetThumbnailStore(
         append('|').append(
             preset.toneCurve?.normalizedPoints?.joinToString(",") { "${it.x}:${it.y}" } ?: ""
         )
-        append('|').append(preset.adjustments.toJson())
+        append('|').append(
+            runCatching { preset.adjustments.toJson().toString() }
+                .getOrElse { preset.adjustments.toString() }
+        )
         append('|').append(preset.sharpening)
         append('|').append(preset.clarity)
         append('|').append(preset.midRangeSharpening)

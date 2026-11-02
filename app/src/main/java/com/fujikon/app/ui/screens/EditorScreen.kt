@@ -625,7 +625,6 @@ fun EditorScreen(
 
     if (showCrop && preset != null) {
         CropSheet(
-            bitmap = state.original,
             initialCrop = state.adjustments.crop,
             rendering = state.loading,
             onPreview = { crop ->

@@ -80,7 +80,7 @@ class EditAdjustmentsTest {
     fun hslCropAndCreativeFilterRoundTrip() {
         val source = EditAdjustments(
             hsl = HslAdjustments.Neutral.withBand(2, HslBand(hue = 14f, saturation = -30f, luminance = 9f)),
-            crop = EditCrop(aspect = CropAspect.FOUR_THREE.id, zoom = 1.4f, offsetX = 0.3f),
+            crop = EditCrop(aspect = CropAspect.FOUR_THREE.id, rotation = 90, straighten = -4.5f),
             creativeFilter = CreativeFilter.LEICA.id,
             filterStrength = 72f
         )
@@ -89,8 +89,8 @@ class EditAdjustmentsTest {
         assertEquals(14f, parsed.hsl.band(2).hue, 0.001f)
         assertEquals(-30f, parsed.hsl.band(2).saturation, 0.001f)
         assertEquals(CropAspect.FOUR_THREE.id, parsed.crop.aspect)
-        assertEquals(1.4f, parsed.crop.zoom, 0.001f)
-        assertEquals(0.3f, parsed.crop.offsetX, 0.001f)
+        assertEquals(90, parsed.crop.rotation)
+        assertEquals(-4.5f, parsed.crop.straighten, 0.001f)
         assertEquals(CreativeFilter.LEICA.id, parsed.creativeFilter)
         assertEquals(72f, parsed.filterStrength, 0.001f)
         assertFalse(parsed.isNeutral())
@@ -100,14 +100,15 @@ class EditAdjustmentsTest {
     fun newAdjustmentFieldsAreClamped() {
         val normalized = EditAdjustments(
             hsl = HslAdjustments.Neutral.withBand(0, HslBand(hue = 999f, saturation = -999f, luminance = 999f)),
-            crop = EditCrop(zoom = 99f, offsetX = -99f, offsetY = 99f),
+            crop = EditCrop(rotation = 999, straighten = 99f),
             creativeFilter = "removed-filter",
             filterStrength = 500f
         ).normalized()
 
         assertEquals(100f, normalized.hsl.band(0).hue, 0.001f)
         assertEquals(-100f, normalized.hsl.band(0).saturation, 0.001f)
-        assertEquals(EditCrop.MAX_ZOOM, normalized.crop.zoom, 0.001f)
+        assertEquals(270, normalized.crop.rotation)
+        assertEquals(EditCrop.STRAIGHTEN_RANGE, normalized.crop.straighten, 0.001f)
         assertEquals(CreativeFilter.NONE.id, normalized.creativeFilter)
         assertEquals(100f, normalized.filterStrength, 0.001f)
     }

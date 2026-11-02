@@ -3,6 +3,7 @@ package com.fujikon.app.render
 import android.graphics.Bitmap
 import com.fujikon.app.data.CreativeFilter
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.FilterProfile
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.BaseProfiles
@@ -15,6 +16,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -58,7 +60,12 @@ class ImageRenderer {
         checkCancelled(job)
 
         val crop = preset.adjustments.normalized().crop
-        if (!crop.isFull()) {
+        if (crop.isFull()) {
+            return bitmapFrom(pixels, width, height)
+        }
+
+        // A ratio-only crop is pixel-exact and much faster than resampling.
+        if (crop.rotation == 0 && abs(crop.straighten) <= 0.001f) {
             val rect = crop.rect(width.toFloat(), height.toFloat())
             val left = (rect.left * width).roundToInt().coerceIn(0, width - 1)
             val top = (rect.top * height).roundToInt().coerceIn(0, height - 1)
@@ -71,9 +78,91 @@ class ImageRenderer {
             return cropped
         }
 
-        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        output.setPixels(pixels, 0, width, 0, 0, width, height)
-        return output
+        return renderRotatedCrop(pixels, width, height, crop, job)
+    }
+
+    /**
+     * Rotates and crops in one pass. Output pixels are mapped back into the
+     * source with the inverse rotation; the crop geometry is chosen so the
+     * result never contains empty corners.
+     */
+    private suspend fun renderRotatedCrop(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        crop: EditCrop,
+        job: Job?
+    ): Bitmap {
+        val geometry = crop.geometry(width, height)
+        val outputWidth = geometry.outputWidth
+        val outputHeight = geometry.outputHeight
+        val output = IntArray(outputWidth * outputHeight)
+        val sourceCenterX = (width - 1) * 0.5f
+        val sourceCenterY = (height - 1) * 0.5f
+        val outputCenterX = (outputWidth - 1) * 0.5f
+        val outputCenterY = (outputHeight - 1) * 0.5f
+        val cosAngle = geometry.cosAngle
+        val sinAngle = geometry.sinAngle
+
+        parallelRows(outputHeight) { from, to ->
+            for (y in from until to) {
+                checkCancelled(job)
+                val dy = y - outputCenterY
+                var outputIndex = y * outputWidth
+                for (x in 0 until outputWidth) {
+                    val dx = x - outputCenterX
+                    val sourceX = sourceCenterX + dx * cosAngle + dy * sinAngle
+                    val sourceY = sourceCenterY - dx * sinAngle + dy * cosAngle
+                    output[outputIndex] = sampleBilinear(pixels, width, height, sourceX, sourceY)
+                    outputIndex++
+                }
+            }
+        }
+
+        return bitmapFrom(output, outputWidth, outputHeight)
+    }
+
+    private fun bitmapFrom(pixels: IntArray, width: Int, height: Int): Bitmap {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        return bitmap
+    }
+
+    private fun sampleBilinear(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        x: Float,
+        y: Float
+    ): Int {
+        val sx = x.coerceIn(0f, (width - 1).toFloat())
+        val sy = y.coerceIn(0f, (height - 1).toFloat())
+        val x0 = floor(sx).toInt().coerceIn(0, width - 1)
+        val y0 = floor(sy).toInt().coerceIn(0, height - 1)
+        val x1 = (x0 + 1).coerceAtMost(width - 1)
+        val y1 = (y0 + 1).coerceAtMost(height - 1)
+        val fx = sx - x0
+        val fy = sy - y0
+
+        val p00 = pixels[y0 * width + x0]
+        val p10 = pixels[y0 * width + x1]
+        val p01 = pixels[y1 * width + x0]
+        val p11 = pixels[y1 * width + x1]
+
+        fun channel(shift: Int): Int {
+            val c00 = (p00 shr shift) and 0xFF
+            val c10 = (p10 shr shift) and 0xFF
+            val c01 = (p01 shr shift) and 0xFF
+            val c11 = (p11 shr shift) and 0xFF
+            val top = c00 + (c10 - c00) * fx
+            val bottom = c01 + (c11 - c01) * fx
+            return (top + (bottom - top) * fy).roundToInt().coerceIn(0, 255)
+        }
+
+        return 0xFF000000.toInt() or
+            (channel(16) shl 16) or
+            (channel(8) shl 8) or
+            channel(0)
     }
 
     // ---------------------------------------------------------------- plan
