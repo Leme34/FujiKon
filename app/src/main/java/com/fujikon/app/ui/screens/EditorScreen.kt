@@ -444,9 +444,11 @@ fun EditorScreen(
 
                 // Histogram overlay: floating at top of preview image area,
                 // full-width, transparent background matching adjustments panel.
+                // While the long-press compare gesture shows the original, the
+                // chart follows what is on screen instead of the edited copy.
                 if (preset != null && rendered != null) {
                     HistogramCard(
-                        bitmap = rendered,
+                        bitmap = if (comparing) state.original ?: rendered else rendered,
                         currentAdjustments = state.adjustments,
                         onApplyAdjustments = { viewModel.setAdjustments(it) },
                         modifier = Modifier
