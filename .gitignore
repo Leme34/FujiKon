@@ -12,3 +12,6 @@ captures/
 *.aab
 *.keystore
 !debug.keystore
+.test-home/
+.gradle-home/
+build_apk.bat

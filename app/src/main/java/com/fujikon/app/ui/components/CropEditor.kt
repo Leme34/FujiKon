@@ -2,7 +2,6 @@ package com.fujikon.app.ui.components
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -33,8 +32,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,11 +41,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -56,9 +53,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -85,12 +81,12 @@ private data class AspectOption(
 )
 
 /**
- * Full-screen Lightroom-style crop and straighten editor.
+ * Full-screen Lightroom-style crop, rotate and straighten editor.
  *
- * The photo sits behind a fixed crop window: dragging inside the window moves
- * the framing, pinching zooms the crop, corner handles resize it, the rotate
- * buttons turn the photo by quarter turns and the straighten slider applies a
- * fine correction. Nothing is committed until "完成".
+ * The crop frame is fixed: the photo pans and zooms behind it exactly like in
+ * Lightroom. Rotation is always a rigid transform (a quarter turn plus the
+ * straighten angle) applied around the frame centre, so the photo is never
+ * squeezed: the scale used for drawing is uniform in both axes.
  */
 @Composable
 fun CropEditorOverlay(
@@ -150,6 +146,13 @@ fun CropEditorOverlay(
         draftState.value = turned.normalized(nextAspect)
     }
 
+    fun adjustAngle(delta: Float) {
+        val angle = (draftState.value.angle + delta)
+            .coerceIn(-CropSpec.MAX_ANGLE, CropSpec.MAX_ANGLE)
+        val snapped = if (abs(angle) < 0.4f) 0f else angle
+        draftState.value = draftState.value.copy(angle = snapped)
+    }
+
     fun commit() {
         val spec = draftState.value.normalized(displayAspect)
         val rect = CropRect(spec.left, spec.top, spec.right, spec.bottom)
@@ -182,7 +185,7 @@ fun CropEditorOverlay(
                         color = TextPrimary
                     )
                     Text(
-                        "拖动移动 · 双指缩放 · 角点调整",
+                        "拖动移动 · 双指缩放 · 拖动角度盘纠偏",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
                     )
@@ -200,24 +203,23 @@ fun CropEditorOverlay(
             ) {
                 CropCanvas(
                     bitmap = bitmap,
-                    displayAspect = displayAspect,
                     rotation = rotation,
-                    draftState = draftState
+                    draftState = draftState,
+                    freeResize = options[selectedAspect].aspect == null
                 )
             }
 
+            StraightenDial(
+                angle = draftState.value.angle,
+                onDelta = ::adjustAngle
+            )
+
             CropControls(
-                draft = draftState.value,
                 options = options,
                 selectedAspect = selectedAspect,
                 rotation = rotation,
                 onSelectAspect = ::selectAspect,
                 onRotate = ::rotate,
-                onAngleChange = { angle ->
-                    draftState.value = draftState.value.copy(
-                        angle = angle.coerceIn(-CropSpec.MAX_ANGLE, CropSpec.MAX_ANGLE)
-                    )
-                },
                 onReset = {
                     rotation = 0
                     selectedAspect = 0
@@ -228,63 +230,87 @@ fun CropEditorOverlay(
     }
 }
 
+/**
+ * Draws the photo with a single affine transform and overlays the fixed crop
+ * frame on top, exactly like Lightroom: the frame stays put while the photo
+ * pans, zooms and rotates behind it. The scale is uniform in both axes, so
+ * rotating never compresses the photo.
+ *
+ * The straighten angle rotates about the image centre (matching the export
+ * renderer) and the crop centre is offset afterwards, so what you see in the
+ * editor is exactly what gets written to the file.
+ */
 @Composable
 private fun CropCanvas(
     bitmap: Bitmap,
-    displayAspect: Float,
     rotation: Int,
-    draftState: MutableState<CropSpec>
+    draftState: MutableState<CropSpec>,
+    freeResize: Boolean
 ) {
-    val gridColor = Color.White.copy(alpha = 0.38f)
+    val draft = draftState.value
+    val quarterTurn = rotation % 180 == 90
+    val displayWidth = (if (quarterTurn) bitmap.height else bitmap.width).toFloat()
+    val displayHeight = (if (quarterTurn) bitmap.width else bitmap.height).toFloat()
+    val displayAspect = displayWidth / displayHeight
+    val cropPixelWidth = (draft.widthFraction * displayWidth).coerceAtLeast(1f)
+    val cropPixelHeight = (draft.heightFraction * displayHeight).coerceAtLeast(1f)
+    val frameAspect = cropPixelWidth / cropPixelHeight
+    val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 10.dp, vertical = 12.dp)
+            .padding(horizontal = 10.dp, vertical = 10.dp)
     ) {
-        val availableWidth = maxWidth
-        val availableHeight = maxHeight
         val frameWidth: Dp
         val frameHeight: Dp
-        if (availableWidth / availableHeight > displayAspect) {
-            frameHeight = availableHeight
-            frameWidth = availableHeight * displayAspect
+        if (maxWidth.value / maxHeight.value > frameAspect) {
+            frameHeight = maxHeight
+            frameWidth = maxHeight * frameAspect
         } else {
-            frameWidth = availableWidth
-            frameHeight = availableWidth / displayAspect
+            frameWidth = maxWidth
+            frameHeight = maxWidth / frameAspect
         }
 
-        val draft = draftState.value
-        val quarterTurn = rotation % 180 == 90
-        val imageFrameWidth = if (quarterTurn) frameHeight else frameWidth
-        val imageFrameHeight = if (quarterTurn) frameWidth else frameHeight
-        val scale = EditCrop.coverScale(draft.angle, bitmap.width, bitmap.height)
         val density = LocalDensity.current
-        val hitRadius = with(density) { 28.dp.toPx() }
+        val frameWidthPx = with(density) { frameWidth.toPx() }
+        val frameHeightPx = with(density) { frameHeight.toPx() }
+        val hitRadius = with(density) { 30.dp.toPx() }
+        val currentFrameWidth = rememberUpdatedState(frameWidthPx)
+        val currentFrameHeight = rememberUpdatedState(frameHeightPx)
 
         Box(
             modifier = Modifier
-                .align(Alignment.Center)
-                .size(frameWidth, frameHeight)
-                .clipToBounds()
-                .pointerInput(bitmap, displayAspect, rotation) {
+                .fillMaxSize()
+                .pointerInput(bitmap, rotation, freeResize) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        var mode = 0 // 0 = none, 1 = move, 2 = resize, 3 = pinch
+                        val areaWidth = size.width.toFloat()
+                        val areaHeight = size.height.toFloat()
+                        val frameW = currentFrameWidth.value
+                        val frameH = currentFrameHeight.value
+                        val frameLeft = (areaWidth - frameW) * 0.5f
+                        val frameTop = (areaHeight - frameH) * 0.5f
+                        var mode = 1 // 1 = pan the photo, 2 = resize the free frame
                         var corner: CropCorner? = null
-                        val current = draftState.value
-                        val rect = current.rectIn(size.width.toFloat(), size.height.toFloat())
-                        val corners = listOf(
-                            CropCorner.TOP_LEFT to Offset(rect[0], rect[1]),
-                            CropCorner.TOP_RIGHT to Offset(rect[2], rect[1]),
-                            CropCorner.BOTTOM_LEFT to Offset(rect[0], rect[3]),
-                            CropCorner.BOTTOM_RIGHT to Offset(rect[2], rect[3])
-                        )
-                        val nearest = corners.minByOrNull { (_, point) -> (point - down.position).getDistance() }
-                        if (nearest != null && (nearest.second - down.position).getDistance() <= hitRadius) {
-                            corner = nearest.first
-                            mode = 2
-                        } else if (down.position.inside(rect)) {
-                            mode = 1
+
+                        if (freeResize) {
+                            val corners = listOf(
+                                CropCorner.TOP_LEFT to Offset(frameLeft, frameTop),
+                                CropCorner.TOP_RIGHT to Offset(frameLeft + frameW, frameTop),
+                                CropCorner.BOTTOM_LEFT to Offset(frameLeft, frameTop + frameH),
+                                CropCorner.BOTTOM_RIGHT to
+                                    Offset(frameLeft + frameW, frameTop + frameH)
+                            )
+                            val nearest = corners.minByOrNull { (_, point) ->
+                                (point - down.position).getDistance()
+                            }
+                            if (nearest != null &&
+                                (nearest.second - down.position).getDistance() <= hitRadius
+                            ) {
+                                corner = nearest.first
+                                mode = 2
+                            }
                         }
 
                         var lastPosition = down.position
@@ -292,24 +318,32 @@ private fun CropCanvas(
                             val event = awaitPointerEvent()
                             val pressed = event.changes.count { it.pressed }
                             if (pressed >= 2) {
-                                mode = 3
                                 val zoom = event.calculateZoom()
                                 val pan = event.calculatePan()
                                 val centroid = event.calculateCentroid(useCurrent = true)
-                                if (centroid != Offset.Unspecified) {
-                                    val focusX = centroid.x / size.width
-                                    val focusY = centroid.y / size.height
-                                    if (zoom != 1f) {
-                                        draftState.value = draftState.value
-                                            .zoom(zoom, focusX, focusY, displayAspect)
-                                    }
+                                val spec = draftState.value
+                                if (zoom != 1f && centroid != Offset.Unspecified) {
+                                    // Pinching out zooms the photo in, so the crop tightens.
+                                    val centerX = (spec.left + spec.right) * 0.5f
+                                    val centerY = (spec.top + spec.bottom) * 0.5f
+                                    val focusX = centerX +
+                                        (centroid.x - areaWidth * 0.5f) / frameW *
+                                        spec.widthFraction
+                                    val focusY = centerY +
+                                        (centroid.y - areaHeight * 0.5f) / frameH *
+                                        spec.heightFraction
+                                    draftState.value = spec.zoom(
+                                        factor = 1f / zoom,
+                                        focusX = focusX,
+                                        focusY = focusY,
+                                        imageAspect = displayAspect
+                                    )
                                 }
                                 if (pan != Offset.Zero) {
-                                    draftState.value = draftState.value.translate(
-                                        pan.x / size.width,
-                                        pan.y / size.height,
-                                        displayAspect
-                                    )
+                                    val latest = draftState.value
+                                    val dx = -pan.x * latest.widthFraction / frameW
+                                    val dy = -pan.y * latest.heightFraction / frameH
+                                    draftState.value = latest.translate(dx, dy, displayAspect)
                                 }
                                 event.changes.forEach { if (it.pressed) it.consume() }
                                 lastPosition = event.changes.firstOrNull { it.pressed }?.position
@@ -317,19 +351,28 @@ private fun CropCanvas(
                             } else if (pressed == 1) {
                                 val change = event.changes.first { it.pressed }
                                 val position = change.position
-                                val dx = (position.x - lastPosition.x) / size.width
-                                val dy = (position.y - lastPosition.y) / size.height
+                                val dxScreen = position.x - lastPosition.x
+                                val dyScreen = position.y - lastPosition.y
+                                val spec = draftState.value
                                 when (mode) {
                                     1 -> {
-                                        draftState.value = draftState.value
-                                            .translate(dx, dy, displayAspect)
+                                        // Dragging moves the photo, so the crop window moves back.
+                                        val dx = -dxScreen * spec.widthFraction / frameW
+                                        val dy = -dyScreen * spec.heightFraction / frameH
+                                        draftState.value = spec.translate(dx, dy, displayAspect)
                                         change.consume()
                                     }
                                     2 -> {
                                         val active = corner
-                                        if (active != null && (abs(dx) > 0f || abs(dy) > 0f)) {
-                                            draftState.value = draftState.value
-                                                .resize(active, dx, dy, displayAspect)
+                                        if (active != null && (dxScreen != 0f || dyScreen != 0f)) {
+                                            val dx = dxScreen * spec.widthFraction / frameW
+                                            val dy = dyScreen * spec.heightFraction / frameH
+                                            draftState.value = spec.resize(
+                                                active,
+                                                dx,
+                                                dy,
+                                                displayAspect
+                                            )
                                             change.consume()
                                         }
                                     }
@@ -341,60 +384,94 @@ private fun CropCanvas(
                     }
                 }
         ) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.FillBounds,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(imageFrameWidth, imageFrameHeight)
-                    .graphicsLayer {
-                        rotationZ = rotation + draft.angle
-                        scaleX = scale
-                        scaleY = scale
-                    }
-            )
+            Canvas(Modifier.fillMaxSize()) {
+                // Frame width maps the whole crop width, so a single uniform
+                // scale keeps the photo's proportions at every angle.
+                val scale = frameWidthPx / cropPixelWidth
+                val cover = EditCrop.coverScale(draft.angle, bitmap.width, bitmap.height)
+                val cropOffsetX =
+                    ((draft.left + draft.right) * 0.5f - 0.5f) * displayWidth
+                val cropOffsetY =
+                    ((draft.top + draft.bottom) * 0.5f - 0.5f) * displayHeight
+                withTransform({
+                    translate(size.width / 2f, size.height / 2f)
+                    translate(-scale * cropOffsetX, -scale * cropOffsetY)
+                    scale(scale * cover, scale * cover, Offset.Zero)
+                    rotate(draft.angle, Offset.Zero)
+                    rotate(rotation.toFloat(), Offset.Zero)
+                }) {
+                    drawImage(
+                        image = imageBitmap,
+                        topLeft = Offset(-bitmap.width / 2f, -bitmap.height / 2f)
+                    )
+                }
+            }
 
             Canvas(Modifier.fillMaxSize()) {
-                val l = draft.left * size.width
-                val t = draft.top * size.height
-                val r = draft.right * size.width
-                val b = draft.bottom * size.height
-                drawCropOverlay(l, t, r, b, gridColor)
+                val frameLeft = (size.width - frameWidthPx) * 0.5f
+                val frameTop = (size.height - frameHeightPx) * 0.5f
+                val frameRight = frameLeft + frameWidthPx
+                val frameBottom = frameTop + frameHeightPx
+                val scrim = Color.Black.copy(alpha = 0.6f)
+
+                // Dim everything outside the crop frame, like Lightroom.
+                drawRect(scrim, Offset.Zero, Size(size.width, frameTop))
+                drawRect(
+                    scrim,
+                    Offset(0f, frameBottom),
+                    Size(size.width, size.height - frameBottom)
+                )
+                drawRect(scrim, Offset(0f, frameTop), Size(frameLeft, frameHeightPx))
+                drawRect(
+                    scrim,
+                    Offset(frameRight, frameTop),
+                    Size(size.width - frameRight, frameHeightPx)
+                )
+
+                drawCropFrame(
+                    showHandles = freeResize,
+                    left = frameLeft,
+                    top = frameTop,
+                    width = frameWidthPx,
+                    height = frameHeightPx
+                )
             }
         }
     }
 }
 
-private fun DrawScope.drawCropOverlay(l: Float, t: Float, r: Float, b: Float, gridColor: Color) {
-    val scrim = Color.Black.copy(alpha = 0.56f)
-    drawRect(scrim, topLeft = Offset(0f, 0f), size = Size(size.width, t))
-    drawRect(scrim, topLeft = Offset(0f, b), size = Size(size.width, size.height - b))
-    drawRect(scrim, topLeft = Offset(0f, t), size = Size(l, b - t))
-    drawRect(scrim, topLeft = Offset(r, t), size = Size(size.width - r, b - t))
-
+/** Lightroom-style frame: thin white border, third lines and corner ticks. */
+private fun DrawScope.drawCropFrame(
+    showHandles: Boolean,
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float
+) {
+    val gridColor = Color.White.copy(alpha = 0.34f)
     drawRect(
-        color = Color.White.copy(alpha = 0.92f),
-        topLeft = Offset(l, t),
-        size = Size(r - l, b - t),
-        style = Stroke(width = 1.2.dp.toPx())
+        color = Color.White.copy(alpha = 0.9f),
+        topLeft = Offset(left, top),
+        size = Size(width, height),
+        style = Stroke(width = 1.dp.toPx())
     )
 
     val gridStroke = 1.dp.toPx()
     for (i in 1..2) {
-        val x = l + (r - l) * i / 3f
-        drawLine(gridColor, Offset(x, t), Offset(x, b), gridStroke)
-        val y = t + (b - t) * i / 3f
-        drawLine(gridColor, Offset(l, y), Offset(r, y), gridStroke)
+        val x = left + width * i / 3f
+        drawLine(gridColor, Offset(x, top), Offset(x, top + height), gridStroke)
+        val y = top + height * i / 3f
+        drawLine(gridColor, Offset(left, y), Offset(left + width, y), gridStroke)
     }
 
-    val handleLength = (min(r - l, b - t) * 0.16f)
-        .coerceIn(12.dp.toPx(), 28.dp.toPx())
-    val handleStroke = 3.dp.toPx()
-    drawCorner(l, t, handleLength, 1f, 1f, handleStroke)
-    drawCorner(r, t, handleLength, -1f, 1f, handleStroke)
-    drawCorner(l, b, handleLength, 1f, -1f, handleStroke)
-    drawCorner(r, b, handleLength, -1f, -1f, handleStroke)
+    val handleLength = (min(width, height) * 0.12f)
+        .coerceIn(14.dp.toPx(), 34.dp.toPx())
+    val handleStroke = if (showHandles) 4.dp.toPx() else 3.dp.toPx()
+    val color = if (showHandles) Amber else Color.White
+    drawCorner(left, top, handleLength, 1f, 1f, handleStroke, color)
+    drawCorner(left + width, top, handleLength, -1f, 1f, handleStroke, color)
+    drawCorner(left, top + height, handleLength, 1f, -1f, handleStroke, color)
+    drawCorner(left + width, top + height, handleLength, -1f, -1f, handleStroke, color)
 }
 
 private fun DrawScope.drawCorner(
@@ -403,17 +480,18 @@ private fun DrawScope.drawCorner(
     length: Float,
     dx: Float,
     dy: Float,
-    stroke: Float
+    stroke: Float,
+    color: Color = Amber
 ) {
     drawLine(
-        color = Amber,
+        color = color,
         start = Offset(x, y),
         end = Offset(x + length * dx, y),
         strokeWidth = stroke,
         cap = StrokeCap.Round
     )
     drawLine(
-        color = Amber,
+        color = color,
         start = Offset(x, y),
         end = Offset(x, y + length * dy),
         strokeWidth = stroke,
@@ -421,15 +499,97 @@ private fun DrawScope.drawCorner(
     )
 }
 
+/**
+ * Lightroom-style protractor: a horizontal tick strip under the photo. Dragging
+ * it adjusts the straighten angle; the angle labels sits above the needle.
+ */
+@Composable
+private fun StraightenDial(
+    angle: Float,
+    onDelta: (Float) -> Unit
+) {
+    val currentAngle by rememberUpdatedState(angle)
+    val currentOnDelta by rememberUpdatedState(onDelta)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Black)
+            .padding(horizontal = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            String.format(Locale.US, "%+.1f°", angle),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (abs(angle) > 0.05f) Amber else TextSecondary,
+            fontWeight = FontWeight.Bold
+        )
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(34.dp)
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var lastX = down.position.x
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.count { it.pressed }
+                            val change = event.changes.firstOrNull { it.pressed } ?: break
+                            val x = change.position.x
+                            val delta = (x - lastX) * (90f / size.width)
+                            if (delta != 0f) {
+                                currentOnDelta(delta)
+                                change.consume()
+                            }
+                            lastX = x
+                            if (pressed == 0) break
+                        } while (true)
+                    }
+                }
+        ) {
+            val step = size.width / 90f
+            val baseline = size.height * 0.72f
+            val centerX = size.width / 2f
+
+            // Baseline with major ticks every 15 degrees and minor every 5.
+            drawLine(
+                color = Color.White.copy(alpha = 0.35f),
+                start = Offset(0f, baseline),
+                end = Offset(size.width, baseline),
+                strokeWidth = 1.dp.toPx()
+            )
+            for (degree in -45..45 step 5) {
+                val x = centerX + degree * step
+                val major = degree % 15 == 0
+                val height = if (major) 10.dp.toPx() else 5.dp.toPx()
+                drawLine(
+                    color = Color.White.copy(alpha = if (major) 0.75f else 0.4f),
+                    start = Offset(x, baseline - height),
+                    end = Offset(x, baseline),
+                    strokeWidth = if (major) 1.2.dp.toPx() else 1.dp.toPx()
+                )
+            }
+
+            // Needle for the current angle.
+            val needleX = centerX + currentAngle * step
+            drawLine(
+                color = Amber,
+                start = Offset(needleX, 0f),
+                end = Offset(needleX, baseline),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
 @Composable
 private fun CropControls(
-    draft: CropSpec,
     options: List<AspectOption>,
     selectedAspect: Int,
     rotation: Int,
     onSelectAspect: (Int) -> Unit,
     onRotate: (Int) -> Unit,
-    onAngleChange: (Float) -> Unit,
     onReset: () -> Unit
 ) {
     Surface(color = InkElevated) {
@@ -437,7 +597,7 @@ private fun CropControls(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             Row(
                 modifier = Modifier
@@ -464,16 +624,16 @@ private fun CropControls(
                 }
             }
 
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "旋转",
                     style = MaterialTheme.typography.labelMedium,
                     color = TextSecondary,
-                    modifier = Modifier.width(32.dp)
+                    modifier = Modifier.width(36.dp)
                 )
-                IconButton(onClick = { onRotate(-90) }, modifier = Modifier.size(34.dp)) {
+                IconButton(onClick = { onRotate(-90) }, modifier = Modifier.size(36.dp)) {
                     Icon(
                         Icons.AutoMirrored.Filled.RotateLeft,
                         contentDescription = "向左旋转 90 度",
@@ -487,7 +647,7 @@ private fun CropControls(
                     color = TextPrimary,
                     modifier = Modifier.width(42.dp)
                 )
-                IconButton(onClick = { onRotate(90) }, modifier = Modifier.size(34.dp)) {
+                IconButton(onClick = { onRotate(90) }, modifier = Modifier.size(36.dp)) {
                     Icon(
                         Icons.AutoMirrored.Filled.RotateRight,
                         contentDescription = "向右旋转 90 度",
@@ -499,38 +659,6 @@ private fun CropControls(
                 TextButton(onClick = onReset) {
                     Text("重置", color = TextSecondary)
                 }
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.AutoMirrored.Filled.RotateLeft,
-                    contentDescription = null,
-                    tint = TextSecondary,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("纠偏", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                Slider(
-                    value = draft.angle,
-                    onValueChange = onAngleChange,
-                    valueRange = -CropSpec.MAX_ANGLE..CropSpec.MAX_ANGLE,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 10.dp),
-                    colors = SliderDefaults.colors(
-                        thumbColor = Amber,
-                        activeTrackColor = Amber,
-                        inactiveTrackColor = Card,
-                        activeTickColor = Color.Transparent,
-                        inactiveTickColor = Color.Transparent
-                    )
-                )
-                Text(
-                    String.format(Locale.US, "%+.1f°", draft.angle),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextPrimary,
-                    modifier = Modifier.width(48.dp)
-                )
             }
         }
     }
@@ -559,9 +687,3 @@ private fun EditCrop.aspectIndex(): Int {
     val index = CropAspect.entries.indexOf(selected)
     return (index + 1).coerceAtLeast(1)
 }
-
-private fun CropSpec.rectIn(width: Float, height: Float): FloatArray =
-    floatArrayOf(left * width, top * height, right * width, bottom * height)
-
-private fun Offset.inside(rect: FloatArray): Boolean =
-    x >= rect[0] && x <= rect[2] && y >= rect[1] && y <= rect[3]

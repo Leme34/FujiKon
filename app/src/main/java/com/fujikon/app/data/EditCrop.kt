@@ -255,7 +255,7 @@ data class EditCrop(
         const val STRAIGHTEN_RANGE = 45f
         private const val MIN_ASPECT = 0.01f
         private const val MAX_ASPECT = 100f
-        private const val MIN_SIZE = 0.12f
+        private const val MIN_SIZE = CropSpec.MIN_FRACTION
 
         val Full = EditCrop()
 

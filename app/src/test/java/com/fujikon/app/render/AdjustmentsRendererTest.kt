@@ -105,6 +105,60 @@ class AdjustmentsRendererTest {
         assertEquals(12, cropped.height)
     }
 
+    @Test
+    fun quarterTurnSwapsDimensionsWithoutSquashing() = runBlocking {
+        val rotated = ImageRenderer().crop(twoToneBitmap(), EditCrop(rotation = 90))
+
+        assertEquals(2, rotated.width)
+        assertEquals(4, rotated.height)
+        assertTrue(averageRedInRow(rotated, 0) > averageGreenInRow(rotated, 0) + 60f)
+        assertTrue(averageGreenInRow(rotated, rotated.height - 1) >
+            averageRedInRow(rotated, rotated.height - 1) + 60f)
+    }
+
+    @Test
+    fun freeRectQuarterTurnKeepsTheSameProportions() = runBlocking {
+        val rotated = ImageRenderer().crop(
+            twoToneBitmap(),
+            EditCrop(rotation = 90, customRect = CropRect(0f, 0f, 1f, 1f))
+        )
+
+        assertEquals(2, rotated.width)
+        assertEquals(4, rotated.height)
+        assertTrue(averageRedInRow(rotated, 0) > averageGreenInRow(rotated, 0) + 60f)
+        assertTrue(averageGreenInRow(rotated, rotated.height - 1) >
+            averageRedInRow(rotated, rotated.height - 1) + 60f)
+    }
+
+    private fun twoToneBitmap(): Bitmap {
+        val bitmap = Bitmap.createBitmap(4, 2, Bitmap.Config.ARGB_8888)
+        for (y in 0 until 2) {
+            for (x in 0 until 4) {
+                bitmap.setPixel(
+                    x, y,
+                    if (x < 2) android.graphics.Color.RED else android.graphics.Color.GREEN
+                )
+            }
+        }
+        return bitmap
+    }
+
+    private fun averageRedInRow(bitmap: Bitmap, row: Int): Float {
+        var sum = 0
+        for (x in 0 until bitmap.width) {
+            sum += (bitmap.getPixel(x, row) shr 16) and 0xFF
+        }
+        return sum.toFloat() / bitmap.width
+    }
+
+    private fun averageGreenInRow(bitmap: Bitmap, row: Int): Float {
+        var sum = 0
+        for (x in 0 until bitmap.width) {
+            sum += (bitmap.getPixel(x, row) shr 8) and 0xFF
+        }
+        return sum.toFloat() / bitmap.width
+    }
+
     private fun samplePreset(): Preset {
         val bytes = javaClass.classLoader!!.getResourceAsStream("agfa_optima.ncp")!!.readBytes()
         val control = PictureControlParser.parse(bytes, "agfa_optima.ncp")
