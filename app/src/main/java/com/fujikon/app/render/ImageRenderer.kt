@@ -49,6 +49,7 @@ class ImageRenderer {
         checkCancelled(job)
 
         val plan = buildPlan(preset, forExport, width, height)
+        val adjustments = preset.adjustments.normalized()
 
         parallelRows(height) { from, to ->
             processRows(pixels, width, from, to, plan, job)
@@ -57,9 +58,10 @@ class ImageRenderer {
         if (plan.needsDetail) {
             applyDetail(pixels, width, height, plan, job)
         }
+        applyLensBlur(pixels, width, height, adjustments.lensBlur, job)
         checkCancelled(job)
 
-        return cropPixels(pixels, width, height, preset.adjustments.normalized().crop, job)
+        return cropPixels(pixels, width, height, adjustments.crop, job)
     }
 
     /**

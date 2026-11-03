@@ -57,7 +57,9 @@ fun AdjustmentSlider(
     onReset: () -> Unit = {},
     step: Float = 1f,
     formattedValue: String = formatSliderValue(value, step),
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    /** Fills the track from the left edge instead of the centre for 0..100 controls. */
+    fillFromStart: Boolean = false
 ) {
     val currentOnChange by rememberUpdatedState(onValueChange)
     val currentOnFinished by rememberUpdatedState(onValueChangeFinished)
@@ -182,7 +184,7 @@ fun AdjustmentSlider(
             val fraction = ((currentValue - valueRange.start) /
                 (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
             val valueX = trackStart + trackLength * fraction
-            val zeroX = trackStart + trackLength * 0.5f
+            val zeroX = if (fillFromStart) trackStart else trackStart + trackLength * 0.5f
             val centerY = size.height * 0.5f
 
             drawLine(
@@ -192,13 +194,15 @@ fun AdjustmentSlider(
                 strokeWidth = 2.dp.toPx(),
                 cap = StrokeCap.Round
             )
-            drawLine(
-                color = Color.White.copy(alpha = 0.26f),
-                start = Offset(zeroX, centerY - 5.dp.toPx()),
-                end = Offset(zeroX, centerY + 5.dp.toPx()),
-                strokeWidth = 1.dp.toPx(),
-                cap = StrokeCap.Round
-            )
+            if (!fillFromStart) {
+                drawLine(
+                    color = Color.White.copy(alpha = 0.26f),
+                    start = Offset(zeroX, centerY - 5.dp.toPx()),
+                    end = Offset(zeroX, centerY + 5.dp.toPx()),
+                    strokeWidth = 1.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
             if (modified) {
                 drawLine(
                     color = Amber.copy(alpha = 0.82f),

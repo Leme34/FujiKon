@@ -15,6 +15,7 @@ import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.EditHistory
 import com.fujikon.app.data.EditSnapshot
+import com.fujikon.app.data.LensBlur
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.Preset
@@ -531,6 +532,7 @@ class EditorViewModel(
         val hasToneCurve: Boolean get() = !effectiveToneCurve.isLinear()
         val hasAdjustments: Boolean get() = !adjustments.isNeutral()
         val hasCrop: Boolean get() = !adjustments.crop.isFull()
+        val hasLensBlur: Boolean get() = !adjustments.lensBlur.isOff()
         val canUndo: Boolean get() = historyIndex > 0
         val canRedo: Boolean get() = historyIndex in 0 until historyEntries.lastIndex
         val currentHistoryLabel: String? get() = historyEntries.getOrNull(historyIndex)?.label
@@ -734,6 +736,11 @@ class EditorViewModel(
      */
     fun setCrop(crop: EditCrop) {
         setAdjustments(_state.value.adjustments.copy(crop = crop), "裁剪")
+    }
+
+    /** Applies the Lightroom-style lens blur edited in the full-screen editor. */
+    fun setLensBlur(lensBlur: LensBlur) {
+        setAdjustments(_state.value.adjustments.copy(lensBlur = lensBlur), "镜头模糊")
     }
 
     /**

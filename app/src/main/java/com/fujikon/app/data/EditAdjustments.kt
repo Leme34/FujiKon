@@ -27,6 +27,8 @@ data class EditAdjustments(
     val hsl: HslAdjustments = HslAdjustments.Neutral,
     /** Non-destructive crop framing. */
     val crop: EditCrop = EditCrop.Full,
+    /** Lightroom-style lens blur around a focus region. */
+    val lensBlur: LensBlur = LensBlur.Off,
     /** Film-inspired creative look id. Use [CreativeFilter.NONE.id] for no look. */
     val creativeFilter: String = CreativeFilter.NONE.id,
     /** 0..100 blend for [creativeFilter]. */
@@ -47,6 +49,7 @@ data class EditAdjustments(
         dehaze = dehaze.coerceIn(-TONE_RANGE, TONE_RANGE),
         hsl = hsl.normalized(),
         crop = crop.normalized(),
+        lensBlur = lensBlur.normalized(),
         creativeFilter = CreativeFilter.fromId(creativeFilter).id,
         filterStrength = filterStrength.coerceIn(0f, 100f)
     )
@@ -66,6 +69,7 @@ data class EditAdjustments(
             abs(dehaze) <= tolerance &&
             hsl.isNeutral(tolerance) &&
             crop.isFull(tolerance) &&
+            lensBlur.isOff(tolerance) &&
             (creativeFilter == CreativeFilter.NONE.id || filterStrength <= tolerance)
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -83,6 +87,7 @@ data class EditAdjustments(
         put("dehaze", dehaze.toDouble())
         put("hsl", hsl.toJson())
         put("crop", crop.toJson())
+        put("lensBlur", lensBlur.toJson())
         put("creativeFilter", creativeFilter)
         put("filterStrength", filterStrength.toDouble())
     }
@@ -110,6 +115,7 @@ data class EditAdjustments(
                 dehaze = json.optDouble("dehaze", 0.0).toFloat(),
                 hsl = HslAdjustments.fromJson(json.optJSONObject("hsl")),
                 crop = EditCrop.fromJson(json.optJSONObject("crop")),
+                lensBlur = LensBlur.fromJson(json.optJSONObject("lensBlur")),
                 creativeFilter = json.optString("creativeFilter", CreativeFilter.NONE.id),
                 filterStrength = json.optDouble("filterStrength", 100.0).toFloat()
             ).normalized()

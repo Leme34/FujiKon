@@ -36,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Equalizer
@@ -84,6 +85,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.fujikon.app.data.LensBlur
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.components.AdjustmentsSheet
@@ -91,6 +93,7 @@ import com.fujikon.app.ui.components.CropEditorOverlay
 import com.fujikon.app.ui.components.EditHistorySheet
 import com.fujikon.app.ui.components.ExportOptionsSheet
 import com.fujikon.app.ui.components.HistogramCard
+import com.fujikon.app.ui.components.LensBlurEditorOverlay
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.components.ToneCurveEditorSheet
 import com.fujikon.app.ui.components.ZoomableImage
@@ -127,6 +130,8 @@ fun EditorScreen(
     var showCurve by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
     var showCrop by remember { mutableStateOf(false) }
+    var showBlur by remember { mutableStateOf(false) }
+    var blurInitial by remember { mutableStateOf(LensBlur.Off) }
     var showHistory by remember { mutableStateOf(false) }
     var savingCurve by remember { mutableStateOf(false) }
     var savingAdjustments by remember { mutableStateOf(false) }
@@ -324,6 +329,27 @@ fun EditorScreen(
                             Icon(Icons.Filled.Crop, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(3.dp))
                             Text("裁剪", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                blurInitial = state.adjustments.lensBlur
+                                showBlur = true
+                            },
+                            enabled = !exporting && preset != null && state.cropBase != null,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (state.hasLensBlur) Amber.copy(alpha = 0.7f) else Outline
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.hasLensBlur) Amber else TextPrimary
+                            ),
+                            modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Icon(Icons.Filled.BlurOn, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("模糊", style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
                             onClick = { showCurve = true },
@@ -777,6 +803,36 @@ fun EditorScreen(
                     viewModel.setCrop(crop)
                 },
                 onCancel = { showCrop = false }
+            )
+        }
+    }
+
+    val blurBase = state.cropBase
+    if (showBlur && blurBase != null) {
+        Dialog(
+            onDismissRequest = {
+                viewModel.setLensBlur(blurInitial)
+                showBlur = false
+            },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                // Let the window fit the system bars like the crop dialog; the
+                // overlay also applies safe drawing padding for edge-to-edge.
+                decorFitsSystemWindows = true
+            )
+        ) {
+            LensBlurEditorOverlay(
+                bitmap = blurBase,
+                initial = blurInitial,
+                onPreview = { viewModel.setLensBlur(it) },
+                onApply = { lensBlur ->
+                    showBlur = false
+                    viewModel.setLensBlur(lensBlur)
+                },
+                onCancel = {
+                    viewModel.setLensBlur(blurInitial)
+                    showBlur = false
+                }
             )
         }
     }

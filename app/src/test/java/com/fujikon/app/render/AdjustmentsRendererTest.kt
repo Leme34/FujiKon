@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import com.fujikon.app.data.CropRect
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.EditCrop
+import com.fujikon.app.data.LensBlur
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.PictureControlParser
 import kotlinx.coroutines.runBlocking
@@ -129,6 +130,74 @@ class AdjustmentsRendererTest {
         assertTrue(averageGreenInRow(rotated, rotated.height - 1) >
             averageRedInRow(rotated, rotated.height - 1) + 60f)
     }
+
+    @Test
+    fun lensBlurKeepsTheFocusRegionSharpAndBlursTheRest() = runBlocking {
+        val source = edgeBitmap()
+        val renderer = ImageRenderer()
+        val base = renderer.render(source, Preset.none(), forExport = false)
+        val blurred = renderer.render(
+            source,
+            Preset.none().copy(
+                adjustments = EditAdjustments(
+                    lensBlur = LensBlur(
+                        amount = 100f,
+                        focusX = 0.02f,
+                        focusY = 0.5f,
+                        focusSize = 10f,
+                        feather = 0f
+                    )
+                )
+            ),
+            forExport = false
+        )
+
+        // Inside the focus region the pixel is untouched.
+        assertEquals(base.getPixel(10, 100), blurred.getPixel(10, 100))
+
+        // The red/green edge picks up the opposite tone once it is out of focus.
+        val plainEdge = base.getPixel(199, 100)
+        val blurredEdge = blurred.getPixel(199, 100)
+        assertTrue(channel(blurredEdge, 8) > channel(plainEdge, 8) + 30)
+        assertTrue(channel(blurredEdge, 16) < channel(plainEdge, 16) - 20)
+    }
+
+    @Test
+    fun zeroAmountLeavesTheRenderingUntouched() = runBlocking {
+        val source = edgeBitmap()
+        val renderer = ImageRenderer()
+        val base = renderer.render(source, Preset.none(), forExport = false)
+        val withBlur = renderer.render(
+            source,
+            Preset.none().copy(adjustments = EditAdjustments(lensBlur = LensBlur(amount = 0f))),
+            forExport = false
+        )
+
+        assertEquals(averageLuma(base), averageLuma(withBlur), 0.001f)
+    }
+
+    @Test
+    fun autoFocusPointPicksTheDetailedArea() {
+        val point = autoFocusPoint(edgeBitmap())!!
+
+        assertTrue(point.first in 0.2f..0.8f)
+        assertTrue(point.second in 0.2f..0.8f)
+    }
+
+    private fun edgeBitmap(): Bitmap {
+        val width = 400
+        val height = 200
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                pixels[y * width + x] =
+                    if (x < width / 2) android.graphics.Color.RED else android.graphics.Color.GREEN
+            }
+        }
+        return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun channel(color: Int, shift: Int): Int = (color shr shift) and 0xFF
 
     private fun twoToneBitmap(): Bitmap {
         val bitmap = Bitmap.createBitmap(4, 2, Bitmap.Config.ARGB_8888)

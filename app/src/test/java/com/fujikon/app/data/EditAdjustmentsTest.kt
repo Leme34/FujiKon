@@ -112,4 +112,38 @@ class EditAdjustmentsTest {
         assertEquals(CreativeFilter.NONE.id, normalized.creativeFilter)
         assertEquals(100f, normalized.filterStrength, 0.001f)
     }
+
+    @Test
+    fun lensBlurRoundTripsAndIsClamped() {
+        val source = EditAdjustments(
+            lensBlur = LensBlur(
+                amount = 42f,
+                focusX = 0.2f,
+                focusY = 0.8f,
+                focusSize = 60f,
+                feather = 30f,
+                highlights = 12f
+            )
+        )
+        val parsed = EditAdjustments.fromJson(source.toJson())
+
+        assertEquals(source, parsed)
+        assertFalse(parsed.isNeutral())
+
+        val clamped = LensBlur(
+            amount = 260f,
+            focusX = -1f,
+            focusY = 2f,
+            focusSize = 200f,
+            feather = -5f,
+            highlights = 150f
+        ).normalized()
+
+        assertEquals(LensBlur.MAX_AMOUNT, clamped.amount, 0.001f)
+        assertEquals(0f, clamped.focusX, 0.001f)
+        assertEquals(1f, clamped.focusY, 0.001f)
+        assertEquals(LensBlur.MAX_FOCUS_SIZE, clamped.focusSize, 0.001f)
+        assertEquals(0f, clamped.feather, 0.001f)
+        assertEquals(LensBlur.MAX_AMOUNT, clamped.highlights, 0.001f)
+    }
 }
