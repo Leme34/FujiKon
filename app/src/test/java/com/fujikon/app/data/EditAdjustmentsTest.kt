@@ -146,4 +146,40 @@ class EditAdjustmentsTest {
         assertEquals(0f, clamped.feather, 0.001f)
         assertEquals(LensBlur.MAX_AMOUNT, clamped.highlights, 0.001f)
     }
+
+    @Test
+    fun portraitRetouchRoundTripsAndIsClamped() {
+        val source = EditAdjustments(
+            portrait = PortraitRetouch(
+                style = PortraitStyle.CREAM.id,
+                smooth = 45f,
+                whiten = 20f,
+                blush = 12f,
+                contour = 8f
+            )
+        )
+        val parsed = EditAdjustments.fromJson(source.toJson())
+
+        assertEquals(source, parsed)
+        assertFalse(parsed.isNeutral())
+
+        val clamped = PortraitRetouch(
+            style = "unknown",
+            smooth = -10f,
+            whiten = 999f,
+            blush = 50f,
+            contour = 200f
+        ).normalized()
+
+        assertEquals(PortraitStyle.NONE.id, clamped.style)
+        assertEquals(0f, clamped.smooth, 0.001f)
+        assertEquals(PortraitRetouch.MAX_STRENGTH, clamped.whiten, 0.001f)
+        assertEquals(50f, clamped.blush, 0.001f)
+        assertEquals(PortraitRetouch.MAX_STRENGTH, clamped.contour, 0.001f)
+
+        val styled = PortraitRetouch.Off.withStyle(PortraitStyle.CLEAR)
+        assertEquals(PortraitStyle.CLEAR.id, styled.style)
+        assertEquals(PortraitStyle.CLEAR.smooth, styled.smooth, 0.001f)
+        assertEquals(PortraitStyle.CUSTOM.id, styled.copy(smooth = 33f).asCustom().style)
+    }
 }

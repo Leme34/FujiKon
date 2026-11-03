@@ -51,6 +51,10 @@ class ImageRenderer {
         val plan = buildPlan(preset, forExport, width, height)
         val adjustments = preset.adjustments.normalized()
 
+        // Skin retouch runs before the grade so the mask sees natural skin
+        // tones; strong looks (monochrome, filters) would otherwise hide it.
+        applyPortrait(pixels, width, height, adjustments.portrait, job)
+
         parallelRows(height) { from, to ->
             processRows(pixels, width, from, to, plan, job)
         }

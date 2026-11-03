@@ -143,7 +143,7 @@ fun AdjustmentsSheet(
     var curveDirty by remember { mutableStateOf(false) }
     var expandedGroups by remember {
         mutableStateOf(
-            AdjustmentGroups.map { it.title }.toSet() + setOf("HSL", "影调", "滤镜")
+            AdjustmentGroups.map { it.title }.toSet() + setOf("人像", "HSL", "影调", "滤镜")
         )
     }
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -276,7 +276,7 @@ fun AdjustmentsSheet(
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        "固定半屏 · HSL / 影调 / 滤镜 · 双击滑块归零",
+                        "固定半屏 · 人像 / HSL / 影调 / 滤镜 · 双击滑块归零",
                         style = MaterialTheme.typography.bodySmall.copy(
                             shadow = Shadow(Color.Black.copy(alpha = 0.72f), blurRadius = 4f)
                         ),
@@ -383,6 +383,17 @@ fun AdjustmentsSheet(
                     }
                     Spacer(Modifier.height(2.dp))
                 }
+
+                PortraitSection(
+                    portrait = draft.portrait,
+                    expanded = "人像" in expandedGroups,
+                    onToggle = { toggleGroup("人像") },
+                    onChange = { portrait, field ->
+                        updateDraft(field) { it.copy(portrait = portrait) }
+                    },
+                    onFinished = { field -> previewNow(field) },
+                    enabled = !saving
+                )
 
                 HslSection(
                     hsl = draft.hsl,
