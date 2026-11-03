@@ -128,13 +128,15 @@ fun AdjustmentSlider(
                             }
                             if (!dragging && !verticalGesture) {
                                 // Only claim the gesture once it is clearly
-                                // horizontal. A vertical swipe belongs to the
-                                // sheet's scroll container, not to the slider.
+                                // horizontal. A diagonal swipe (common when
+                                // scrolling the sheet) must never edit a
+                                // slider, so horizontal movement has to
+                                // dominate by a wide margin.
                                 val dx = abs(change.position.x - downX)
                                 val dy = abs(change.position.y - down.position.y)
-                                if (dx > viewConfiguration.touchSlop && dx > dy) {
+                                if (dx > viewConfiguration.touchSlop && dx > dy * 2f) {
                                     dragging = true
-                                } else if (dy > viewConfiguration.touchSlop && dy >= dx) {
+                                } else if (dy > viewConfiguration.touchSlop) {
                                     verticalGesture = true
                                 }
                             }
@@ -170,8 +172,10 @@ fun AdjustmentSlider(
                             currentOnReset()
                             lastTapTime = 0L
                         } else {
-                            currentOnChange(valueAt(downX, width, valueRange, safeStep))
-                            currentOnFinished()
+                            // A plain tap — or a touch that turned out to be
+                            // part of a scroll — must not move the value; only
+                            // a deliberate horizontal drag (or a double tap)
+                            // may edit a slider.
                             lastTapTime = tapTime
                             lastTapX = downX
                         }

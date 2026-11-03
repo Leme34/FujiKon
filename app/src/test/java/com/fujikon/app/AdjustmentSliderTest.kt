@@ -85,6 +85,56 @@ class AdjustmentSliderTest {
     }
 
     @Test
+    fun diagonalSwipeDoesNotChangeValue() {
+        var value by mutableStateOf(0f)
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "高光",
+                value = value,
+                valueRange = -100f..100f,
+                onValueChange = { value = it },
+                onValueChangeFinished = { },
+                modifier = Modifier.size(240.dp, 48.dp).testTag("diagonal")
+            )
+        }
+
+        rule.onNodeWithTag("diagonal").performTouchInput {
+            down(center)
+            moveTo(center + Offset(30f, -70f))
+            moveTo(center + Offset(40f, -110f))
+            up()
+        }
+        rule.waitForIdle()
+
+        assertEquals("a diagonal scroll swipe must not edit the slider", 0f, value, 0.001f)
+    }
+
+    @Test
+    fun singleTapDoesNotChangeValue() {
+        var value by mutableStateOf(0f)
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "阴影",
+                value = value,
+                valueRange = -100f..100f,
+                onValueChange = { value = it },
+                onValueChangeFinished = { },
+                modifier = Modifier.size(240.dp, 48.dp).testTag("tap")
+            )
+        }
+
+        rule.onNodeWithTag("tap").performTouchInput {
+            down(center + Offset(90f, 0f))
+            up()
+        }
+        rule.waitForIdle()
+
+        assertEquals("a stray tap must not edit the slider", 0f, value, 0.001f)
+    }
+
+    @Test
     fun doubleTapResetsTheSlider() {
         var value by mutableStateOf(40f)
         var resets = 0
