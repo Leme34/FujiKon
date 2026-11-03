@@ -26,6 +26,12 @@ if not exist "%JDK_HOME%\bin\java.exe" (
 set "JAVA_HOME=%JDK_HOME%"
 set "PATH=%JAVA_HOME%\bin;%PATH%"
 
+REM The shared Gradle home on this machine lives under the Android SDK and is
+REM not writable, so a new daemon cannot even create its log
+REM ("Unable to create daemon log file"). Keep everything project-local instead;
+REM .gradle-home is ignored by git and already holds the downloaded caches.
+set "GRADLE_USER_HOME=%~dp0.gradle-home"
+
 REM ---------- 2. Read app version from Gradle ----------
 set "GRADLE_FILE=app\build.gradle.kts"
 set "APP_VERSION="
@@ -58,9 +64,22 @@ echo ============================================================
 "%JAVA_HOME%\bin\java.exe" -version 2>&1 | findstr /i "version"
 
 REM ---------- 3. Clean ----------
+REM A leftover Gradle/Kotlin daemon keeps holding the build directory and
+REM several 4 GB heaps alive; clean then waits on a file lock and the Kotlin
+REM compiler can run out of native memory (see hs_err_pid*.log). Stop the
+REM daemons first and build in a single short-lived JVM with limited memory.
+echo.
+echo [0/2] Stopping stale Gradle daemons...
+call gradlew.bat -Dorg.gradle.java.home="%JAVA_HOME%" --stop >nul 2>&1
+REM A daemon left over from an interrupted build keeps holding the wrapper and
+REM dependency files, so the next clean either waits forever or fails with
+REM AccessDenied. Kill the leftovers (Gradle/Kotlin only, never the IDE).
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'GradleDaemon|KotlinCompileDaemon' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+set "GRADLE_FLAGS=--no-daemon --no-parallel --max-workers=2 -Pkotlin.daemon.jvmargs=-Xmx2g"
+
 echo.
 echo [1/2] Cleaning build cache...
-call gradlew.bat -Dorg.gradle.java.home="%JAVA_HOME%" clean
+call gradlew.bat -Dorg.gradle.java.home="%JAVA_HOME%" %GRADLE_FLAGS% clean
 if errorlevel 1 (
     echo [ERROR] Clean step failed.
     exit /b 1
@@ -69,7 +88,7 @@ if errorlevel 1 (
 REM ---------- 4. Build ----------
 echo.
 echo [2/2] Building debug APK...
-call gradlew.bat -Dorg.gradle.java.home="%JAVA_HOME%" :app:assembleDebug
+call gradlew.bat -Dorg.gradle.java.home="%JAVA_HOME%" %GRADLE_FLAGS% :app:assembleDebug
 if errorlevel 1 (
     echo [ERROR] Build step failed.
     exit /b 1
