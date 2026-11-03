@@ -77,6 +77,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -85,7 +87,7 @@ import coil.compose.AsyncImage
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.components.AdjustmentsSheet
-import com.fujikon.app.ui.components.CropSheet
+import com.fujikon.app.ui.components.CropEditorOverlay
 import com.fujikon.app.ui.components.EditHistorySheet
 import com.fujikon.app.ui.components.ExportOptionsSheet
 import com.fujikon.app.ui.components.HistogramCard
@@ -307,7 +309,7 @@ fun EditorScreen(
                         }
                         OutlinedButton(
                             onClick = { showCrop = true },
-                            enabled = !exporting && preset != null,
+                            enabled = !exporting && preset != null && state.cropBase != null,
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(horizontal = 2.dp),
                             border = BorderStroke(
@@ -623,20 +625,6 @@ fun EditorScreen(
         )
     }
 
-    if (showCrop && preset != null) {
-        CropSheet(
-            initialCrop = state.adjustments.crop,
-            rendering = state.loading,
-            onPreview = { crop ->
-                viewModel.setAdjustments(
-                    viewModel.state.value.adjustments.copy(crop = crop),
-                    "裁剪"
-                )
-            },
-            onDismiss = { showCrop = false }
-        )
-    }
-
     if (showHistory) {
         EditHistorySheet(
             entries = state.historyEntries,
@@ -770,5 +758,26 @@ fun EditorScreen(
         }
 
         EditorViewModel.ExportState.Idle -> Unit
+    }
+
+    val cropBase = state.cropBase
+    if (showCrop && cropBase != null) {
+        Dialog(
+            onDismissRequest = { showCrop = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = true
+            )
+        ) {
+            CropEditorOverlay(
+                bitmap = cropBase,
+                initial = state.adjustments.crop,
+                onApply = { crop ->
+                    showCrop = false
+                    viewModel.setCrop(crop)
+                },
+                onCancel = { showCrop = false }
+            )
+        }
     }
 }

@@ -56,17 +56,20 @@ data class CropGeometry(
 /**
  * Crop state stored with the rest of the non-destructive adjustments.
  *
- * Cropping is centered and non-destructive. [rotation] is a clockwise quarter
- * turn (0/90/180/270) and [straighten] is a fine correction angle. The renderer
- * automatically finds the largest crop that does not contain empty corners
- * after the image is rotated.
+ * Cropping is non-destructive. [rotation] is a clockwise quarter turn
+ * (0/90/180/270) and [straighten] is a fine correction angle. When [customRect]
+ * is null the renderer finds the largest centered crop that keeps empty
+ * corners out; when it is set, that normalized rectangle (relative to the
+ * rotated display frame) is used and can be panned / zoomed freely.
  */
 data class EditCrop(
     val aspect: String = CropAspect.ORIGINAL.id,
     /** Clockwise quarter turns: 0, 90, 180 or 270 degrees. */
     val rotation: Int = 0,
     /** Fine straighten angle in degrees, [-45, 45]. */
-    val straighten: Float = 0f
+    val straighten: Float = 0f,
+    /** Free crop window in the straightened display frame; null = centered. */
+    val customRect: CropRect? = null
 ) {
     fun normalized(): EditCrop {
         val safeStraighten = if (straighten.isFinite()) {
@@ -82,7 +85,8 @@ data class EditCrop(
         return copy(
             aspect = CropAspect.fromId(aspect).id,
             rotation = quarter * 90,
-            straighten = safeStraighten
+            straighten = safeStraighten,
+            customRect = customRect?.let { clampRect(it) }
         )
     }
 
@@ -90,7 +94,8 @@ data class EditCrop(
         val state = normalized()
         return state.aspect == CropAspect.ORIGINAL.id &&
             state.rotation == 0 &&
-            abs(state.straighten) <= tolerance
+            abs(state.straighten) <= tolerance &&
+            (state.customRect == null || state.customRect.isFull)
     }
 
     /** Total clockwise angle, including the fine straighten correction. */
@@ -104,6 +109,9 @@ data class EditCrop(
      * straightening. Used for fast, pixel-exact crops when the angle is zero.
      */
     fun rect(imageWidth: Float, imageHeight: Float): CropRect {
+        val custom = customRect
+        if (custom != null) return clampRect(custom)
+
         val safeWidth = imageWidth.coerceAtLeast(1f)
         val safeHeight = imageHeight.coerceAtLeast(1f)
         val imageAspect = safeWidth / safeHeight
@@ -128,6 +136,56 @@ data class EditCrop(
             bottom = (top + height).coerceAtMost(1f)
         )
     }
+
+    /** Display frame dimensions after the quarter turn. */
+    fun displayWidth(imageWidth: Int, imageHeight: Int): Int =
+        if (rotation % 180 == 90) imageHeight else imageWidth
+
+    fun displayHeight(imageWidth: Int, imageHeight: Int): Int =
+        if (rotation % 180 == 90) imageWidth else imageHeight
+
+    /**
+     * Largest centered rectangle for the current aspect in the straightened
+     * display frame. This is the starting point for the interactive editor
+     * when no free rectangle has been stored yet.
+     */
+    fun centeredRect(displayWidth: Float, displayHeight: Float): CropRect {
+        val safeWidth = displayWidth.coerceAtLeast(1f)
+        val safeHeight = displayHeight.coerceAtLeast(1f)
+        val displayAspect = safeWidth / safeHeight
+        val targetAspect = CropAspect.fromId(aspect).ratio ?: displayAspect
+        var width = 1f
+        var height = 1f
+        if (targetAspect > displayAspect) {
+            height = displayAspect / targetAspect
+        } else {
+            width = targetAspect / displayAspect
+        }
+        val left = (1f - width) * 0.5f
+        val top = (1f - height) * 0.5f
+        return CropRect(
+            left = left.coerceIn(0f, 1f),
+            top = top.coerceIn(0f, 1f),
+            right = (left + width).coerceAtMost(1f),
+            bottom = (top + height).coerceAtMost(1f)
+        )
+    }
+
+    /** Stored free rectangle, or the centered default for the current aspect. */
+    fun effectiveRect(displayWidth: Float, displayHeight: Float): CropRect =
+        customRect?.let { clampRect(it) } ?: centeredRect(displayWidth, displayHeight)
+
+    /**
+     * Extra scale needed for the (fine-rotated) display frame to stay covered
+     * when the photo is straightened. Quarter turns already swap the frame
+     * dimensions and therefore need no extra scale.
+     */
+    fun coverScale(imageWidth: Int, imageHeight: Int): Float =
+        coverScale(
+            straighten = normalized().straighten,
+            width = displayWidth(imageWidth, imageHeight),
+            height = displayHeight(imageWidth, imageHeight)
+        )
 
     /**
      * Calculates the largest centered crop with the requested aspect that fits
@@ -180,6 +238,17 @@ data class EditCrop(
         put("aspect", aspect)
         put("rotation", rotation)
         put("straighten", straighten.toDouble())
+        customRect?.let { rect ->
+            put(
+                "rect",
+                JSONObject().apply {
+                    put("left", rect.left.toDouble())
+                    put("top", rect.top.toDouble())
+                    put("right", rect.right.toDouble())
+                    put("bottom", rect.bottom.toDouble())
+                }
+            )
+        }
     }
 
     companion object {
@@ -192,11 +261,37 @@ data class EditCrop(
 
         fun fromJson(json: JSONObject?): EditCrop {
             if (json == null) return Full
+            val rectJson = json.optJSONObject("rect")
+            val customRect = rectJson?.let {
+                CropRect(
+                    left = it.optDouble("left", 0.0).toFloat(),
+                    top = it.optDouble("top", 0.0).toFloat(),
+                    right = it.optDouble("right", 1.0).toFloat(),
+                    bottom = it.optDouble("bottom", 1.0).toFloat()
+                )
+            }
             return EditCrop(
                 aspect = json.optString("aspect", CropAspect.ORIGINAL.id),
                 rotation = json.optInt("rotation", 0),
-                straighten = json.optDouble("straighten", 0.0).toFloat()
+                straighten = json.optDouble("straighten", 0.0).toFloat(),
+                customRect = customRect
             ).normalized()
+        }
+
+        /**
+         * Extra scale so a frame rotated by [straighten] still covers the
+         * axis-aligned display area without exposing empty corners.
+         */
+        fun coverScale(straighten: Float, width: Int, height: Int): Float {
+            if (width <= 0 || height <= 0) return 1f
+            val angle = abs(straighten).coerceIn(0f, STRAIGHTEN_RANGE)
+            if (angle < 0.01f) return 1f
+            val radians = Math.toRadians(angle.toDouble())
+            val cosA = cos(radians).toFloat()
+            val sinA = sin(radians).toFloat()
+            val ratio = width.toFloat() / height.toFloat()
+            val aspect = max(ratio, 1f / max(ratio, 0.0001f))
+            return cosA + sinA * aspect
         }
 
         /** Keeps a crop rectangle inside the image and above the minimum size. */

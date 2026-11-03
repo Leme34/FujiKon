@@ -118,4 +118,32 @@ class EditCropTest {
         assertEquals(0.5f, rect.left + rect.width / 2f, 0.0001f)
         assertEquals(0.5f, rect.top + rect.height / 2f, 0.0001f)
     }
+
+    @Test
+    fun freeRectOverridesTheAspectAndSurvivesJson() {
+        val rect = CropRect(0.2f, 0.1f, 0.8f, 0.9f)
+        val crop = EditCrop(rotation = 90, straighten = 6f, customRect = rect).normalized()
+        assertFalse(crop.isFull())
+        assertEquals(rect, crop.rect(400f, 300f))
+        assertEquals(rect, EditCrop.fromJson(crop.toJson()).customRect)
+        assertEquals(90, EditCrop.fromJson(crop.toJson()).rotation)
+        assertEquals(6f, EditCrop.fromJson(crop.toJson()).straighten, 0.0001f)
+    }
+
+    @Test
+    fun freeRectUsesTheRotatedDisplayFrame() {
+        val crop = EditCrop(rotation = 90, customRect = CropRect(0.25f, 0.25f, 0.75f, 0.75f))
+        assertEquals(300, crop.displayWidth(400, 300))
+        assertEquals(400, crop.displayHeight(400, 300))
+        val outputWidth = (crop.rect(400f, 300f).width * crop.displayWidth(400, 300)).toInt()
+        val outputHeight = (crop.rect(400f, 300f).height * crop.displayHeight(400, 300)).toInt()
+        assertEquals(150, outputWidth)
+        assertEquals(200, outputHeight)
+        assertEquals(3f / 4f, outputWidth.toFloat() / outputHeight, 0.0001f)
+    }
+
+    @Test
+    fun fullCustomRectIsTreatedAsNoCrop() {
+        assertTrue(EditCrop(customRect = CropRect(0f, 0f, 1f, 1f)).isFull())
+    }
 }

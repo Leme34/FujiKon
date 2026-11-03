@@ -2,7 +2,9 @@ package com.fujikon.app.render
 
 import android.app.Application
 import android.graphics.Bitmap
+import com.fujikon.app.data.CropRect
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.PictureControlParser
 import kotlinx.coroutines.runBlocking
@@ -90,6 +92,17 @@ class AdjustmentsRendererTest {
         assertEquals(source.width, output.width)
         assertEquals(source.height, output.height)
         assertTrue(output.getPixel(output.width / 2, output.height / 2) != 0)
+    }
+
+    @Test
+    fun freeCropProducesTheRequestedPixelSize() = runBlocking {
+        val cropped = ImageRenderer().crop(
+            sourceBitmap(),
+            EditCrop(customRect = CropRect(0.25f, 0.25f, 0.75f, 0.75f))
+        )
+
+        assertEquals(12, cropped.width)
+        assertEquals(12, cropped.height)
     }
 
     private fun samplePreset(): Preset {

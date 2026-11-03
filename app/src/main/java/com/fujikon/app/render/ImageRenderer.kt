@@ -59,10 +59,32 @@ class ImageRenderer {
         }
         checkCancelled(job)
 
-        val crop = preset.adjustments.normalized().crop
-        if (crop.isFull()) {
-            return bitmapFrom(pixels, width, height)
-        }
+        return cropPixels(pixels, width, height, preset.adjustments.normalized().crop, job)
+    }
+
+    /**
+     * Applies a crop / straighten state to an already rendered bitmap without
+     * touching the rest of the pipeline. Used by the preview so the crop editor
+     * can work on the uncropped frame.
+     */
+    suspend fun crop(source: Bitmap, crop: EditCrop): Bitmap {
+        val state = crop.normalized()
+        if (state.isFull()) return source
+        val width = source.width
+        val height = source.height
+        val pixels = IntArray(width * height)
+        source.getPixels(pixels, 0, width, 0, 0, width, height)
+        return cropPixels(pixels, width, height, state, currentCoroutineContext()[Job])
+    }
+
+    private suspend fun cropPixels(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        crop: EditCrop,
+        job: Job?
+    ): Bitmap {
+        if (crop.isFull()) return bitmapFrom(pixels, width, height)
 
         // A ratio-only crop is pixel-exact and much faster than resampling.
         if (crop.rotation == 0 && abs(crop.straighten) <= 0.001f) {
@@ -78,7 +100,60 @@ class ImageRenderer {
             return cropped
         }
 
-        return renderRotatedCrop(pixels, width, height, crop, job)
+        return if (crop.customRect != null) {
+            renderFreeCrop(pixels, width, height, crop, job)
+        } else {
+            renderRotatedCrop(pixels, width, height, crop, job)
+        }
+    }
+
+    /**
+     * Crops a free rectangle out of the rotated / straightened display frame.
+     * [EditCrop.customRect] is normalized to that frame, so the output size is
+     * the rectangle size in display pixels and the inverse rotation maps every
+     * output pixel back into the source bitmap.
+     */
+    private suspend fun renderFreeCrop(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        crop: EditCrop,
+        job: Job?
+    ): Bitmap {
+        val state = crop.normalized()
+        val rect = state.rect(width.toFloat(), height.toFloat())
+        val displayWidth = state.displayWidth(width, height)
+        val displayHeight = state.displayHeight(width, height)
+        val outputWidth = (rect.width * displayWidth).roundToInt().coerceIn(1, max(width, displayWidth))
+        val outputHeight = (rect.height * displayHeight).roundToInt().coerceIn(1, max(height, displayHeight))
+        val scale = state.coverScale(width, height)
+        val angle = Math.toRadians(state.effectiveAngleDegrees().toDouble()).toFloat()
+        val cosAngle = cos(angle)
+        val sinAngle = sin(angle)
+        val sourceCenterX = (width - 1) * 0.5f
+        val sourceCenterY = (height - 1) * 0.5f
+        val frameCenterX = (displayWidth - 1) * 0.5f
+        val frameCenterY = (displayHeight - 1) * 0.5f
+        val left = rect.left * displayWidth
+        val top = rect.top * displayHeight
+        val output = IntArray(outputWidth * outputHeight)
+
+        parallelRows(outputHeight) { from, to ->
+            for (y in from until to) {
+                checkCancelled(job)
+                val dy = top + y - frameCenterY
+                var outputIndex = y * outputWidth
+                for (x in 0 until outputWidth) {
+                    val dx = left + x - frameCenterX
+                    val sourceX = sourceCenterX + (dx * cosAngle + dy * sinAngle) / scale
+                    val sourceY = sourceCenterY + (-dx * sinAngle + dy * cosAngle) / scale
+                    output[outputIndex] = sampleBilinear(pixels, width, height, sourceX, sourceY)
+                    outputIndex++
+                }
+            }
+        }
+
+        return bitmapFrom(output, outputWidth, outputHeight)
     }
 
     /**

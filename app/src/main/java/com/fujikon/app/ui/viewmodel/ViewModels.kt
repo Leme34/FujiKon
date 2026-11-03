@@ -12,6 +12,7 @@ import com.fujikon.app.AppContainer
 import com.fujikon.app.data.Album
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.EditHistory
 import com.fujikon.app.data.EditSnapshot
 import com.fujikon.app.data.PhotoItem
@@ -500,6 +501,8 @@ class EditorViewModel(
         val presetId: String? = null,
         val original: Bitmap? = null,
         val rendered: Bitmap? = null,
+        /** Full adjusted preview, kept uncropped for the interactive crop editor. */
+        val cropBase: Bitmap? = null,
         val loading: Boolean = true,
         val error: String? = null,
         val export: ExportState = ExportState.Idle,
@@ -725,6 +728,15 @@ class EditorViewModel(
     }
 
     /**
+     * Commits a crop / straighten change from the interactive editor. Crop is
+     * part of the adjustments, so preview, presets and batch export all share
+     * the same framing.
+     */
+    fun setCrop(crop: EditCrop) {
+        setAdjustments(_state.value.adjustments.copy(crop = crop), "裁剪")
+    }
+
+    /**
      * Saves the current look as a new, binary-less preset. The original preset
      * and its NCP/NP3 file are left untouched.
      */
@@ -791,6 +803,7 @@ class EditorViewModel(
             _state.update { it.copy(loading = false, error = "请先导入一个预设") }
             return
         }
+        val crop = snapshot.adjustments.crop
         renderJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
@@ -800,13 +813,26 @@ class EditorViewModel(
                     originalCache.put(photo.id, decoded)
                     decoded
                 }
-                val rendered = renderer.render(original, preset, forExport = false)
+                // Render the uncropped frame once: it is both the base for the
+                // interactive crop editor and the source for the visible crop.
+                val basePreset = if (crop.isFull()) {
+                    preset
+                } else {
+                    preset.copy(adjustments = preset.adjustments.copy(crop = EditCrop.Full))
+                }
+                val fullFrame = renderer.render(original, basePreset, forExport = false)
+                val shown = if (crop.isFull()) fullFrame else renderer.crop(fullFrame, crop)
                 _state.update { current ->
                     if (generation == renderGeneration &&
                         current.currentPhoto?.id == photo.id &&
                         current.presetId == preset.id
                     ) {
-                        current.copy(original = original, rendered = rendered, loading = false)
+                        current.copy(
+                            original = original,
+                            rendered = shown,
+                            cropBase = fullFrame,
+                            loading = false
+                        )
                     } else {
                         current
                     }
