@@ -7,6 +7,7 @@ import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.PresetRepository
 import com.fujikon.app.data.SelectionStore
 import com.fujikon.app.nikonpc.NikonPcService
+import com.fujikon.app.nic.NikonCloudService
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import com.fujikon.app.render.PresetThumbnailStore
@@ -28,6 +29,7 @@ class AppContainer(context: Context) {
     val presetThumbnailStore = PresetThumbnailStore(appContext, imageRenderer)
     val exportManager = ExportManager(appContext, imageRenderer, settings)
     val nikonPcService = NikonPcService(cacheDir = File(appContext.cacheDir, "nikonpc"))
+    val nikonCloudService = NikonCloudService()
 
     init {
         scope.launch { presetRepository.load() }

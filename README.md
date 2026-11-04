@@ -2,12 +2,13 @@
 
 FujiKon 是一个 Android 端的尼康 Picture Control 预设工具：导入 `.NCP` / `.NP3` 文件，批量套用到手机相册照片，套用后可继续通过 Lightroom 风格调节面板、RGB 色调曲线微调，自由移动/缩放的裁剪与纠偏重新构图，以及点选焦点的镜头模糊制造景深，长按对比原图、双指缩放查看细节，并尽量以原图尺寸导出到相册、保留相机 EXIF 信息。
 
-所有解析与渲染都在本机完成。应用只在“从 nikonpc 下载”功能中访问 nikonpc.com 获取公开的 Picture Control 预设，不会上传照片或本地预设。
+所有解析与渲染都在本机完成。应用只在“从 nikonpc 下载”与“尼康云创官方滤镜”功能中访问 nikonpc.com 和 Nikon Imaging Cloud 的公开接口获取 Picture Control / 色彩方案，不会上传照片或本地预设。
 
 ## 功能
 
 - 导入尼康 `.NCP` / `.NP3` 预设（SAF 文件选择器，支持多选；也可以从文件管理器直接用 FujiKon 打开）
 - 从 nikonpc.com 在线浏览全部社区 Picture Control，支持单个导入和一键全部导入，自动去重并缓存下载内容
+- 连接尼康云创（Nikon Imaging Cloud）公开色彩方案库，列表附带创作者说明摘要，可单个导入并自动去重；无需尼康账号
 - 预设管理：收藏、重命名、备注、删除、恢复内置示例
 - 解析文件内的 256 点色调曲线、锐化/清晰度/中间锐度、对比度、亮度、饱和度、色相、高光/阴影/白色/黑色、单色滤镜与色调
 - 解析 NP3 的 Color Blender（8 色相带）与 Color Grading（高光/中间调/阴影、混合、平衡）
@@ -142,7 +143,7 @@ adb install -r app/build/outputs/apk/debug/FujiKon-1.6.0.apk
 ## 使用
 
 1. 首次启动会自动载入 5 个内置示例预设。
-2. 首页点“导入预设”，选择一个或多个 `.NCP` / `.NP3` 文件；也可以点“从 nikonpc 下载”浏览在线预设，单个导入或全部导入。
+2. 首页点“导入预设”，选择一个或多个 `.NCP` / `.NP3` 文件；也可以点“从 nikonpc 下载”浏览在线预设，单个导入或全部导入，或点“尼康云创官方滤镜”浏览官方色彩方案。
 3. 点“选照片套用”，在预设列表中选择预设；选择“无（保留原图）”则不套用任何 Picture Control，直接进入后续编辑。
 4. 勾选照片，可切换相册、全选当前相册；点“下一步”。
 5. 预览页：
@@ -163,10 +164,23 @@ adb install -r app/build/outputs/apk/debug/FujiKon-1.6.0.apk
 
 首页的“从 nikonpc 下载”会读取 [nikonpc.com](https://nikonpc.com/) 的公开预设列表，目前约 166 个。单个导入会下载并生成本地 `.NCP`，全部导入使用 4 路并发并显示进度，可随时取消。
 
+- 列表每行显示该预设套用在 nikonpc.com 自身预览照片（网站 `cLutImage` 画布所用的 `inpImageUrl` 样张）上的效果图，以及由基础 Picture Control、曲线和各项参数生成的简要说明；只在行进入可见区域时下载并生成，结果会复用缓存，导入时无需再次下载。
+- nikonpc.com 不提供每个预设的静态示例图或创作者说明，网站预览是浏览器端把预设 LUT 实时绘制在同一张照片上；应用下载这张照片后在本地套用预设，效果与网站预览一致。说明由参数推导，若预设文件内嵌说明文字则优先使用。
+- 搜索支持名称、分类、槽位和说明内容；输入关键词后会按需请求 `loadNpc` 元数据补全尚未加载的说明。
 - 导入前会用文件内容哈希去重；已经存在的相同预设不会重复添加。
 - 下载的 NCP 会缓存到应用缓存目录，重复导入时不再请求下载接口。
 - 在线功能需要 `INTERNET` 权限；照片、相册和本地预设不会上传。
 - 预设名称和版权归 nikonpc.com 及其作者所有。
+
+## 尼康云创（Nikon Imaging Cloud）
+
+首页的“尼康云创官方滤镜”读取 Nikon Imaging Cloud 的公开色彩方案库（约 140+ 个，含 Nikon 原创与创作者方案），无需登录尼康账号：
+
+- 列表显示缩略图、方案名、创作者与 Picture Control 名称；每行进入可见区域时才请求该方案的详情，并用创作者说明的首句作为列表摘要，避免一次性请求全部方案。
+- “导入”会按云创公开的参数生成应用内预设：基准 Picture Control、锐化、中域锐化、清晰度、饱和度，以及公开为数值的对比度/高光/阴影/白色/黑色；按方案 ID 去重（`nic:<id>`），已导入的方案显示“已存在”。
+- 云创接口把部分参数返回为 `gamma`（自定义色调曲线未公开），应用无法还原这部分曲线，因此导入效果可能与机内直出略有差异；界面底部与预设说明中均有提示。
+- 接口地址与字段来自 imagingcloud.nikon.com 网页端使用的公开 BFF（`api.user.cwp.imagingcloud.nikon.com`），若官方调整接口，列表会显示加载失败并允许重试。
+- 色彩方案版权归 Nikon 及创作者所有；应用不上传照片或本地预设。
 
 ## NCP / NP3 支持
 
@@ -192,7 +206,7 @@ adb install -r app/build/outputs/apk/debug/FujiKon-1.6.0.apk
 gradlew.bat :app:testDebugUnitTest
 ```
 
-测试还包含色调曲线插值/归一化/边界测试、调节参数 JSON 与预设持久化、HSL/裁剪/滤镜/人像美颜 JSON 与边界测试、曲线 JSON 持久化与预设副本删除保护、渲染器曲线叠加与调节效果测试、无预设恒等渲染、裁剪尺寸、滤镜混合与 HSL 渲染测试、人像磨皮只作用于肤色且美白/红润生效、Compose 曲线编辑器加点/拖动/双击手势测试、调节滑块拖动/双击归零测试、裁剪比例/移动/缩放/纠偏几何测试、自由裁剪 JSON 与像素尺寸测试、Compose 裁剪编辑器应用/取消测试、预设面板“无”选项测试，以及 Robolectric 启动/仓库/图像 I/O/渲染冒烟测试、Compose 首页/预设面板 UI 测试和长按对比手势测试；nikonpc 在线导入还覆盖目录解析、详情/form 映射、本地 HTTP 下载与缓存、异常 NCP 修复。Robolectric 首次运行会下载 Android 运行时（默认走阿里云镜像）；可覆盖：
+测试还包含色调曲线插值/归一化/边界测试、调节参数 JSON 与预设持久化、HSL/裁剪/滤镜/人像美颜 JSON 与边界测试、曲线 JSON 持久化与预设副本删除保护、渲染器曲线叠加与调节效果测试、无预设恒等渲染、裁剪尺寸、滤镜混合与 HSL 渲染测试、人像磨皮只作用于肤色且美白/红润生效、Compose 曲线编辑器加点/拖动/双击手势测试、调节滑块拖动/双击归零测试、裁剪比例/移动/缩放/纠偏几何测试、自由裁剪 JSON 与像素尺寸测试、Compose 裁剪编辑器应用/取消测试、预设面板“无”选项测试，以及 Robolectric 启动/仓库/图像 I/O/渲染冒烟测试、Compose 首页/预设面板 UI 测试和长按对比手势测试；nikonpc 在线导入还覆盖目录解析、详情/form 映射、本地 HTTP 下载与缓存、异常 NCP 修复；尼康云创覆盖列表/详情 JSON 解析、说明摘要提取、参数映射与预设生成。Robolectric 首次运行会下载 Android 运行时（默认走阿里云镜像）；可覆盖：
 
 ```bat
 gradlew.bat :app:testDebugUnitTest -ProbolectricRepo=https://repo1.maven.org/maven2
@@ -248,6 +262,7 @@ app/src/main/java/com/fujikon/app/
 ├── MainActivity.kt / FujiKonApp.kt / AppContainer.kt
 ├── ncp/                 NCP/NP3 TLV 解析与模型
 ├── nikonpc/             在线目录、下载表单、NCP 修复
+├── nic/                 尼康云创公开色彩方案接口与预设映射
 ├── data/                预设仓库、相册仓库、设置、选择状态
 ├── render/              CPU 渲染、Bitmap 解码、EXIF、MediaStore 保存、批量导出
 └── ui/

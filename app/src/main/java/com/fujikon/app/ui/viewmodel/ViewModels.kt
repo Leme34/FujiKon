@@ -3,6 +3,7 @@ package com.fujikon.app.ui.viewmodel
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.LruCache
 import androidx.lifecycle.ViewModel
@@ -24,12 +25,15 @@ import com.fujikon.app.data.PresetRepository.BinaryImportResult
 import com.fujikon.app.data.PresetRepository.IncomingPreset
 import com.fujikon.app.data.SelectionStore
 import com.fujikon.app.data.ToneCurve
+import com.fujikon.app.ncp.PictureControlParser
 import com.fujikon.app.nikonpc.NikonPcPreset
 import com.fujikon.app.nikonpc.NikonPcService
+import com.fujikon.app.nikonpc.presetSummary
 import com.fujikon.app.render.BitmapLoader
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -42,6 +46,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.util.Collections
 
 class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
@@ -74,12 +79,27 @@ class NikonPcViewModel(
         data class Failed(val message: String) : ItemState
     }
 
+    /**
+     * Lazily built preview for one download row: the decoded preset plus the
+     * summary built from its parameters.
+     */
+    sealed interface PreviewState {
+        data object Loading : PreviewState
+        data class Ready(val preset: Preset, val description: String) : PreviewState
+        data class Failed(val message: String) : PreviewState
+    }
+
     data class UiState(
         val catalog: List<NikonPcPreset> = emptyList(),
         val loading: Boolean = false,
         val error: String? = null,
         val query: String = "",
         val statuses: Map<String, ItemState> = emptyMap(),
+        val previews: Map<String, PreviewState> = emptyMap(),
+        /** Summaries fetched from `loadNpc`, keyed by preset path; powers search. */
+        val descriptions: Map<String, String> = emptyMap(),
+        /** Photo behind nikonpc.com's `cLutImage` preview canvas. */
+        val previewPhoto: Bitmap? = null,
         val importingAll: Boolean = false,
         val progressDone: Int = 0,
         val progressTotal: Int = 0,
@@ -92,10 +112,13 @@ class NikonPcViewModel(
                 val search = query.trim()
                 if (search.isEmpty()) return catalog
                 return catalog.filter { preset ->
+                    val description = (previews[preset.path] as? PreviewState.Ready)?.description
+                        ?: descriptions[preset.path]
                     preset.name.contains(search, ignoreCase = true) ||
                         preset.category.contains(search, ignoreCase = true) ||
                         preset.path.contains(search, ignoreCase = true) ||
-                        preset.slot.contains(search, ignoreCase = true)
+                        preset.slot.contains(search, ignoreCase = true) ||
+                        description?.contains(search, ignoreCase = true) == true
                 }
             }
 
@@ -119,6 +142,10 @@ class NikonPcViewModel(
 
     private var importAllJob: Job? = null
 
+    private val previewSlots = Semaphore(2)
+    private val previewJobs = mutableMapOf<String, Job>()
+    private var descriptionJob: Job? = null
+
     init {
         loadCatalog()
     }
@@ -131,7 +158,20 @@ class NikonPcViewModel(
             _state.update { it.copy(loading = true, error = null) }
             try {
                 val catalog = service.fetchCatalog()
-                _state.update { it.copy(catalog = catalog, loading = false, error = null) }
+                val previewPhoto = service.fetchPreviewImage()
+                    ?.let { bytes ->
+                        withContext(Dispatchers.Default) {
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        }
+                    }
+                _state.update {
+                    it.copy(
+                        catalog = catalog,
+                        previewPhoto = previewPhoto ?: it.previewPhoto,
+                        loading = false,
+                        error = null
+                    )
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -147,6 +187,97 @@ class NikonPcViewModel(
 
     fun setQuery(query: String) {
         _state.update { it.copy(query = query) }
+        if (query.isNotBlank()) ensureDescriptions()
+    }
+
+    /**
+     * Fetches `loadNpc` metadata for presets whose summary is not known yet so
+     * that content search can match every preset, not only the rows that have
+     * already been scrolled into view.
+     */
+    private fun ensureDescriptions() {
+        if (descriptionJob?.isActive == true) return
+        val state = _state.value
+        val missing = state.catalog.filter { item ->
+            state.descriptions[item.path] == null &&
+                (state.previews[item.path] as? PreviewState.Ready)?.description == null
+        }
+        if (missing.isEmpty()) return
+        descriptionJob = viewModelScope.launch {
+            val slots = Semaphore(4)
+            supervisorScope {
+                missing.map { item ->
+                    async {
+                        slots.withPermit {
+                            try {
+                                val summary = presetSummary(service.fetchMetadata(item))
+                                _state.update {
+                                    it.copy(descriptions = it.descriptions + (item.path to summary))
+                                }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                // Keep the row searchable by name even if its note is unavailable.
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+        }
+    }
+
+    /**
+     * Builds the preview for a row in the download list.
+     *
+     * nikonpc.com has no per-preset sample image: its `cLutImage` canvas draws
+     * the site's preview photo through the preset. The list therefore mimics it
+     * by rendering the downloaded preset on that same photo, and summarises the
+     * decoded parameters. Files are downloaded for visible rows only and cached
+     * on disk, so importing a preset afterwards does not download it again.
+     */
+    fun requestPreview(item: NikonPcPreset, force: Boolean = false) {
+        val preview = _state.value.previews[item.path]
+        if (!force && (preview is PreviewState.Ready || preview is PreviewState.Loading)) return
+        if (previewJobs[item.path]?.isActive == true) return
+
+        _state.update { it.copy(previews = it.previews + (item.path to PreviewState.Loading)) }
+        previewJobs[item.path] = viewModelScope.launch {
+            try {
+                val ready = previewSlots.withPermit {
+                    val bytes = service.download(item)
+                    val control = PictureControlParser.parse(bytes, item.name)
+                    val preset = Preset.from(
+                        control = control,
+                        id = "nikonpc:${item.path}",
+                        fileName = "",
+                        fileSize = 0,
+                        isSample = false,
+                        contentHash = "",
+                        sourceName = item.path
+                    ).copy(name = item.name)
+                    PreviewState.Ready(preset, presetSummary(control))
+                }
+                _state.update {
+                    it.copy(
+                        previews = it.previews + (item.path to ready),
+                        descriptions = it.descriptions + (item.path to ready.description)
+                    )
+                }
+            } catch (e: CancellationException) {
+                _state.update { it.copy(previews = it.previews - item.path) }
+                throw e
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        previews = it.previews + (
+                            item.path to PreviewState.Failed(e.message ?: "示例加载失败")
+                            )
+                    )
+                }
+            } finally {
+                previewJobs.remove(item.path)
+            }
+        }
     }
 
     fun importOne(item: NikonPcPreset) {
@@ -934,6 +1065,8 @@ class FujiKonViewModelFactory(private val container: AppContainer) : ViewModelPr
             PresetsViewModel(container.presetRepository) as T
         modelClass.isAssignableFrom(NikonPcViewModel::class.java) ->
             NikonPcViewModel(container.nikonPcService, container.presetRepository) as T
+        modelClass.isAssignableFrom(NikonCloudViewModel::class.java) ->
+            NikonCloudViewModel(container.nikonCloudService, container.presetRepository) as T
         modelClass.isAssignableFrom(GalleryViewModel::class.java) ->
             GalleryViewModel(container.photoRepository, container.selectionStore) as T
         modelClass.isAssignableFrom(EditorViewModel::class.java) ->

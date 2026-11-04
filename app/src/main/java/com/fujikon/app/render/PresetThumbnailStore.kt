@@ -65,6 +65,34 @@ class PresetThumbnailStore(
         return renderInto(source, preset, size, key)
     }
 
+    /**
+     * Renders a preset over an explicit source bitmap, used by the nikonpc list
+     * to draw presets on the site's own `cLutImage` preview photo.
+     */
+    suspend fun thumbnailFromSource(
+        sourceKey: String,
+        source: Bitmap,
+        preset: Preset,
+        targetSize: Int = 280
+    ): Bitmap? {
+        val size = targetSize.coerceIn(64, 512)
+        val key = "$sourceKey|${visualSignature(preset)}|$size"
+        cache.get(key)?.let { cached ->
+            if (cached.hasVisiblePixels()) return cached
+            cache.remove(key)
+        }
+        return renderInto(source, preset, size, key)
+    }
+
+    /** Cache hit for [thumbnailFromSource], without rendering. */
+    fun cachedFromSource(sourceKey: String, preset: Preset, targetSize: Int = 280): Bitmap? {
+        val key = "$sourceKey|${visualSignature(preset)}|${targetSize.coerceIn(64, 512)}"
+        val cached = cache.get(key) ?: return null
+        if (cached.hasVisiblePixels()) return cached
+        cache.remove(key)
+        return null
+    }
+
     private suspend fun renderInto(
         source: Bitmap,
         preset: Preset,

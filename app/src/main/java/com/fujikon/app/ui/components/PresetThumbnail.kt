@@ -1,5 +1,6 @@
 package com.fujikon.app.ui.components
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -28,28 +29,41 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun PresetThumbnail(
-    photo: PhotoItem?,
+    photo: PhotoItem? = null,
     preset: Preset,
     store: PresetThumbnailStore,
     modifier: Modifier = Modifier,
     targetSize: Int = 280,
     contentScale: ContentScale = ContentScale.Crop,
+    /** Optional explicit source, e.g. nikonpc.com's preview photo. */
+    sourceBitmap: Bitmap? = null,
+    sourceKeyOverride: String? = null,
     placeholder: @Composable () -> Unit = {}
 ) {
     val signature = remember(preset) { store.visualSignature(preset) }
-    val sourceKey = photo?.let { "${it.id}:${it.uri}" } ?: "sample"
-    var bitmap by remember(signature, sourceKey, targetSize) {
-        mutableStateOf(store.cached(photo, preset, targetSize))
+    val sourceKey = sourceKeyOverride ?: photo?.let { "${it.id}:${it.uri}" } ?: "sample"
+    var bitmap by remember(signature, sourceKey, targetSize, sourceBitmap) {
+        mutableStateOf(
+            if (sourceBitmap != null) {
+                store.cachedFromSource(sourceKey, preset, targetSize)
+            } else {
+                store.cached(photo, preset, targetSize)
+            }
+        )
     }
 
-    LaunchedEffect(signature, sourceKey, targetSize) {
+    LaunchedEffect(signature, sourceKey, targetSize, sourceBitmap) {
         if (bitmap != null) return@LaunchedEffect
         // A render can be cancelled while the sheet is scrolling, or fail once
         // while the photo is still being decoded. Retry a few times before
         // settling on the curve placeholder.
         repeat(3) { attempt ->
             val rendered = withContext(Dispatchers.Default) {
-                store.thumbnail(photo, preset, targetSize)
+                if (sourceBitmap != null) {
+                    store.thumbnailFromSource(sourceKey, sourceBitmap, preset, targetSize)
+                } else {
+                    store.thumbnail(photo, preset, targetSize)
+                }
             }
             // Reject black tiles: a failed off-screen render can produce an
             // all-zero bitmap that would read as a black thumbnail.

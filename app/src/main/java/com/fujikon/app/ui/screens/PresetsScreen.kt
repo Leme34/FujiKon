@@ -174,6 +174,7 @@ fun PresetsScreen(
                 presets.isEmpty() -> EmptyHome(
                     onImport = ::openImport,
                     onNikonPc = { navController.navigate(Routes.NIKONPC) },
+                    onNikonCloud = { navController.navigate(Routes.NIKON_CLOUD) },
                     onSamples = {
                         scope.launch {
                             val count = viewModel.restoreSamples()
@@ -194,7 +195,8 @@ fun PresetsScreen(
                             importing = importing,
                             onStart = ::startFlow,
                             onImport = ::openImport,
-                            onNikonPc = { navController.navigate(Routes.NIKONPC) }
+                            onNikonPc = { navController.navigate(Routes.NIKONPC) },
+                            onNikonCloud = { navController.navigate(Routes.NIKON_CLOUD) }
                         )
                     }
                     item(span = { GridItemSpan(maxLineSpan) }) {
@@ -287,7 +289,8 @@ private fun HeroCard(
     importing: Boolean,
     onStart: () -> Unit,
     onImport: () -> Unit,
-    onNikonPc: () -> Unit
+    onNikonPc: () -> Unit,
+    onNikonCloud: () -> Unit
 ) {
     Box(
         Modifier
@@ -352,6 +355,22 @@ private fun HeroCard(
                 Spacer(Modifier.width(6.dp))
                 Text("从 nikonpc 下载", color = TextPrimary)
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onNikonCloud,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(12.dp),
+                enabled = !importing
+            ) {
+                Icon(
+                    Icons.Filled.CloudDownload,
+                    contentDescription = null,
+                    tint = Amber,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("尼康云创官方滤镜", color = TextPrimary)
+            }
             Spacer(Modifier.height(14.dp))
             Text(
                 if (importing) "正在解析预设…" else "照片不上传 · $count 个预设",
@@ -366,6 +385,7 @@ private fun HeroCard(
 private fun EmptyHome(
     onImport: () -> Unit,
     onNikonPc: () -> Unit,
+    onNikonCloud: () -> Unit,
     onSamples: () -> Unit
 ) {
     Column(
@@ -427,6 +447,21 @@ private fun EmptyHome(
             )
             Spacer(Modifier.width(6.dp))
             Text("从 nikonpc 下载", color = TextPrimary)
+        }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onNikonCloud,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(
+                Icons.Filled.CloudDownload,
+                contentDescription = null,
+                tint = Amber,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text("尼康云创官方滤镜", color = TextPrimary)
         }
         Spacer(Modifier.height(10.dp))
         OutlinedButton(

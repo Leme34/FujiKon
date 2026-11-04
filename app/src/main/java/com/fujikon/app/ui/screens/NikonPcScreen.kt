@@ -1,6 +1,8 @@
 package com.fujikon.app.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,13 +56,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.fujikon.app.nikonpc.NikonPcPreset
+import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.components.MetaChip
+import com.fujikon.app.ui.components.PresetThumbnail
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
@@ -72,12 +77,14 @@ import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 import com.fujikon.app.ui.viewmodel.NikonPcViewModel
 import com.fujikon.app.ui.viewmodel.NikonPcViewModel.ItemState
+import com.fujikon.app.ui.viewmodel.NikonPcViewModel.PreviewState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NikonPcScreen(
     navController: NavHostController,
-    viewModel: NikonPcViewModel
+    viewModel: NikonPcViewModel,
+    thumbnailStore: PresetThumbnailStore
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -194,6 +201,12 @@ fun NikonPcScreen(
                         presets = state.filteredCatalog,
                         allCatalogEmpty = state.catalog.isEmpty(),
                         statuses = state.statuses,
+                        previews = state.previews,
+                        descriptions = state.descriptions,
+                        previewPhoto = state.previewPhoto,
+                        thumbnailStore = thumbnailStore,
+                        onPreview = { viewModel.requestPreview(it) },
+                        onRetryPreview = { viewModel.requestPreview(it, force = true) },
                         onImport = viewModel::importOne
                     )
                 }
@@ -321,7 +334,7 @@ private fun SearchField(
         onValueChange = onQueryChange,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
-        placeholder = { Text("搜索名称、分类或槽位") },
+        placeholder = { Text("搜索名称、分类、槽位或说明") },
         leadingIcon = {
             Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary)
         },
@@ -403,6 +416,12 @@ private fun RemotePresetList(
     presets: List<NikonPcPreset>,
     allCatalogEmpty: Boolean,
     statuses: Map<String, ItemState>,
+    previews: Map<String, PreviewState>,
+    descriptions: Map<String, String>,
+    previewPhoto: Bitmap?,
+    thumbnailStore: PresetThumbnailStore,
+    onPreview: (NikonPcPreset) -> Unit,
+    onRetryPreview: (NikonPcPreset) -> Unit,
     onImport: (NikonPcPreset) -> Unit
 ) {
     if (allCatalogEmpty) {
@@ -437,7 +456,13 @@ private fun RemotePresetList(
             items(presets, key = { it.path }) { preset ->
                 RemotePresetRow(
                     preset = preset,
+                    preview = previews[preset.path],
+                    description = descriptions[preset.path],
                     status = statuses[preset.path] ?: ItemState.Idle,
+                    previewPhoto = previewPhoto,
+                    thumbnailStore = thumbnailStore,
+                    onPreview = { onPreview(preset) },
+                    onRetryPreview = { onRetryPreview(preset) },
                     onImport = { onImport(preset) }
                 )
             }
@@ -448,30 +473,62 @@ private fun RemotePresetList(
 @Composable
 private fun RemotePresetRow(
     preset: NikonPcPreset,
+    preview: PreviewState?,
+    description: String?,
     status: ItemState,
+    previewPhoto: Bitmap?,
+    thumbnailStore: PresetThumbnailStore,
+    onPreview: () -> Unit,
+    onRetryPreview: () -> Unit,
     onImport: () -> Unit
 ) {
+    LaunchedEffect(preset.path) { onPreview() }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = Card),
         shape = RoundedCornerShape(16.dp)
     ) {
         Row(
             modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.Top
         ) {
             Box(
                 Modifier
-                    .size(44.dp)
-                    .background(CardHigh, RoundedCornerShape(12.dp)),
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(CardHigh),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    preset.slot,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Amber,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
+                val ready = preview as? PreviewState.Ready
+                if (ready != null) {
+                    PresetThumbnail(
+                        photo = null,
+                        preset = ready.preset,
+                        store = thumbnailStore,
+                        modifier = Modifier.fillMaxSize(),
+                        targetSize = 180,
+                        sourceBitmap = previewPhoto,
+                        sourceKeyOverride = "nikonpc-preview"
+                    )
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            preset.slot,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Amber,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        if (preview is PreviewState.Loading || preview == null) {
+                            Spacer(Modifier.height(4.dp))
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                color = Amber,
+                                strokeWidth = 1.5.dp
+                            )
+                        }
+                    }
+                }
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -485,10 +542,30 @@ private fun RemotePresetRow(
                 Spacer(Modifier.height(3.dp))
                 Text(
                     "${preset.categoryLabel} · NCP · 槽位 ${preset.slot}",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(6.dp))
+                val canRetry = preview is PreviewState.Failed && description == null
+                val shownDescription = (preview as? PreviewState.Ready)?.description
+                    ?: description
+                    ?: when (preview) {
+                        is PreviewState.Failed -> "示例与说明加载失败，点击重试"
+                        else -> "正在加载示例图与说明…"
+                    }
+                Text(
+                    shownDescription,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (canRetry) Danger else TextSecondary,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = if (canRetry) {
+                        Modifier.clickable(onClick = onRetryPreview)
+                    } else {
+                        Modifier
+                    }
                 )
                 (status as? ItemState.Failed)?.let { failed ->
                     Spacer(Modifier.height(3.dp))

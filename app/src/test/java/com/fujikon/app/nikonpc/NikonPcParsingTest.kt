@@ -1,5 +1,8 @@
 package com.fujikon.app.nikonpc
 
+import com.fujikon.app.ncp.BaseProfiles
+import com.fujikon.app.ncp.PictureControl
+import com.fujikon.app.ncp.PictureControlFormat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -131,6 +134,91 @@ class NikonPcParsingTest {
         assertEquals("0", form["saturation"])
         assertEquals("2", form["hue"])
     }
+
+    @Test
+    fun downloadSummaryPrefersAnEmbeddedDescription() {
+        val control = sampleControl(baseProfile = BaseProfiles.NEUTRAL)
+            .copy(description = "  Creator's   note  ")
+
+        assertEquals("Creator's note", presetSummary(control))
+    }
+
+    @Test
+    fun downloadSummaryDescribesTheDecodedParameters() {
+        val control = sampleControl(baseProfile = BaseProfiles.NEUTRAL).copy(
+            curve = IntArray(256) { it * 128 },
+            sharpening = 2f,
+            contrast = -5,
+            saturation = -7,
+            hue = 3
+        )
+
+        val summary = presetSummary(control)
+
+        assertTrue(summary.startsWith("基于 自然 Neutral"))
+        assertTrue(summary.contains("自定义曲线"))
+        assertTrue(summary.contains("锐化 +2"))
+        assertTrue(summary.contains("对比 -5"))
+        assertTrue(summary.contains("饱和 -7"))
+        assertTrue(summary.contains("色相 +3"))
+    }
+
+    @Test
+    fun previewPhotoUrlIsReadFromTheHiddenImageInput() {
+        val html = """
+            <input id="inpImageUrl" type="text" value="https://nikonpc.com/img/500px/npc36168885c78a08e69e4469ed48018880.jpg"/>
+        """.trimIndent()
+
+        assertEquals(
+            "https://nikonpc.com/img/500px/npc36168885c78a08e69e4469ed48018880.jpg",
+            NikonPcCatalogParser.parsePreviewImageUrl(html)
+        )
+    }
+
+    @Test
+    fun previewPhotoUrlFallsBackToThePreviewImage() {
+        val html = """
+            <img id="imgPreview" src="https://nikonpc.com/img/500px/sample.jpg" class="img-preview"/>
+        """.trimIndent()
+
+        assertEquals(
+            "https://nikonpc.com/img/500px/sample.jpg",
+            NikonPcCatalogParser.parsePreviewImageUrl(html)
+        )
+    }
+
+    @Test
+    fun metadataSummaryDescribesTheSiteMetadata() {
+        val summary = presetSummary(NikonPcMetadataParser.parse(monochromeMetadata))
+
+        assertTrue(summary.startsWith("基于 单色 Monochrome"))
+        assertTrue(summary.contains("自定义曲线"))
+        assertTrue(summary.contains("锐化 +3"))
+        assertTrue(summary.contains("单色滤镜"))
+        assertTrue(summary.contains("色调"))
+    }
+
+    @Test
+    fun searchAlsoMatchesTheSummary() {
+        val agfa = NikonPcPreset("Agfa/PICCON01.NCP", "Agfa Optima", "01", "Agfa")
+        val portrait = NikonPcPreset("NikonPC/PICCON09.NCP", "Warm Portrait", "09", "NikonPC")
+        val state = com.fujikon.app.ui.viewmodel.NikonPcViewModel.UiState(
+            catalog = listOf(agfa, portrait),
+            query = "自然",
+            descriptions = mapOf(portrait.path to "基于 自然 Neutral · 自定义曲线")
+        )
+
+        assertEquals(listOf(portrait), state.filteredCatalog)
+    }
+
+    private fun sampleControl(baseProfile: Int) = PictureControl(
+        format = PictureControlFormat.NCP,
+        version = "1.0",
+        name = "Sample",
+        baseProfile = baseProfile,
+        baseProfileName = BaseProfiles.nameOf(baseProfile),
+        curve = null
+    )
 
     private val agfaMetadata = """
         {'filename':'PICCON01.NCP',

@@ -22,6 +22,11 @@ class NikonPcService(
 
     private val base = baseUrl.trimEnd('/') + "/"
 
+    /** Photo the site applies every preset to while drawing its `cLutImage` preview. */
+    @Volatile
+    var previewImageUrl: String? = null
+        private set
+
     suspend fun fetchCatalog(): List<NikonPcPreset> = withContext(Dispatchers.IO) {
         val bytes = request(
             url = base,
@@ -30,11 +35,39 @@ class NikonPcService(
             accept = "text/html,application/xhtml+xml",
             maxBytes = MAX_CATALOG_BYTES
         )
-        val presets = NikonPcCatalogParser.parse(String(bytes, Charsets.UTF_8))
+        val html = String(bytes, Charsets.UTF_8)
+        NikonPcCatalogParser.parsePreviewImageUrl(html)?.let { previewImageUrl = it }
+        val presets = NikonPcCatalogParser.parse(html)
         if (presets.isEmpty()) {
             throw NikonPcException("nikonpc.com 没有返回预设，页面结构可能已经更新")
         }
         presets
+    }
+
+    /** Metadata the site shows for one preset (base picture control + adjustments). */
+    suspend fun fetchMetadata(remote: NikonPcPreset): NikonPcMetadata = withContext(Dispatchers.IO) {
+        val bytes = request(
+            url = base + "?cmd=loadNpc",
+            method = "POST",
+            body = encodeForm(mapOf("name" to remote.path)),
+            accept = "text/plain,*/*",
+            maxBytes = MAX_METADATA_BYTES
+        )
+        NikonPcMetadataParser.parse(String(bytes, Charsets.UTF_8))
+    }
+
+    /** Bytes of the photo behind the site's `cLutImage` preview canvas. */
+    suspend fun fetchPreviewImage(): ByteArray? = withContext(Dispatchers.IO) {
+        val url = previewImageUrl ?: return@withContext null
+        runCatching {
+            request(
+                url = url,
+                method = "GET",
+                body = null,
+                accept = "image/*,*/*",
+                maxBytes = MAX_PREVIEW_IMAGE_BYTES
+            )
+        }.getOrNull()
     }
 
     /**
@@ -54,14 +87,7 @@ class NikonPcService(
             cached.delete()
         }
 
-        val metadataBytes = request(
-            url = base + "?cmd=loadNpc",
-            method = "POST",
-            body = encodeForm(mapOf("name" to remote.path)),
-            accept = "text/plain,*/*",
-            maxBytes = MAX_METADATA_BYTES
-        )
-        val metadata = NikonPcMetadataParser.parse(String(metadataBytes, Charsets.UTF_8))
+        val metadata = fetchMetadata(remote)
         val form = NikonPcFormBuilder.build(metadata, remote)
         val bytes = request(
             url = base + "?cmd=dowloadModefiedNpc&${System.currentTimeMillis()}&",
@@ -191,6 +217,7 @@ class NikonPcService(
         private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024
         private const val MAX_METADATA_BYTES = 512 * 1024
         private const val MAX_PRESET_BYTES = 4 * 1024 * 1024
+        private const val MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024
         private const val ERROR_BODY_BYTES = 4 * 1024
     }
 }
