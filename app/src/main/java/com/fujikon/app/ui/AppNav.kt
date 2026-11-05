@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import com.fujikon.app.FujiKonApp
 import com.fujikon.app.ui.screens.EditorScreen
 import com.fujikon.app.ui.screens.GalleryScreen
+import com.fujikon.app.ui.screens.NikonCloudDetailScreen
 import com.fujikon.app.ui.screens.NikonCloudScreen
 import com.fujikon.app.ui.screens.NikonPcScreen
 import com.fujikon.app.ui.screens.PresetDetailScreen
@@ -29,8 +30,11 @@ object Routes {
     const val SETTINGS = "settings"
     const val NIKONPC = "nikonpc"
     const val NIKON_CLOUD = "nikoncloud"
+    const val NIKON_CLOUD_DETAIL = "nikoncloud/{id}"
 
     fun presetDetail(id: String) = "preset/$id"
+
+    fun nikonCloudDetail(id: String) = "nikoncloud/$id"
 }
 
 @Composable
@@ -68,6 +72,23 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
             val viewModel: NikonCloudViewModel = viewModel(factory = factory)
             NikonCloudScreen(
                 navController = navController,
+                viewModel = viewModel
+            )
+        }
+        composable(Routes.NIKON_CLOUD_DETAIL) { entry ->
+            // Reuse the list's ViewModel so the catalog and already-fetched
+            // descriptions survive navigation instead of being fetched again.
+            val listEntry = remember(entry) {
+                runCatching { navController.getBackStackEntry(Routes.NIKON_CLOUD) }.getOrNull()
+            }
+            val viewModel: NikonCloudViewModel = if (listEntry != null) {
+                viewModel(listEntry, factory = factory)
+            } else {
+                viewModel(factory = factory)
+            }
+            NikonCloudDetailScreen(
+                navController = navController,
+                recipeId = entry.arguments?.getString("id"),
                 viewModel = viewModel
             )
         }

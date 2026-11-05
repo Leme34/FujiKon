@@ -9,6 +9,8 @@ import com.fujikon.app.nic.NikonCloudService
 import com.fujikon.app.nic.contentHash
 import com.fujikon.app.nic.toPreset
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,11 +56,14 @@ class NikonCloudViewModel(
                 val search = query.trim()
                 if (search.isEmpty()) return catalog
                 return catalog.filter { recipe ->
-                    val brief = (details[recipe.id] as? DetailState.Ready)?.detail?.brief.orEmpty()
+                    val detail = (details[recipe.id] as? DetailState.Ready)?.detail
+                    val brief = detail?.brief.orEmpty()
+                    val note = detail?.note.orEmpty()
                     recipe.name.contains(search, ignoreCase = true) ||
                         recipe.creator.contains(search, ignoreCase = true) ||
                         recipe.pictureControlName.contains(search, ignoreCase = true) ||
-                        brief.contains(search, ignoreCase = true)
+                        brief.contains(search, ignoreCase = true) ||
+                        note.contains(search, ignoreCase = true)
                 }
             }
     }
@@ -67,6 +72,9 @@ class NikonCloudViewModel(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val detailPermits = Semaphore(4)
+
+    /** Debounced background prefetch of recipe descriptions for full-text search. */
+    private var searchPrefetch: Job? = null
 
     init {
         loadCatalog()
@@ -93,6 +101,16 @@ class NikonCloudViewModel(
 
     fun setQuery(query: String) {
         _state.update { it.copy(query = query) }
+        searchPrefetch?.cancel()
+        if (query.isBlank()) return
+        searchPrefetch = viewModelScope.launch {
+            delay(400)
+            // Titles, creators and already-loaded descriptions are searched
+            // immediately. Only when nothing matches do we fetch the remaining
+            // descriptions, so typing does not spam the detail endpoint.
+            if (_state.value.filteredCatalog.isNotEmpty()) return@launch
+            _state.value.catalog.forEach { recipe -> requestDetail(recipe.id) }
+        }
     }
 
     /** Called when a row becomes visible so its description is fetched once. */

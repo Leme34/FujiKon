@@ -177,6 +177,20 @@ fun PresetPickerSheet(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            if (!preset.isNone) {
+                                val summary = preset.description?.takeIf { it.isNotBlank() }
+                                    ?: preset.note.takeIf { it.isNotBlank() }
+                                if (summary != null) {
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        summary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                         if (selected) {
                             Icon(

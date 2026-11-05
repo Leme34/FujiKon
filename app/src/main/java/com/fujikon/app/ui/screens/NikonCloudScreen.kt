@@ -58,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.fujikon.app.nic.NikonCloudRecipe
+import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.MetaChip
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
@@ -228,6 +229,9 @@ fun NikonCloudScreen(
                                     detail = detail,
                                     status = state.statuses[recipe.id] ?: ItemState.Idle,
                                     onImport = { viewModel.importOne(recipe) },
+                                    onOpenDetail = {
+                                        navController.navigate(Routes.nikonCloudDetail(recipe.id))
+                                    },
                                     onRetryDetail = { viewModel.requestDetail(recipe.id, force = true) }
                                 )
                             }
@@ -308,9 +312,13 @@ private fun CloudRecipeRow(
     detail: DetailState?,
     status: ItemState,
     onImport: () -> Unit,
+    onOpenDetail: () -> Unit,
     onRetryDetail: () -> Unit
 ) {
     Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenDetail),
         colors = CardDefaults.cardColors(containerColor = Card),
         shape = RoundedCornerShape(16.dp)
     ) {
@@ -384,6 +392,12 @@ private fun CloudRecipeRow(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "查看完整说明与参数 ›",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Amber
+                )
             }
             Spacer(Modifier.width(8.dp))
             CloudImportAction(status = status, onImport = onImport)
