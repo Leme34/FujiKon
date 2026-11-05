@@ -64,9 +64,9 @@ data class CloudPictureControl(
                 BaseProfiles.nameOf(baseId)
             },
             curve = buildToneCurve(baseId),
-            sharpening = sharpening,
-            clarity = clarity,
-            midRangeSharpening = middleRangeSharp,
+            sharpening = sharpening * CLOUD_DETAIL_SCALE,
+            clarity = clarity * CLOUD_DETAIL_SCALE,
+            midRangeSharpening = middleRangeSharp * CLOUD_DETAIL_SCALE,
             contrast = contrast ?: 0,
             saturation = saturation,
             highlights = highlight ?: 0,
@@ -127,7 +127,7 @@ fun NikonCloudRecipe.toPreset(detail: NikonCloudDetail): Preset {
         name = pictureControlName.ifBlank { name },
         description = detail.note.ifBlank { detail.brief }
     )
-    return Preset.from(
+    val preset = Preset.from(
         control = control,
         id = "",
         fileName = "",
@@ -136,11 +136,22 @@ fun NikonCloudRecipe.toPreset(detail: NikonCloudDetail): Preset {
         contentHash = contentHash(),
         sourceName = SOURCE_NAME
     ).copy(name = name)
+    return CloudLookCalibration.apply(id, preset)
 }
 
 fun NikonCloudRecipe.contentHash(): String = "nic:$id"
 
 private const val SOURCE_NAME = "Nikon Imaging Cloud"
+
+/**
+ * 云创锐化整体缩放（对所有云创 recipe 生效，不是 4 条专属）。
+ *
+ * 官方样张的边缘能量约为 App 现渲染的 0.6 倍；在 color-audit 的拟合中，
+ * 把 sharpening/clarity/midRange 同乘该系数后，边缘能量比从 1.39~1.99
+ * 降到 1.15~1.24，SSIM 与 ΔE00 同步改善。下限取 0.30，再低等于关掉
+ * 发布值里的锐化，属于极端参数。
+ */
+private const val CLOUD_DETAIL_SCALE = 0.30f
 
 /**
  * Read-only client for the public recipe library on imagingcloud.nikon.com.

@@ -113,7 +113,8 @@ class NikonCloudTest {
         assertEquals("Mate Film by Choi matae", preset.name)
         assertEquals("nic:RECIPE-1", preset.contentHash)
         assertEquals(BaseProfiles.FLEXIBLE_COLOR, preset.baseProfile)
-        assertEquals(0.75f, preset.sharpening, 0.001f)
+        // 云创锐化按全局系数 0.30 缩放：发布值 +0.75 -> 0.225
+        assertEquals(0.225f, preset.sharpening, 0.001f)
         assertEquals(-7, preset.saturation)
         assertEquals(0, preset.contrast)
         assertTrue("云创预设应生成模拟色调曲线", preset.hasCurve)
