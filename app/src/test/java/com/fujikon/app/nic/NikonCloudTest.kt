@@ -116,6 +116,7 @@ class NikonCloudTest {
         assertEquals(0.75f, preset.sharpening, 0.001f)
         assertEquals(-7, preset.saturation)
         assertEquals(0, preset.contrast)
+        assertTrue("云创预设应生成模拟色调曲线", preset.hasCurve)
         assertTrue(preset.isDerived)
         assertTrue(preset.description!!.contains("胶片质感"))
     }

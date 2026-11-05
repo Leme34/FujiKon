@@ -63,7 +63,7 @@ data class CloudPictureControl(
             } else {
                 BaseProfiles.nameOf(baseId)
             },
-            curve = null,
+            curve = buildToneCurve(baseId),
             sharpening = sharpening,
             clarity = clarity,
             midRangeSharpening = middleRangeSharp,
@@ -75,6 +75,37 @@ data class CloudPictureControl(
             blacks = blackLevel ?: 0,
             description = description
         )
+    }
+
+    /**
+     * Synthesizes a 256-point tone curve approximating the base Picture Control.
+     *
+     * Nikon Imaging Cloud publishes only simple parameters and returns the
+     * contrast/zone fields as "gamma", so the real LUT is not in the payload.
+     * A per-profile S-curve gives the imported recipe a visible, Nikon-like
+     * rendering instead of the previous identity curve (which made the recipe
+     * look like it changed nothing).
+     */
+    private fun buildToneCurve(baseProfile: Int): IntArray? {
+        // Per-profile baseline contrast approximating Nikon factory curves.
+        // FLEXIBLE_COLOR gets a mild S-curve so cloud recipes are not linear.
+        val amount = when (baseProfile) {
+            BaseProfiles.VIVID -> 0.20f
+            BaseProfiles.PORTRAIT -> 0.02f
+            BaseProfiles.LANDSCAPE -> 0.14f
+            BaseProfiles.MONOCHROME -> 0.16f
+            BaseProfiles.NEUTRAL -> 0.07f
+            BaseProfiles.STANDARD -> 0.11f
+            else -> 0.12f // FLEXIBLE_COLOR
+        }
+        return IntArray(256) { i ->
+            val x = i / 255f
+            val s = x * x * (3f - 2f * x)
+            val target = if (amount >= 0f) s else (2f * x - s)
+            var y = x + (target - x) * amount
+            y = if (y < 0f) 0f else if (y > 1f) 1f else y
+            (y * 32767f + 0.5f).toInt()
+        }
     }
 
     companion object {
@@ -242,17 +273,23 @@ internal fun parseCloudDetail(json: String): NikonCloudDetail {
     val recipe = root.optJSONObject("recipe")
         ?: throw NikonCloudException("尼康云创返回的说明为空")
     val controlJson = recipe.optJSONObject("pictureControl")
+    val satRaw = controlJson?.optString("saturation")
+    val saturation = satRaw?.trim().orEmpty().let { if (it.isEmpty()) 0 else intOrNull(it) ?: 0 }
+    val intField = { raw: String? ->
+        val t = raw?.trim().orEmpty()
+        if (t.isEmpty() || t.equals("gamma", ignoreCase = true)) null else intOrNull(t)
+    }
     val control = CloudPictureControl(
         baseName = controlJson?.optString("baseName")?.trim().orEmpty().ifBlank { "FLEXIBLE COLOR" },
         sharpening = numberOrZero(controlJson?.optString("sharpening")),
         middleRangeSharp = numberOrZero(controlJson?.optString("middleRangeSharp")),
         clarity = numberOrZero(controlJson?.optString("clarity")),
-        saturation = intOrNull(controlJson?.optString("saturation")) ?: 0,
-        contrast = intOrNull(controlJson?.optString("contrast")),
-        highlight = intOrNull(controlJson?.optString("highlight")),
-        shadow = intOrNull(controlJson?.optString("shadow")),
-        whiteLevel = intOrNull(controlJson?.optString("whiteLevel")),
-        blackLevel = intOrNull(controlJson?.optString("blackLevel"))
+        saturation = saturation,
+        contrast = intField(controlJson?.optString("contrast")),
+        highlight = intField(controlJson?.optString("highlight")),
+        shadow = intField(controlJson?.optString("shadow")),
+        whiteLevel = intField(controlJson?.optString("whiteLevel")),
+        blackLevel = intField(controlJson?.optString("blackLevel"))
     )
     val note = recipe.optString("recipeDetail").trim()
     val brief = cloudBrief(
