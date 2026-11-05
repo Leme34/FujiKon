@@ -43,15 +43,87 @@ class RepositoryRobolectricTest {
     }
 
     @Test
-    fun seedsFiveSamplesOnFirstLaunch() = runBlocking {
+    fun seedsSamplesAndBuiltInCloudPresetOnFirstLaunch() = runBlocking {
         repository.load()
 
         assertTrue(repository.ready.value)
-        assertEquals(5, repository.presets.value.size)
+        assertEquals(7, repository.presets.value.size)
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400 MATCH" })
         assertTrue(repository.presets.value.any { it.format == "NP3" })
         assertTrue(repository.presets.value.all { it.isSample })
+    }
+
+    @Test
+    fun builtInPengMangoPresetIsListedWithParsedFields() = runBlocking {
+        repository.load()
+
+        val preset = repository.presets.value.first { it.name == "Vitality Film by Peng Mango" }
+        assertEquals("nic:01JSBM30XWQ6GG4XK0KSZ3FQEK", preset.contentHash)
+        assertEquals("Nikon Imaging Cloud", preset.sourceName)
+        assertEquals("Flexible Color", preset.baseProfileName)
+        assertTrue("内置云创预设应带有拟合曲线", preset.curve?.size == 256)
+        assertTrue("内置云创预设没有二进制文件", preset.isDerived)
+        assertEquals(0, preset.fileSize)
+        // 官方 pictureControl 数值经全局 0.30 缩放：+3.50 / +1.50 / −1.00。
+        assertEquals(1.05f, preset.sharpening, 1e-4f)
+        assertEquals(0.45f, preset.midRangeSharpening, 1e-4f)
+        assertEquals(-0.30f, preset.clarity, 1e-4f)
+        // 拟合 LUT 已含影调，五项必须在 LUT 之后归零。
+        assertEquals(0, preset.contrast)
+        assertEquals(0, preset.highlights)
+        assertEquals(0, preset.shadows)
+        assertEquals(0, preset.whites)
+        assertEquals(0, preset.blacks)
+        assertEquals(0, preset.saturation)
+        assertTrue(preset.description!!.contains("胶片"))
+    }
+
+    @Test
+    fun builtInCommunityApproxPresetIsListedWithParsedFields() = runBlocking {
+        repository.load()
+
+        val preset = repository.presets.value.first { it.name == "Peng Mango 生命力风格（社区近似）" }
+        assertEquals("local:pmango_style_approx", preset.contentHash)
+        assertEquals("社区拟合（非官方）", preset.sourceName)
+        assertEquals("NP3", preset.format)
+        assertEquals("Flexible Color", preset.baseProfileName)
+        assertEquals(256, preset.curve?.size)
+        assertTrue("社区近似预设没有二进制文件", preset.isDerived)
+        assertEquals(0, preset.fileSize)
+        // 与官方条目使用同一 0.30 锐化缩放。
+        assertEquals(1.05f, preset.sharpening, 1e-4f)
+        assertEquals(0.45f, preset.midRangeSharpening, 1e-4f)
+        assertEquals(-0.30f, preset.clarity, 1e-4f)
+        // 影调已写进拟合 LUT，五项归零；饱和度偏移 −8 来自拟合。
+        assertEquals(0, preset.contrast)
+        assertEquals(0, preset.brightness)
+        assertEquals(0, preset.highlights)
+        assertEquals(0, preset.shadows)
+        assertEquals(0, preset.whites)
+        assertEquals(0, preset.blacks)
+        assertEquals(-8, preset.saturation)
+        assertEquals(0, preset.hue)
+        assertEquals(8, preset.colorBlender.size)
+        val description = preset.description!!
+        assertTrue(description.contains("非官方"))
+        assertTrue(description.contains("分布相似度"))
+        // 与官方 Vitality 条目相互独立，不能共用内容哈希。
+        assertTrue(preset.contentHash != "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK")
+        assertEquals("Peng Mango 生命力风格（社区近似）",
+            com.fujikon.app.nic.PengMangoCommunityPreset.NAME)
+    }
+
+    @Test
+    fun builtInContentHashesAreStableAcrossBuilds() {
+        val first = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
+        val second = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
+        assertEquals(first, second)
+        assertEquals(2, first.size)
+        assertEquals(
+            listOf("nic:01JSBM30XWQ6GG4XK0KSZ3FQEK", "local:pmango_style_approx"),
+            first
+        )
     }
 
     @Test
@@ -63,7 +135,7 @@ class RepositoryRobolectricTest {
         reopened.load()
 
         assertEquals(firstIds, reopened.presets.value.map { it.id }.sorted())
-        assertEquals(5, reopened.presets.value.size)
+        assertEquals(7, reopened.presets.value.size)
     }
 
     @Test
@@ -103,7 +175,7 @@ class RepositoryRobolectricTest {
         val imported = (first as PresetRepository.BinaryImportResult.Imported).preset
         assertEquals("Remote Test", imported.name)
         assertEquals("B&W/PICCON16.NCP", imported.sourceName)
-        assertEquals(6, repository.presets.value.size)
+        assertEquals(8, repository.presets.value.size)
         assertTrue(repository.fileFor(imported).exists())
 
         assertTrue(results["second"] is PresetRepository.BinaryImportResult.Duplicate)

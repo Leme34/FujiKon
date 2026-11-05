@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.fujikon.app.ncp.PictureControlParser
+import com.fujikon.app.nic.builtInCloudPresets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -285,6 +286,7 @@ class PresetRepository(private val context: Context) {
                     existing.add(hash)
                     count++
                 }
+                count += appendBuiltIns(list, existing)
                 if (count > 0) {
                     publish(list)
                     writeIndex(list)
@@ -300,6 +302,7 @@ class PresetRepository(private val context: Context) {
 
     private fun seedSamplesLocked(): List<Preset> {
         val result = mutableListOf<Preset>()
+        val hashes = mutableSetOf<String>()
         sampleAssets().forEach { assetName ->
             val bytes = runCatching { context.assets.open(assetName).use { it.readBytes() } }.getOrNull()
                 ?: return@forEach
@@ -309,6 +312,7 @@ class PresetRepository(private val context: Context) {
             val extension = if (control.format.name == "NP3") "np3" else "ncp"
             val storedName = "$id.$extension"
             File(filesDir, storedName).writeBytes(bytes)
+            val hash = sha256(bytes)
             result.add(
                 Preset.from(
                     control = control,
@@ -316,11 +320,37 @@ class PresetRepository(private val context: Context) {
                     fileName = storedName,
                     fileSize = bytes.size,
                     isSample = true,
-                    contentHash = sha256(bytes)
+                    contentHash = hash
                 )
             )
+            hashes.add(hash)
         }
+        appendBuiltIns(result, hashes)
         return result
+    }
+
+    /**
+     * Adds the built-in cloud presets that ship with the app. They have no
+     * binary file, so de-duplication goes by their `nic:<recipeId>` content hash
+     * (the same key a manual cloud import uses).
+     */
+    private fun appendBuiltIns(list: MutableList<Preset>, hashes: MutableSet<String>): Int {
+        var added = 0
+        builtInCloudPresets().forEach { preset ->
+            val hash = preset.contentHash
+            if (hash.isBlank() || !hashes.add(hash)) return@forEach
+            list.add(
+                preset.copy(
+                    id = UUID.randomUUID().toString(),
+                    fileName = "",
+                    fileSize = 0,
+                    isSample = true,
+                    importedAt = System.currentTimeMillis()
+                )
+            )
+            added++
+        }
+        return added
     }
 
     private fun sampleAssets(): List<String> {

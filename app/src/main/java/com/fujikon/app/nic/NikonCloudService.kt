@@ -144,6 +144,59 @@ fun NikonCloudRecipe.contentHash(): String = "nic:$id"
 private const val SOURCE_NAME = "Nikon Imaging Cloud"
 
 /**
+ * 随 App 一起发布的云创预置：摄影师「芒果小明」（B 站 @芒果和小明，UID 30982770）
+ * 的 Vitality Film by Peng Mango。
+ *
+ * 依据：
+ *  - recipeId、名称与 pictureControl 数值来自 imagingcloud.nikon.com 的公开详情接口
+ *    （color-audit/data/raw/detail_01JSBM30XWQ6GG4XK0KSZ3FQEK.json）。
+ *  - 创作者归属来自尼康官方账号 2025-04-23 的上线公告，以及第三方实拍笔记
+ *    （见 color-audit 报告；不使用读音猜测）。
+ *
+ * 官方没有公开 256 点色调曲线，因此这里复用 CloudLookCalibration 中同一 recipeId
+ * 的统计风格拟合 LUT。该 LUT 已承担 contrast −4 / highlight +54 / shadow −17 /
+ * white 0 / black −3 的影调倾向；toPreset 后这五项会被校准表归零，避免重复施加。
+ * 下列官方数值保留在数据里仅用于对照记录。
+ *
+ * Preset 模型没有对应字段、文章也未给出数值的参数：白平衡偏移、动态 D-Lighting、
+ * 颗粒、暗角。第三方视频只给出「白平衡提高 / 自然光自适应约 5400K 固定 / 曝光补偿
+ * 拉高 / D-Lighting 关闭」的拍摄建议，没有可写入 Preset 的具体档位，故不填猜测值。
+ */
+val PENG_MANGO_VITALITY_FILM: NikonCloudRecipe = NikonCloudRecipe(
+    id = "01JSBM30XWQ6GG4XK0KSZ3FQEK",
+    name = "Vitality Film by Peng Mango",
+    creator = "芒果小明",
+    pictureControlName = "VitalityFilm_Pmango",
+    publishedDate = "2025-04-24T01:32:28+00:00"
+)
+
+val PENG_MANGO_VITALITY_FILM_DETAIL: NikonCloudDetail = NikonCloudDetail(
+    brief = "模拟胶片的风格，对比度适中，色彩较浓郁，加强中暗部的青色。",
+    note = "创作者的说明\n该色彩方案模拟了胶片的风格，对比度适中，色彩较浓郁。" +
+        "其加强了中暗部的青色，并且保留了人物健康温暖的肤色，可以应对不同天气和环境，" +
+        "是一个长期可以使用的色彩方案。",
+    control = CloudPictureControl(
+        baseName = "FLEXIBLE COLOR",
+        sharpening = 3.50f,
+        middleRangeSharp = 1.50f,
+        clarity = -1.00f,
+        saturation = 0,
+        contrast = -4,
+        highlight = 54,
+        shadow = -17,
+        whiteLevel = 0,
+        blackLevel = -3
+    ),
+    camera = "NIKON Z f",
+    lens = "AF-S NIKKOR 24-70mm f/2.8E ED VR"
+)
+
+/** 首次启动或恢复内置示例时写入预置列表的云创条目。 */
+fun builtInCloudPresets(): List<Preset> = listOf(
+    PENG_MANGO_VITALITY_FILM.toPreset(PENG_MANGO_VITALITY_FILM_DETAIL)
+) + builtInCommunityPresets()
+
+/**
  * 云创锐化整体缩放（对所有云创 recipe 生效，不是 4 条专属）。
  *
  * 官方样张的边缘能量约为 App 现渲染的 0.6 倍；在 color-audit 的拟合中，
