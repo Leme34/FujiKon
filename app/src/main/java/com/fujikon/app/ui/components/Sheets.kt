@@ -65,7 +65,8 @@ fun PresetPickerSheet(
     onSelect: (Preset) -> Unit,
     onDismiss: () -> Unit,
     photo: PhotoItem? = null,
-    thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null
+    thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null,
+    onOpenDetail: ((Preset) -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val options = remember(presets) { listOf(Preset.none()) + presets }
@@ -191,6 +192,18 @@ fun PresetPickerSheet(
                                     )
                                 }
                             }
+                        }
+                        if (!preset.isNone && onOpenDetail != null) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "详情 ›",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Amber,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .clickable { onOpenDetail(preset) }
+                                    .padding(horizontal = 4.dp, vertical = 6.dp)
+                            )
                         }
                         if (selected) {
                             Icon(

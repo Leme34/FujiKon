@@ -10,6 +10,7 @@ import com.fujikon.app.data.Preset
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.theme.FujiKonTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -45,5 +46,38 @@ class PresetPickerSheetTest {
             .performSemanticsAction(SemanticsActions.OnClick)
 
         assertEquals(Preset.NONE_ID, chosen?.id)
+    }
+
+    @Test
+    fun detailLinkOpensFullInfoWithoutSelectingThePreset() {
+        val preset = Preset.none().copy(
+            id = "preset-detail",
+            name = "云端胶片",
+            format = "NP3",
+            baseProfileName = "Flexible Color",
+            description = "这是一段用于验证详情入口的完整预设说明。".repeat(4)
+        )
+        var opened: Preset? = null
+        var selected: Preset? = null
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = listOf(preset),
+                    selectedId = null,
+                    onSelect = { selected = it },
+                    onDismiss = {},
+                    onOpenDetail = { opened = it }
+                )
+            }
+        }
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("详情 ›").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNode(hasText("详情 ›") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick)
+
+        assertEquals("preset-detail", opened?.id)
+        assertNull(selected)
     }
 }

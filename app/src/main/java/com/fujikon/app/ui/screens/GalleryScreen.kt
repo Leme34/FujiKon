@@ -512,7 +512,11 @@ fun GalleryScreen(
             },
             onDismiss = { showPicker = false },
             photo = previewPhoto,
-            thumbnailStore = app.container.presetThumbnailStore
+            thumbnailStore = app.container.presetThumbnailStore,
+            onOpenDetail = { selected ->
+                showPicker = false
+                navController.navigate(Routes.presetDetail(selected.id))
+            }
         )
     }
 }

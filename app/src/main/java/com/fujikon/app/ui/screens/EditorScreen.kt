@@ -88,6 +88,7 @@ import coil.compose.AsyncImage
 import com.fujikon.app.data.LensBlur
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
+import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.AdjustmentsSheet
 import com.fujikon.app.ui.components.CropEditorOverlay
 import com.fujikon.app.ui.components.EditHistorySheet
@@ -568,7 +569,11 @@ fun EditorScreen(
             },
             onDismiss = { showPicker = false },
             photo = current,
-            thumbnailStore = app.container.presetThumbnailStore
+            thumbnailStore = app.container.presetThumbnailStore,
+            onOpenDetail = { selected ->
+                showPicker = false
+                navController.navigate(Routes.presetDetail(selected.id))
+            }
         )
     }
 
