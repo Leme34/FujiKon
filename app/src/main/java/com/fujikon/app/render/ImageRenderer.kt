@@ -399,7 +399,8 @@ class ImageRenderer {
                 abs(adjustments.shadows) > 0.001f ||
                 abs(adjustments.whites) > 0.001f ||
                 abs(adjustments.blacks) > 0.001f ||
-                abs(adjustments.dehaze) > 0.001f
+                abs(adjustments.dehaze) > 0.001f ||
+                (adjustments.toneCurve != null && !adjustments.toneCurve.isLinear())
         val adjustToneLut = if (hasToneAdjustment) buildAdjustmentToneLut(adjustments) else null
         val vibrance = adjustments.vibrance / EditAdjustments.TONE_RANGE +
             adjustments.dehaze / EditAdjustments.TONE_RANGE * 0.18f
@@ -492,6 +493,11 @@ class ImageRenderer {
             if (abs(blacks) > 0.001f) {
                 x += blacks * (1f - smoothstep(0f, 0.30f, x)) * 0.18f
             }
+            // The master tone curve is the primary optimisation handle: it shapes
+            // light sense, lifts crushed shadows and rolls off blown highlights in
+            // display space, after the linear controls — exactly like preset.toneCurve.
+            val curve = adjustments.toneCurve
+            if (curve != null && !curve.isLinear()) x = curve.apply(x)
             (x.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
         }
     }

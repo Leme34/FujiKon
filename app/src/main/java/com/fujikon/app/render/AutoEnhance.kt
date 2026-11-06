@@ -2,10 +2,16 @@ package com.fujikon.app.render
 
 import android.graphics.Bitmap
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.ToneCurve
+import com.fujikon.app.data.ToneCurvePoint
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -47,7 +53,13 @@ class ImageStats internal constructor(
     /** Mean absolute luminance gradient, a proxy for local detail/sharpness. */
     val detail: Float,
     /** Raw 256-bin luma histogram, used by the tone solver. */
-    val lumaHistogram: IntArray
+    val lumaHistogram: IntArray,
+    /** Mean RGB of near-neutral (low-chroma, mid-luma) pixels — the white-balance anchor. */
+    val neutralR: Float = 0f,
+    val neutralG: Float = 0f,
+    val neutralB: Float = 0f,
+    /** Fraction of pixels that are near-neutral; ~0 means no usable white reference. */
+    val neutralCoverage: Float = 0f
 ) {
     val spread: Float get() = p95 - p5
     val dynamicRange: Float get() = p99 - p1
@@ -77,19 +89,23 @@ data class AutoEnhanceResult(
 /**
  * Lightroom-class automatic photo optimisation.
  *
- * Instead of a handful of hard-coded "if mean is dark, add 0.3 EV" rules, this
- * engine closes the loop: it mirrors the exact tone curve used by
- * [ImageRenderer.buildAdjustmentToneLut], applies candidate adjustments to the
- * measured 256-bin luma histogram and picks the parameter set whose predicted
- * result is closest to a photographic target (mid-tone ~0.47, deep but not
- * crushed blacks, bright but not clipped whites). White balance is solved by
- * inverting the renderer's channel gains against a grey-world estimate, and
- * saturation / clarity / dehaze are driven by the measured colour and detail
- * statistics.
+ * The PRIMARY tool is a single master tone [ToneCurve] derived from the
+ * measured 256-bin luma histogram. The curve — applied exactly like
+ * [ImageRenderer] applies `preset.toneCurve` — lifts crushed shadows (fixing
+ * 死黑), gently rolls off blown highlights (fixing 死白) and adds a small
+ * S-shape for 色彩层次 / 光感. Because every amount is scaled by the *actual*
+ * deficiency, a well-exposed frame gets a near-identity curve and is left
+ * alone, instead of being hammered by linear exposure + contrast sliders.
  *
- * The output is a plain [EditAdjustments], so the result stays non-destructive,
- * undoable, editable with the manual sliders and shared by preview and export
- * exactly like any other adjustment in the app.
+ * Exposure / contrast are only a tiny SECONDARY correction when the curve alone
+ * cannot reach photographic mid-grey, and they are hard-capped so the engine
+ * can never "destroy" an already-good photo the way over-driven exposure did.
+ * White balance uses the neutral-anchor method (no correction without a
+ * trustworthy grey reference), and vibrance / clarity / dehaze follow the stats.
+ *
+ * The output is a plain [EditAdjustments] (now carrying a [ToneCurve]), so the
+ * result stays non-destructive, undoable, editable with the manual sliders and
+ * shared by preview and export exactly like any other adjustment.
  */
 object AutoEnhance {
 
@@ -130,6 +146,10 @@ object AutoEnhance {
         var sumB = 0f
         var shadow = 0
         var highlight = 0
+        var nR = 0f
+        var nG = 0f
+        var nB = 0f
+        var nCount = 0
 
         for (i in pixels.indices) {
             val px = pixels[i]
@@ -155,6 +175,17 @@ object AutoEnhance {
             sumR += rf
             sumG += gf
             sumB += bf
+            // Near-neutral pixels (low chroma, mid luma) are the white-balance
+            // anchor: they should be colourless, so their average reveals the
+            // scene's actual illumination. Colourful / very dark / very bright
+            // pixels are excluded — they are memory colours, not a grey card.
+            val chroma = mx - mn
+            if (chroma < 0.18f && l > 0.15f && l < 0.90f) {
+                nR += rf
+                nG += gf
+                nB += bf
+                nCount++
+            }
         }
 
         val total = pixels.size.toFloat().coerceAtLeast(1f)
@@ -169,6 +200,11 @@ object AutoEnhance {
         val meanR = sumR / total
         val meanG = sumG / total
         val meanB = sumB / total
+
+        val neutralCoverage = nCount / total
+        val neutralR = if (nCount > 0) nR / nCount else meanR
+        val neutralG = if (nCount > 0) nG / nCount else meanG
+        val neutralB = if (nCount > 0) nB / nCount else meanB
 
         // Mean absolute neighbour gradient: cheap local-detail estimator.
         var gradSum = 0f
@@ -220,7 +256,11 @@ object AutoEnhance {
             warmth = if (meanG > 0.01f) (meanR - meanB) / meanG else 0f,
             greenCast = if (meanG > 0.01f) (meanG - (meanR + meanB) * 0.5f) / meanG else 0f,
             detail = detail,
-            lumaHistogram = lumaHist
+            lumaHistogram = lumaHist,
+            neutralR = neutralR,
+            neutralG = neutralG,
+            neutralB = neutralB,
+            neutralCoverage = neutralCoverage
         )
     }
 
@@ -229,6 +269,8 @@ object AutoEnhance {
      */
     fun suggest(stats: ImageStats, current: EditAdjustments = EditAdjustments.Neutral): AutoEnhanceResult {
         val findings = describe(stats)
+        // Truly excellent frames are left untouched (same gate as the 1.6.4
+        // engine the user preferred). Borderline ones still get a gentle pass.
         val nearlyPerfect = stats.toneQuality > 0.80f &&
             abs(stats.warmth) < 0.065f &&
             abs(stats.greenCast) < 0.05f &&
@@ -246,7 +288,22 @@ object AutoEnhance {
             )
         }
 
-        val delta = solveTone(stats)
+        // ---- PRIMARY: a master tone curve built from the histogram ----------
+        val curve = solveToneCurve(stats)
+        // ---- SECONDARY: a tiny exposure nudge so the curve can reach mid-grey
+        var exposure = solveExposure(stats, curve)
+        val predicted = predictStats(stats.lumaHistogram, adjustmentLut(exposure, curve))
+        // Safety net: never introduce heavy clipping while brightening.
+        if (predicted.highClip > 0.03f) exposure *= 0.6f
+        if (predicted.lowClip > 0.05f) exposure *= 0.6f
+        // A touch of contrast only if the curve alone left the frame flat.
+        val contrast = when {
+            predicted.spread < 0.25f -> 55f
+            predicted.spread < 0.40f -> 34f
+            else -> 0f
+        }
+
+        // ---- Colour / detail, all modest -----------------------------------
         val temperature = solveTemperature(stats)
         val tint = solveTint(stats)
         val vibrance = solveVibrance(stats)
@@ -256,25 +313,22 @@ object AutoEnhance {
         val dehaze = if (hazy) 16f else if (stats.spread < 0.42f) 8f else 0f
 
         val next = current.copy(
-            exposure = current.exposure + delta.exposure,
-            contrast = current.contrast + delta.contrast,
-            highlights = current.highlights + delta.highlights,
-            shadows = current.shadows + delta.shadows,
-            whites = current.whites + delta.whites,
-            blacks = current.blacks + delta.blacks,
+            exposure = current.exposure + exposure,
+            contrast = current.contrast + contrast,
             temperature = current.temperature + temperature,
             tint = current.tint + tint,
             vibrance = current.vibrance + vibrance,
             clarity = current.clarity + clarity,
             texture = current.texture + texture,
-            dehaze = current.dehaze + dehaze
+            dehaze = current.dehaze + dehaze,
+            toneCurve = if (curve.isLinear()) null else (current.toneCurve ?: curve)
         ).normalized()
 
         val changed = next != current
         return AutoEnhanceResult(
             adjustments = next,
             findings = findings,
-            summary = buildSummary(stats, delta, temperature, vibrance, changed, nearlyPerfect),
+            summary = buildSummary(stats, curve, exposure, contrast, temperature, vibrance, changed, nearlyPerfect),
             changed = changed
         )
     }
@@ -336,168 +390,163 @@ object AutoEnhance {
 
     // ------------------------------------------------------------- solver
 
-    private data class Delta(
-        val exposure: Float = 0f,
-        val contrast: Float = 0f,
-        val highlights: Float = 0f,
-        val shadows: Float = 0f,
-        val whites: Float = 0f,
-        val blacks: Float = 0f
-    )
-
-    /** Linear-light value for each 0..255 luma bin, computed once. */
-    private val LINEAR = FloatArray(256) { (it / 255f).pow(2.2f) }
-
     /**
-     * Grid search over the controls that dominate tone. Every candidate is
-     * evaluated against the real 256-bin luma histogram with the exact same
-     * curve the renderer applies, then scored against photographic targets.
+     * Builds the PRIMARY tone curve from the measured histogram. Each of the
+     * three components is scaled by the *actual* deficiency, so a well-exposed
+     * frame (deep-enough blacks, safe-enough whites, decent spread) gets a
+     * near-identity curve and is effectively untouched:
      *
-     * Exposure LUTs are pre-computed per EV level so the ~7000 candidates only
-     * do multiply/add work: pow() is by far the most expensive operation and
-     * used to make this noticeably janky on a phone.
+     *  - [toe]: lifts the shadow "toe" to fix 死黑. Zero at x=0.5 and capped, so
+     *    pure black stays black and the lift never washes the frame out.
+     *  - [roll]: rolls off the highlights to fix 死白. Zero at x=0.5 and capped,
+     *    so pure white is preserved while blown detail is recovered.
+     *  - [s]: a small S-shape that separates mid-tones for 色彩层次 / 光感.
      */
-    private fun solveTone(stats: ImageStats): Delta {
-        val hist = stats.lumaHistogram
-        val exposures = floatArrayOf(-0.6f, -0.3f, 0f, 0.3f, 0.6f, 0.9f, 1.2f, 1.5f)
-        // Lifting shadows is the right move for dark frames; negative values
-        // would crush blacks just to widen the histogram artificially.
-        val shadows = floatArrayOf(0f, 18f, 36f, 55f, 75f)
-        val highlights = floatArrayOf(-35f, -16f, 0f, 14f)
-        val contrasts = floatArrayOf(-10f, 0f, 12f, 26f, 42f)
-        val whites = floatArrayOf(0f, 14f, 28f)
-        val blacks = floatArrayOf(-10f, 0f, 10f)
+    private fun solveToneCurve(stats: ImageStats): ToneCurve {
+        val shadowDeficit = max(0f, 0.10f - stats.p5)
+        val highExcess = max(0f, stats.p95 - 0.92f)
+        val toe = (2.2f * shadowDeficit + 1.6f * stats.shadowClip).coerceIn(0f, 0.07f)
+        val roll = (2.0f * highExcess + 1.8f * stats.highlightClip).coerceIn(0f, 0.09f)
+        val s = if (stats.spread < 0.55f) (0.18f * (0.55f - stats.spread)).coerceIn(0f, 0.12f) else 0f
 
-        val exposedLuts = Array(exposures.size) { e ->
-            val scale = 2f.pow(exposures[e])
-            FloatArray(256) { i -> (LINEAR[i] * scale).pow(1f / 2.2f) }
-        }
+        if (toe < 0.004f && roll < 0.004f && s < 0.004f) return ToneCurve()
 
-        var best = Delta()
-        var bestScore = Float.MAX_VALUE
-        for ((ei, ev) in exposures.withIndex()) {
-            val exposed = exposedLuts[ei]
-            for (sh in shadows) {
-                for (hi in highlights) {
-                    for (ct in contrasts) {
-                        for (wh in whites) {
-                            for (bl in blacks) {
-                                val candidate = Delta(ev, ct, hi, sh, wh, bl)
-                                val score = scoreTone(hist, candidate, exposed)
-                                if (score < bestScore) {
-                                    bestScore = score
-                                    best = candidate
-                                }
-                            }
-                        }
-                    }
-                }
+        val points = ArrayList<ToneCurvePoint>(25)
+        var prevY = 0f
+        val n = 24
+        for (i in 0..n) {
+            val x = i / n.toFloat()
+            var y = x
+            if (toe > 0f && x < 0.5f) {
+                val t = 1f - x / 0.5f // 1 at black, 0 at mid
+                y += toe * t * t
             }
+            if (roll > 0f && x > 0.5f) {
+                val t = (x - 0.5f) / 0.5f // 0 at mid, 1 at white
+                y -= roll * t * t
+            }
+            if (s > 0f) {
+                // +at quarter-tones, −at three-quarter-tones => gentle S.
+                y += (s * sin(2.0 * PI * x.toDouble())).toFloat()
+            }
+            y = y.coerceIn(0f, 1f)
+            if (y < prevY) y = prevY // keep the curve monotonically increasing
+            points.add(ToneCurvePoint(x, y))
+            prevY = y
         }
-        return best
+        return ToneCurve(points)
     }
 
-    private fun scoreTone(hist: IntArray, d: Delta, exposed: FloatArray): Float {
+    /**
+     * Mirrors [ImageRenderer.buildAdjustmentToneLut] (exposure in linear light,
+     * then the master curve in display space) so the engine can predict the
+     * result of its own adjustments without rendering a full bitmap.
+     */
+    private fun adjustmentLut(exposure: Float, curve: ToneCurve?): FloatArray {
+        val exp = Math.pow(2.0, exposure.toDouble()).toFloat()
+        val useExp = abs(exposure) > 0.001f
+        return FloatArray(256) { i ->
+            var x = i / 255f
+            if (useExp) x = (x.pow(2.2f) * exp).pow(1f / 2.2f)
+            if (curve != null) x = curve.apply(x)
+            (x.coerceIn(0f, 1f) * 255f)
+        }
+    }
+
+    private data class Predicted(
+        val mean: Float,
+        val std: Float,
+        val p5: Float,
+        val p95: Float,
+        val spread: Float,
+        val lowClip: Float,
+        val highClip: Float
+    )
+
+    private fun predictStats(hist: IntArray, lut: FloatArray): Predicted {
         val mapped = IntArray(256)
         for (i in 0 until 256) {
-            val y = (toneTail(exposed[i], d) * 255f).toInt().coerceIn(0, 255)
-            mapped[y] += hist[i]
+            mapped[lut[i].roundToInt().coerceIn(0, 255)] += hist[i]
         }
         val total = hist.sum().toFloat().coerceAtLeast(1f)
         var mean = 0f
+        var sum2 = 0f
         var acc = 0
         var p5 = 0f
         var p95 = 1f
         val p5Target = (total * 0.05f).toInt()
         val p95Target = (total * 0.95f).toInt()
         for (i in 0 until 256) {
-            val count = mapped[i]
-            mean += i / 255f * count
-            acc += count
-            if (p5 == 0f && acc >= p5Target) p5 = i / 255f
-            if (p95 == 1f && acc >= p95Target) p95 = i / 255f
+            val c = mapped[i]
+            val v = i / 255f
+            mean += v * c
+            sum2 += v * v * c
+            acc += c
+            if (p5 == 0f && acc >= p5Target) p5 = v
+            if (p95 == 1f && acc >= p95Target) p95 = v
         }
         mean /= total
+        val std = sqrt(max(0f, sum2 / total - mean * mean))
         val lowClip = (mapped[0] + mapped[1] + mapped[2]) / total
         val highClip = (mapped[253] + mapped[254] + mapped[255]) / total
-
-        // Targets: mid grey 0.47, open-but-deep blacks, bright-but-safe whites.
-        // Lower weight on the percentiles so the solver prioritises correct
-        // exposure instead of stretching both ends at the cost of clipping.
-        var score = 9f * sq(mean - 0.47f) +
-            1.3f * sq(p5 - 0.10f) +
-            1.3f * sq(p95 - 0.92f) +
-            5f * max(0f, highClip - 0.012f) +
-            4f * max(0f, lowClip - 0.02f)
-        // Regulariser: prefer gentle corrections when two candidates tie.
-        score += 0.00010f * (d.exposure * d.exposure * 6f +
-            d.shadows * d.shadows * 0.10f +
-            d.highlights * d.highlights * 0.10f +
-            d.contrast * d.contrast * 0.10f +
-            d.whites * d.whites * 0.10f +
-            d.blacks * d.blacks * 0.10f)
-        return score
+        return Predicted(mean, std, p5, p95, p95 - p5, lowClip, highClip)
     }
-
-    /** Exposure is already baked into [x]; everything after it is pure arithmetic. */
-    private fun toneTail(x0: Float, d: Delta): Float {
-        var x = x0
-        x = contrastCurve(x, d.contrast / 100f * 0.75f)
-        if (abs(d.highlights) > 0.001f) {
-            x += d.highlights / 100f * smoothstep(0.48f, 1f, x) * 0.24f
-        }
-        if (abs(d.shadows) > 0.001f) {
-            x += d.shadows / 100f * (1f - smoothstep(0f, 0.52f, x)) * 0.24f
-        }
-        if (abs(d.whites) > 0.001f) {
-            x += d.whites / 100f * smoothstep(0.70f, 1f, x) * 0.18f
-        }
-        if (abs(d.blacks) > 0.001f) {
-            x += d.blacks / 100f * (1f - smoothstep(0f, 0.30f, x)) * 0.18f
-        }
-        return x.coerceIn(0f, 1f)
-    }
-
-    private fun contrastCurve(x: Float, amount: Float): Float {
-        if (abs(amount) < 0.001f) return x
-        val s = x * x * (3f - 2f * x)
-        val target = if (amount >= 0f) s else 2f * x - s
-        return (x + (target - x) * abs(amount)).coerceIn(0f, 1f)
-    }
-
-    private fun smoothstep(edge0: Float, edge1: Float, x: Float): Float {
-        val t = ((x - edge0) / (edge1 - edge0)).coerceIn(0f, 1f)
-        return t * t * (3f - 2f * t)
-    }
-
-    private fun sq(v: Float) = v * v
 
     /**
-     * Grey-world white balance, inverted through the renderer's channel gains:
-     * R=1+0.12t+0.035u, G=1+0.004t-0.065u, B=1-0.12t+0.035u.
-     * A conservative 0.8 factor keeps the scene's original atmosphere.
+     * SECONDARY exposure nudge. A genuinely under-exposed frame (well below
+     * mid-grey) is lifted toward photographic mid-grey by targeting it directly
+     * in linear light; a frame that is already near mid-grey (and therefore any
+     * "already good" photo, which is also caught by the [suggest] gate) gets 0 EV.
+     * Hard-capped at 1.4 EV so it can never repeat the "over-driven exposure
+     * destroys the photo" regression — that regression came from hammering
+     * already-fine frames, which this never does.
      */
+    private fun solveExposure(stats: ImageStats, curve: ToneCurve): Float {
+        val pred = predictStats(stats.lumaHistogram, adjustmentLut(0f, curve))
+        val m = pred.mean
+        if (m > 0.42f) return 0f
+        val target = 0.47f
+        val e = 2.2f * (ln(target / max(m, 0.05f)) / ln(2f)).toFloat()
+        return e.coerceIn(-1.4f, 1.4f)
+    }
+
+    /**
+     * White balance is solved from the **neutral anchor** only: the average colour
+     * of near-neutral pixels, inverted through the renderer's channel gains
+     * R=1+0.12t+0.035u, G=1+0.004t-0.065u, B=1-0.12t+0.035u.
+     *
+     * Crucially, if the scene has almost no neutral pixels (a pure blue sky, a
+     * colourful memory-colour frame), there is no trustworthy white reference, so
+     * we return 0 and leave the colour exactly as shot — grey-world would otherwise
+     * drag that blue sky toward orange, which is the colour distortion users hate.
+     * Correction is also capped at ±60 and damped on saturated frames.
+     */
+    private fun wbFactor(stats: ImageStats): Float =
+        0.7f * (1f - 0.4f * ((stats.meanSaturation - 0.30f) / 0.30f).coerceIn(0f, 1f))
+
     private fun solveTemperature(stats: ImageStats): Float {
-        val r = stats.meanR.coerceAtLeast(0.01f)
-        val g = stats.meanG.coerceAtLeast(0.01f)
-        val b = stats.meanB.coerceAtLeast(0.01f)
+        if (stats.neutralCoverage < 0.06f) return 0f
+        val r = stats.neutralR.coerceAtLeast(0.01f)
+        val g = stats.neutralG.coerceAtLeast(0.01f)
+        val b = stats.neutralB.coerceAtLeast(0.01f)
         val kr = g / r
         val kb = g / b
         val t = (kr - kb) / 0.24f
-        return (t * 100f * 0.8f).coerceIn(-100f, 100f)
+        return (t * 100f * wbFactor(stats)).coerceIn(-60f, 60f)
     }
 
     private fun solveTint(stats: ImageStats): Float {
-        val r = stats.meanR.coerceAtLeast(0.01f)
-        val g = stats.meanG.coerceAtLeast(0.01f)
-        val b = stats.meanB.coerceAtLeast(0.01f)
+        if (stats.neutralCoverage < 0.06f) return 0f
+        val r = stats.neutralR.coerceAtLeast(0.01f)
+        val g = stats.neutralG.coerceAtLeast(0.01f)
+        val b = stats.neutralB.coerceAtLeast(0.01f)
         val kr = g / r
         val kb = g / b
         val kg = 1f
         val t = (kr - kb) / 0.24f
         // G - (R+B)/2 = 0.004t - 0.1u
         val u = (0.004f * t - (kg - (kr + kb) * 0.5f)) / 0.1f
-        return (u * 100f * 0.8f).coerceIn(-100f, 100f)
+        return (u * 100f * wbFactor(stats)).coerceIn(-60f, 60f)
     }
 
     private fun solveVibrance(stats: ImageStats): Float {
@@ -507,21 +556,23 @@ object AutoEnhance {
 
     private fun buildSummary(
         stats: ImageStats,
-        d: Delta,
+        curve: ToneCurve,
+        exposure: Float,
+        contrast: Float,
         temperature: Float,
         vibrance: Float,
         changed: Boolean,
         nearlyPerfect: Boolean
     ): String {
         if (!changed) return "画面已经很均衡，未做明显改动"
+        val usesCurve = !curve.isLinear()
         val parts = buildList {
-            if (abs(d.exposure) > 0.05f) {
-                add(if (d.exposure > 0) "提亮 ${"%.1f".format(d.exposure)} EV" else "压暗 ${"%.1f".format(-d.exposure)} EV")
+            if (usesCurve) add("曲线优化光感与层次")
+            if (abs(exposure) > 0.05f) {
+                add(if (exposure > 0) "提亮 ${"%.1f".format(exposure)} EV" else "压暗 ${"%.1f".format(-exposure)} EV")
             }
-            if (d.shadows > 5f) add("提亮暗部")
-            if (d.highlights < -5f) add("压回高光")
-            if (d.contrast > 5f) add("增强层次")
-            else if (d.contrast < -5f) add("柔化反差")
+            if (contrast > 5f) add("增强层次")
+            else if (contrast < -5f) add("柔化反差")
             if (abs(temperature) > 8f) add("校正白平衡")
             if (vibrance > 5f) add("提升自然饱和度")
             else if (vibrance < -5f) add("收敛过饱和")

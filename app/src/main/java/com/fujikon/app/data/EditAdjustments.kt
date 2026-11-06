@@ -23,6 +23,15 @@ data class EditAdjustments(
     val texture: Float = 0f,
     val clarity: Float = 0f,
     val dehaze: Float = 0f,
+    /**
+     * Master RGB tone curve — the PRIMARY tool used by 一键优化. Applied in
+     * display space after the linear exposure / contrast / zone controls, so it
+     * shapes light sense, colour hierarchy and lifts crushed shadows / blown
+     * highlights without the destructive global exposure shift that plain
+     * exposure + contrast sliders cause. `null` or a near-linear curve counts
+     * as "no change".
+     */
+    val toneCurve: ToneCurve? = null,
     /** Lightroom-style eight-band HSL colour mixer. */
     val hsl: HslAdjustments = HslAdjustments.Neutral,
     /** Non-destructive crop framing. */
@@ -49,6 +58,7 @@ data class EditAdjustments(
         texture = texture.coerceIn(-TONE_RANGE, TONE_RANGE),
         clarity = clarity.coerceIn(-TONE_RANGE, TONE_RANGE),
         dehaze = dehaze.coerceIn(-TONE_RANGE, TONE_RANGE),
+        toneCurve = toneCurve,
         hsl = hsl.normalized(),
         crop = crop.normalized(),
         lensBlur = lensBlur.normalized(),
@@ -70,6 +80,7 @@ data class EditAdjustments(
             abs(texture) <= tolerance &&
             abs(clarity) <= tolerance &&
             abs(dehaze) <= tolerance &&
+            (toneCurve == null || toneCurve.isLinear(tolerance)) &&
             hsl.isNeutral(tolerance) &&
             crop.isFull(tolerance) &&
             lensBlur.isOff(tolerance) &&
@@ -89,6 +100,7 @@ data class EditAdjustments(
         put("texture", texture.toDouble())
         put("clarity", clarity.toDouble())
         put("dehaze", dehaze.toDouble())
+        put("toneCurve", toneCurve?.toJson() ?: JSONObject.NULL)
         put("hsl", hsl.toJson())
         put("crop", crop.toJson())
         put("lensBlur", lensBlur.toJson())
@@ -118,6 +130,7 @@ data class EditAdjustments(
                 texture = json.optDouble("texture", 0.0).toFloat(),
                 clarity = json.optDouble("clarity", 0.0).toFloat(),
                 dehaze = json.optDouble("dehaze", 0.0).toFloat(),
+                toneCurve = json.optJSONObject("toneCurve")?.let(ToneCurve::fromJson),
                 hsl = HslAdjustments.fromJson(json.optJSONObject("hsl")),
                 crop = EditCrop.fromJson(json.optJSONObject("crop")),
                 lensBlur = LensBlur.fromJson(json.optJSONObject("lensBlur")),

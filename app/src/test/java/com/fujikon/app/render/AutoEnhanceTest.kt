@@ -47,6 +47,7 @@ class AutoEnhanceTest {
                 l += 0.010f * sin(x * 0.55f) * cos(y * 0.42f)
                 l = l.coerceIn(0.02f, 0.62f)
                 val (cr, cg, cb) = when {
+                    nx < 0.16f && ny < 0.16f -> Triple(1.0f, 1.0f, 1.0f)  // neutral grey card (anchors WB)
                     ny < 0.34f -> Triple(0.82f, 0.95f, 1.20f)  // blue sky
                     ny < 0.67f -> Triple(0.86f, 1.14f, 0.80f)  // green foliage
                     else -> Triple(1.18f, 0.96f, 0.80f)        // warm foreground
