@@ -50,7 +50,9 @@ fun ToneCurveEditor(
     enabled: Boolean = true,
     onDrag: () -> Unit = {},
     onInteractionFinished: () -> Unit = {},
-    maxPoints: Int = 16
+    maxPoints: Int = 16,
+    /** Colour of the active curve; follows the selected RGB / R / G / B channel. */
+    curveColor: Color = Amber
 ) {
     val currentPoints by rememberUpdatedState(points)
     val currentSelected by rememberUpdatedState(selectedIndex)
@@ -217,7 +219,7 @@ fun ToneCurveEditor(
             }
             drawPath(
                 path = curvePath,
-                color = Amber.copy(alpha = 0.16f),
+                color = curveColor.copy(alpha = 0.16f),
                 style = Stroke(
                     width = 8.dp.toPx(),
                     cap = StrokeCap.Round,
@@ -226,7 +228,7 @@ fun ToneCurveEditor(
             )
             drawPath(
                 path = curvePath,
-                color = Amber,
+                color = curveColor,
                 style = Stroke(
                     width = 2.2.dp.toPx(),
                     cap = StrokeCap.Round,
@@ -247,7 +249,7 @@ fun ToneCurveEditor(
                 center = center
             )
             drawCircle(
-                color = if (selected) Amber else Color.White.copy(alpha = 0.9f),
+                color = if (selected) curveColor else Color.White.copy(alpha = 0.9f),
                 radius = if (selected) 5.dp.toPx() else 3.5.dp.toPx(),
                 center = center
             )

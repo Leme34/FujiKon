@@ -145,6 +145,19 @@ class PresetThumbnailStore(
         append('|').append(
             preset.toneCurve?.normalizedPoints?.joinToString(",") { "${it.x}:${it.y}" } ?: ""
         )
+        // Per-channel curves change pixels too, so they must invalidate the
+        // cached thumbnail; otherwise editing red/green/blue looks like a no-op.
+        append('|').append(
+            if (preset.channelCurves.isNeutral) "" else {
+                listOf(
+                    preset.channelCurves.red,
+                    preset.channelCurves.green,
+                    preset.channelCurves.blue
+                ).joinToString(";") { curve ->
+                    curve.normalizedPoints.joinToString(",") { "${it.x}:${it.y}" }
+                }
+            }
+        )
         append('|').append(
             runCatching { preset.adjustments.toJson().toString() }
                 .getOrElse { preset.adjustments.toString() }

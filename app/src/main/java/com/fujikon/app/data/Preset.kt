@@ -27,6 +27,8 @@ data class Preset(
     val curve: IntArray?,
     /** Optional RGB master curve layered on top of the Nikon rendering. */
     val toneCurve: ToneCurve? = null,
+    /** Optional red / green / blue curves layered after the master curve. */
+    val channelCurves: ChannelToneCurves = ChannelToneCurves.Neutral,
     /** Lightroom-style global adjustments layered after the preset rendering. */
     val adjustments: EditAdjustments = EditAdjustments.Neutral,
     val sharpening: Float,
@@ -56,7 +58,8 @@ data class Preset(
 
     val isNone: Boolean get() = id == NONE_ID
 
-    val hasToneCurve: Boolean get() = toneCurve != null && !toneCurve.isLinear()
+    val hasToneCurve: Boolean
+        get() = (toneCurve != null && !toneCurve.isLinear()) || !channelCurves.isNeutral
 
     val hasAdjustments: Boolean get() = !adjustments.isNeutral()
 
@@ -87,7 +90,11 @@ data class Preset(
         }
     }
 
-    /** Effective curve shown in cards and the preset detail screen. */
+    /**
+     * Effective curve shown in cards and the preset detail screen. Only the
+     * master curve can be drawn as a single line; per-channel curves are
+     * reflected in the rendered thumbnail instead.
+     */
     fun effectiveCurvePoints(count: Int = 64): List<Pair<Float, Float>> {
         val curveOverride = toneCurve
         return baseCurvePoints(count).map { (x, y) ->
@@ -107,6 +114,9 @@ data class Preset(
         put("baseProfileName", baseProfileName)
         put("curve", curve?.let { encodeCurve(it) } ?: JSONObject.NULL)
         put("toneCurve", toneCurve?.toJson() ?: JSONObject.NULL)
+        // Older app versions ignore this key and still honour "toneCurve",
+        // so presets with only a master curve keep their old JSON shape.
+        if (!channelCurves.isNeutral) put("channelCurves", channelCurves.toJson())
         put("adjustments", adjustments.toJson())
         put("sharpening", sharpening.toDouble())
         put("clarity", clarity.toDouble())
@@ -152,6 +162,7 @@ data class Preset(
             baseProfileName = "原图",
             curve = null,
             toneCurve = null,
+            channelCurves = ChannelToneCurves.Neutral,
             adjustments = EditAdjustments.Neutral,
             sharpening = 0f,
             clarity = 0f,
@@ -190,6 +201,7 @@ data class Preset(
                 baseProfileName = control.baseProfileName,
                 curve = control.curve,
                 toneCurve = null,
+                channelCurves = ChannelToneCurves.Neutral,
                 adjustments = EditAdjustments.Neutral,
                 sharpening = control.sharpening,
                 clarity = control.clarity,
@@ -229,6 +241,8 @@ data class Preset(
             toneCurve = if (json.isNull("toneCurve")) null else {
                 json.optJSONObject("toneCurve")?.let(ToneCurve::fromJson)
             },
+            // Presets saved before per-channel curves existed have no such key.
+            channelCurves = ChannelToneCurves.fromJson(json.optJSONObject("channelCurves")),
             adjustments = EditAdjustments.fromJson(json.optJSONObject("adjustments")),
             sharpening = json.optDouble("sharpening", 0.0).toFloat(),
             clarity = json.optDouble("clarity", 0.0).toFloat(),

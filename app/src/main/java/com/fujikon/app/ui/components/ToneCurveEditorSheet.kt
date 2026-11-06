@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -50,7 +51,9 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fujikon.app.data.ChannelToneCurves
 import com.fujikon.app.data.ToneCurve
+import com.fujikon.app.data.ToneCurveChannel
 import com.fujikon.app.data.ToneCurvePoint
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
@@ -64,12 +67,25 @@ import kotlin.math.roundToInt
 
 private const val LivePreviewIntervalMs = 100L
 
+private val ChannelRed = Color(0xFFFF6B6B)
+private val ChannelGreen = Color(0xFF5FD48A)
+private val ChannelBlue = Color(0xFF62A8FF)
+
+private fun channelColor(channel: ToneCurveChannel): Color = when (channel) {
+    ToneCurveChannel.RGB -> Amber
+    ToneCurveChannel.RED -> ChannelRed
+    ToneCurveChannel.GREEN -> ChannelGreen
+    ToneCurveChannel.BLUE -> ChannelBlue
+}
+
 /**
- * Bottom sheet for adjusting the master RGB curve after a preset has been
- * applied. The sheet is translucent so the photo stays visible, and drags
- * publish throttled previews while the user is still moving a point. The
- * current look can be stored as a new preset without touching the original
- * NCP/NP3 file.
+ * Bottom sheet for adjusting the RGB master curve and the individual red /
+ * green / blue curves after a preset has been applied. Each channel keeps its
+ * own point list for the session; switching channels never discards the others.
+ *
+ * The sheet is translucent so the photo stays visible, and drags publish
+ * throttled previews while the user is still moving a point. The current look
+ * can be stored as a new preset without touching the original NCP/NP3 file.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,30 +94,54 @@ fun ToneCurveEditorSheet(
     baseCurve: List<Pair<Float, Float>>,
     presetCurve: ToneCurve,
     curve: ToneCurve,
+    presetChannelCurves: ChannelToneCurves,
+    channelCurves: ChannelToneCurves,
     rendering: Boolean,
     saving: Boolean,
     onPreview: (ToneCurve) -> Unit,
+    onChannelPreview: (ToneCurveChannel, ToneCurve) -> Unit,
     onClearOverride: () -> Unit,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var points by remember(presetName) { mutableStateOf(curve.normalizedPoints) }
+    var channel by remember { mutableStateOf(ToneCurveChannel.RGB) }
+    var masterPoints by remember(presetName) { mutableStateOf(curve.normalizedPoints) }
+    var rgbCurves by remember(presetName) { mutableStateOf(channelCurves.normalized()) }
     var selectedIndex by remember { mutableStateOf<Int?>(null) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var draftName by remember { mutableStateOf("") }
     var lastPreviewAt by remember(presetName) { mutableLongStateOf(0L) }
     var livePreviewPending by remember { mutableStateOf(false) }
-    val latestPoints by rememberUpdatedState(points)
+    val latestMaster by rememberUpdatedState(masterPoints)
+    val latestRgbCurves by rememberUpdatedState(rgbCurves)
+    val latestChannel by rememberUpdatedState(channel)
+
+    // The master curve lives on Preset.toneCurve; the three colour channels
+    // live in a separate ChannelToneCurves set.
+    val points = if (channel.isMaster) {
+        masterPoints
+    } else {
+        rgbCurves.curve(channel).normalizedPoints
+    }
+    val activeColor = channelColor(channel)
 
     val selected = selectedIndex?.takeIf { it in points.indices }
     val selectedPoint = selected?.let(points::getOrNull)
 
-    fun previewNow() {
-        livePreviewPending = false
-        lastPreviewAt = SystemClock.elapsedRealtime()
-        onPreview(ToneCurve(points))
+    fun publish(
+        master: List<ToneCurvePoint>,
+        colors: ChannelToneCurves,
+        target: ToneCurveChannel
+    ) {
+        if (target.isMaster) {
+            onPreview(ToneCurve(master))
+        } else {
+            onChannelPreview(target, ToneCurve(colors.curve(target).normalizedPoints))
+        }
     }
+
+    fun previewNow() = publish(masterPoints, rgbCurves, channel)
 
     fun previewDuringDrag() {
         if (rendering) {
@@ -111,7 +151,7 @@ fun ToneCurveEditorSheet(
         val now = SystemClock.elapsedRealtime()
         if (now - lastPreviewAt < LivePreviewIntervalMs) return
         lastPreviewAt = now
-        onPreview(ToneCurve(points))
+        publish(latestMaster, latestRgbCurves, latestChannel)
     }
 
     // If the user kept moving while a preview was rendering, render the latest
@@ -121,12 +161,20 @@ fun ToneCurveEditorSheet(
         if (!rendering && livePreviewPending) {
             livePreviewPending = false
             lastPreviewAt = SystemClock.elapsedRealtime()
-            onPreview(ToneCurve(latestPoints))
+            publish(latestMaster, latestRgbCurves, latestChannel)
+        }
+    }
+
+    fun setPoints(updated: List<ToneCurvePoint>) {
+        if (channel.isMaster) {
+            masterPoints = updated
+        } else {
+            rgbCurves = rgbCurves.withCurve(channel, ToneCurve(updated))
         }
     }
 
     fun replacePoints(updated: List<ToneCurvePoint>) {
-        points = updated
+        setPoints(updated)
         selectedIndex = null
         previewNow()
     }
@@ -176,7 +224,7 @@ fun ToneCurveEditorSheet(
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        "实时预览 · RGB 主通道叠加在当前预设上",
+                        "实时预览 · ${if (channel.isMaster) "RGB 主通道" else channel.label + " 通道"}叠加在当前预设上",
                         style = MaterialTheme.typography.bodySmall.copy(
                             shadow = Shadow(Color.Black.copy(alpha = 0.72f), blurRadius = 4f)
                         ),
@@ -195,6 +243,33 @@ fun ToneCurveEditorSheet(
             }
 
             Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ToneCurveChannel.values().forEach { target ->
+                    val active = target == channel
+                    val tint = channelColor(target)
+                    TextButton(
+                        onClick = {
+                            channel = target
+                            selectedIndex = null
+                        },
+                        enabled = !saving,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(vertical = 6.dp),
+                        colors = ButtonDefaults.textButtonColors(
+                            containerColor = if (active) tint.copy(alpha = 0.22f) else Color.Transparent,
+                            contentColor = if (active) tint else TextSecondary
+                        )
+                    ) {
+                        Text(target.label, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -214,11 +289,12 @@ fun ToneCurveEditorSheet(
                     points = points,
                     basePoints = baseCurve,
                     selectedIndex = selected,
-                    onPointsChange = { points = it },
+                    onPointsChange = { setPoints(it) },
                     onSelectedChange = { selectedIndex = it },
                     enabled = !saving,
                     onDrag = { previewDuringDrag() },
                     onInteractionFinished = { previewNow() },
+                    curveColor = activeColor,
                     modifier = Modifier.fillMaxWidth().height(188.dp)
                 )
             }
@@ -231,9 +307,9 @@ fun ToneCurveEditorSheet(
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    "黄线：曲线调整",
+                    "${channel.label}线：曲线调整",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Amber
+                    color = activeColor
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
@@ -249,7 +325,7 @@ fun ToneCurveEditorSheet(
                     Text(
                         "输入 ${(selectedPoint.x * 100).roundToInt()}   →   输出 ${(selectedPoint.y * 100).roundToInt()}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (selected == 0 || selected == points.lastIndex) TextSecondary else Amber
+                        color = if (selected == 0 || selected == points.lastIndex) TextSecondary else activeColor
                     )
                 } else {
                     Text(
@@ -280,12 +356,14 @@ fun ToneCurveEditorSheet(
                     onClick = { replacePoints(ToneCurve.linear().normalizedPoints) },
                     enabled = !saving
                 ) {
-                    Text("重置为线性", color = TextSecondary)
+                    Text("重置当前通道", color = TextSecondary)
                 }
                 TextButton(
                     onClick = {
                         onClearOverride()
-                        points = presetCurve.normalizedPoints
+                        masterPoints = presetCurve.normalizedPoints
+                        rgbCurves = presetChannelCurves.normalized()
+                        channel = ToneCurveChannel.RGB
                         selectedIndex = null
                         lastPreviewAt = 0L
                         livePreviewPending = false
@@ -331,7 +409,7 @@ fun ToneCurveEditorSheet(
             text = {
                 Column {
                     Text(
-                        "将当前曲线、调节和预设参数保存为新副本，用于当前预览和批量导出；原始 NCP/NP3 文件不会被修改。",
+                        "将当前 RGB 与红 / 绿 / 蓝分通道曲线、调节和预设参数保存为新副本，用于当前预览和批量导出；原始 NCP/NP3 文件不会被修改。",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )

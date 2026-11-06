@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.fujikon.app.AppContainer
 import com.fujikon.app.data.Album
 import com.fujikon.app.data.AppSettings
+import com.fujikon.app.data.ChannelToneCurves
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.EditHistory
@@ -25,6 +26,7 @@ import com.fujikon.app.data.PresetRepository.BinaryImportResult
 import com.fujikon.app.data.PresetRepository.IncomingPreset
 import com.fujikon.app.data.SelectionStore
 import com.fujikon.app.data.ToneCurve
+import com.fujikon.app.data.ToneCurveChannel
 import com.fujikon.app.ncp.PictureControlParser
 import com.fujikon.app.nikonpc.NikonPcPreset
 import com.fujikon.app.nikonpc.NikonPcService
@@ -639,8 +641,10 @@ class EditorViewModel(
         val error: String? = null,
         val export: ExportState = ExportState.Idle,
         val seenCompareHint: Boolean = false,
-        /** Non-null while the user has an unsaved curve edit for the session. */
+        /** Non-null while the user has an unsaved master curve edit for the session. */
         val toneCurveOverride: ToneCurve? = null,
+        /** Non-null while the user has unsaved per-channel curve edits. */
+        val channelCurvesOverride: ChannelToneCurves? = null,
         /** Global Lightroom-style adjustments for the current look. */
         val adjustments: EditAdjustments = EditAdjustments.Neutral,
         /** Global undo/redo stack shared by every photo in this edit session. */
@@ -655,12 +659,16 @@ class EditorViewModel(
         val currentPreset: Preset? get() = selectedPreset?.let { base ->
             base.copy(
                 toneCurve = toneCurveOverride ?: base.toneCurve,
+                channelCurves = channelCurvesOverride ?: base.channelCurves,
                 adjustments = adjustments
             )
         }
         val effectiveToneCurve: ToneCurve
             get() = toneCurveOverride ?: selectedPreset?.toneCurve ?: ToneCurve.linear()
-        val hasToneCurve: Boolean get() = !effectiveToneCurve.isLinear()
+        val effectiveChannelCurves: ChannelToneCurves
+            get() = channelCurvesOverride ?: selectedPreset?.channelCurves ?: ChannelToneCurves.Neutral
+        val hasToneCurve: Boolean
+            get() = !effectiveToneCurve.isLinear() || !effectiveChannelCurves.isNeutral
         val hasAdjustments: Boolean get() = !adjustments.isNeutral()
         val hasCrop: Boolean get() = !adjustments.crop.isFull()
         val hasLensBlur: Boolean get() = !adjustments.lensBlur.isOff()
@@ -730,6 +738,7 @@ class EditorViewModel(
                         presets = list,
                         presetId = nextId,
                         toneCurveOverride = if (stillThere) current.toneCurveOverride else null,
+                        channelCurvesOverride = if (stillThere) current.channelCurvesOverride else null,
                         adjustments = if (stillThere) {
                             current.adjustments
                         } else {
@@ -755,7 +764,8 @@ class EditorViewModel(
             photoId = photo.id,
             presetId = snapshot.presetId,
             toneCurve = snapshot.toneCurveOverride,
-            adjustments = snapshot.adjustments
+            adjustments = snapshot.adjustments,
+            channelCurves = snapshot.channelCurvesOverride
         )
     }
 
@@ -791,6 +801,7 @@ class EditorViewModel(
                 index = photoIndex,
                 presetId = if (presetStillExists) snapshot.presetId else current.presetId,
                 toneCurveOverride = snapshot.toneCurve,
+                channelCurvesOverride = snapshot.channelCurves,
                 adjustments = snapshot.adjustments
             )
         }
@@ -826,6 +837,7 @@ class EditorViewModel(
             it.copy(
                 presetId = id,
                 toneCurveOverride = null,
+                channelCurvesOverride = null,
                 adjustments = preset?.adjustments ?: EditAdjustments.Neutral
             )
         }
@@ -842,6 +854,26 @@ class EditorViewModel(
         renderCurrent()
     }
 
+    /**
+     * Updates one colour channel of the tone curve set. The other channels are
+     * taken from the currently effective set, so switching channels never
+     * discards work done on a different channel.
+     */
+    fun setChannelCurves(channel: ToneCurveChannel, curve: ToneCurve) {
+        if (channel.isMaster) {
+            setToneCurve(curve)
+            return
+        }
+        val normalized = ToneCurve(curve.normalizedPoints)
+        val next = _state.value.effectiveChannelCurves
+            .withCurve(channel, normalized)
+            .normalized()
+        if (_state.value.channelCurvesOverride == next) return
+        _state.update { it.copy(channelCurvesOverride = next) }
+        recordHistory("曲线调整 · ${channel.label} 通道", coalesceKey = "channel-curve:${channel.key}")
+        renderCurrent()
+    }
+
     fun setAdjustments(adjustments: EditAdjustments, changedField: String? = null) {
         val normalized = adjustments.normalized()
         if (_state.value.adjustments == normalized) return
@@ -852,10 +884,22 @@ class EditorViewModel(
         renderCurrent()
     }
 
-    /** Reverts to the selected preset's own curve (usually the Nikon LUT). */
+    /**
+     * Reverts only the master RGB curve. The adjustments sheet uses this for
+     * its "reset tone" action, so resetting the master curve never discards
+     * per-channel curves edited in the dedicated curve sheet.
+     */
     fun clearToneCurveOverride() {
         if (_state.value.toneCurveOverride == null) return
         _state.update { it.copy(toneCurveOverride = null) }
+        recordHistory("还原预设曲线")
+        renderCurrent()
+    }
+
+    /** Reverts every curve (master + red / green / blue) to the preset's own. */
+    fun clearAllCurveOverrides() {
+        if (_state.value.toneCurveOverride == null && _state.value.channelCurvesOverride == null) return
+        _state.update { it.copy(toneCurveOverride = null, channelCurvesOverride = null) }
         recordHistory("还原预设曲线")
         renderCurrent()
     }
@@ -882,6 +926,7 @@ class EditorViewModel(
         val snapshot = _state.value
         val base = snapshot.selectedPreset ?: return null
         val curve = snapshot.effectiveToneCurve
+        val channelCurves = snapshot.effectiveChannelCurves
         val saved = presetRepository.add(
             base.copy(
                 name = name.trim().ifBlank { "${base.name} 调整" }.take(40),
@@ -889,6 +934,7 @@ class EditorViewModel(
                 fileSize = 0,
                 sourceName = "由 ${base.name} 调整",
                 toneCurve = curve.takeUnless { it.isLinear() },
+                channelCurves = channelCurves,
                 adjustments = snapshot.adjustments,
                 note = base.note,
                 importedAt = System.currentTimeMillis(),
@@ -903,6 +949,7 @@ class EditorViewModel(
                 presets = presetRepository.presets.value,
                 presetId = saved.id,
                 toneCurveOverride = null,
+                channelCurvesOverride = null,
                 adjustments = saved.adjustments
             )
         }

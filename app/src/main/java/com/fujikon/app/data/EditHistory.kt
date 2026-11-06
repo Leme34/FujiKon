@@ -10,7 +10,9 @@ data class EditSnapshot(
     val photoId: Long,
     val presetId: String?,
     val toneCurve: ToneCurve?,
-    val adjustments: EditAdjustments
+    val adjustments: EditAdjustments,
+    /** Null means "use the selected preset's own per-channel curves". */
+    val channelCurves: ChannelToneCurves? = null
 )
 
 /**

@@ -127,6 +127,8 @@ fun AdjustmentsSheet(
     onPreview: (EditAdjustments, String?) -> Unit,
     onToneCurvePreview: (ToneCurve) -> Unit,
     onClearToneCurve: () -> Unit,
+    /** "全部归零" also drops the red / green / blue curves from the curve sheet. */
+    onClearAllCurves: () -> Unit,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -321,7 +323,7 @@ fun AdjustmentsSheet(
                         curveDraft = presetToneCurve.normalizedPoints
                         curveDirty = false
                         curvePreviewPending = false
-                        onClearToneCurve()
+                        onClearAllCurves()
                         previewNow(null)
                     },
                     enabled = !saving && (!draft.isNeutral() || curveDirty)

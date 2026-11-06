@@ -6,6 +6,7 @@ import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.FilterProfile
 import com.fujikon.app.data.Preset
+import com.fujikon.app.data.buildChannelLuts
 import com.fujikon.app.ncp.BaseProfiles
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -250,6 +251,8 @@ class ImageRenderer {
 
     private class Plan(
         val lut: IntArray,
+        /** Red / green / blue LUTs, or null when no per-channel curve is active. */
+        val channelLuts: Array<IntArray>?,
         val saturation: Float,
         val hueMatrix: FloatArray?,
         val monochrome: Boolean,
@@ -319,6 +322,11 @@ class ImageRenderer {
             baseContrast = if (preset.hasCurve) 0f else baseContrast,
             contrastScale = scale
         )
+        // Per-channel curves are folded into a LUT once per preset, so the
+        // per-pixel hot loop stays a single table lookup per channel.
+        val channelLuts = preset.channelCurves
+            .takeIf { !it.isNeutral }
+            ?.let { buildChannelLuts(lut, it) }
 
         val monochrome = preset.baseProfile == BaseProfiles.MONOCHROME
         val saturation = if (monochrome) 0f else (baseSaturation * (1f + preset.saturation / scale)).coerceIn(0f, 2.4f)
@@ -413,6 +421,7 @@ class ImageRenderer {
 
         return Plan(
             lut = lut,
+            channelLuts = channelLuts,
             saturation = saturation,
             hueMatrix = hueMatrix,
             monochrome = monochrome,
@@ -623,6 +632,10 @@ class ImageRenderer {
     ) {
         val hslScratch = FloatArray(3)
         val low = plan.lut
+        val channels = plan.channelLuts
+        val redLut = channels?.get(0) ?: low
+        val greenLut = channels?.get(1) ?: low
+        val blueLut = channels?.get(2) ?: low
         val sat = plan.saturation
         val hueMatrix = plan.hueMatrix
         val mono = plan.monochrome
@@ -645,9 +658,9 @@ class ImageRenderer {
             val end = index + width
             while (index < end) {
                 val color = pixels[index]
-                var r = low[(color shr 16) and 0xFF]
-                var g = low[(color shr 8) and 0xFF]
-                var b = low[color and 0xFF]
+                var r = redLut[(color shr 16) and 0xFF]
+                var g = greenLut[(color shr 8) and 0xFF]
+                var b = blueLut[color and 0xFF]
 
                 if (mono) {
                     var luma = r * monoWeights[0] + g * monoWeights[1] + b * monoWeights[2]

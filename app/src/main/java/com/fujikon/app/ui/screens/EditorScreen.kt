@@ -86,6 +86,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.fujikon.app.data.LensBlur
+import com.fujikon.app.data.ChannelToneCurves
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.Routes
@@ -594,10 +595,13 @@ fun EditorScreen(
             baseCurve = preset.baseCurvePoints(),
             presetCurve = state.selectedPreset?.toneCurve ?: ToneCurve.linear(),
             curve = state.effectiveToneCurve,
+            presetChannelCurves = state.selectedPreset?.channelCurves ?: ChannelToneCurves.Neutral,
+            channelCurves = state.effectiveChannelCurves,
             rendering = state.loading,
             saving = savingCurve,
             onPreview = viewModel::setToneCurve,
-            onClearOverride = viewModel::clearToneCurveOverride,
+            onChannelPreview = viewModel::setChannelCurves,
+            onClearOverride = viewModel::clearAllCurveOverrides,
             onSave = { name ->
                 savingCurve = true
                 scope.launch {
@@ -635,6 +639,7 @@ fun EditorScreen(
             },
             onToneCurvePreview = viewModel::setToneCurve,
             onClearToneCurve = viewModel::clearToneCurveOverride,
+            onClearAllCurves = viewModel::clearAllCurveOverrides,
             onSave = { name ->
                 savingAdjustments = true
                 scope.launch {
