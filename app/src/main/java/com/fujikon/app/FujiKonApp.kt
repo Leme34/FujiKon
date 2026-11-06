@@ -34,7 +34,7 @@ class AppContainer(context: Context) {
     val nikonCloudService = NikonCloudService()
     // Resolved per request so a region switch in Settings takes effect at once.
     val agnesImageService = AgnesImageService(baseUrlProvider = { settings.agnesBaseUrl })
-    /** Agnes 3.0 Pro text model, used to analyse the photo and write prompts. */
+    /** Agnes 3.0 Flash text model, used to analyse the photo and write prompts. */
     val agnesTextService = AgnesTextService(
         baseUrlProvider = { AgnesTextService.baseUrlFor(settings.agnesRegion) }
     )

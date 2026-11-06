@@ -285,7 +285,7 @@ class EditorViewModelAiTest {
         assertEquals("Bearer sk-e2e-key", lastHeaders["authorization"])
 
         val body = JSONObject(lastBody)
-        assertEquals("agnes-3.0-pro", body.getString("model"))
+        assertEquals("agnes-3.0-flash", body.getString("model"))
         val parts = body.getJSONArray("messages").getJSONObject(1).getJSONArray("content")
         val url = parts.getJSONObject(1).getJSONObject("image_url").getString("url")
         assertTrue("必须上传当前预览图", url.startsWith("data:image/jpeg;base64,"))
@@ -299,7 +299,7 @@ class EditorViewModelAiTest {
     fun modelUnavailableFallsBackToOnDeviceAnalysis() = runBlocking {
         settings.agnesApiKey = "sk"
         status = 404
-        response = """{"error":{"message":"model agnes-3.0-pro not found"}}"""
+        response = """{"error":{"message":"model agnes-3.0-flash not found"}}"""
         createViewModel()
 
         vm.generateEditPrompt()

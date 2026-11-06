@@ -66,7 +66,7 @@ class AppSettings(context: Context) {
     val agnesBaseUrl: String get() = AgnesImageService.baseUrlFor(agnesRegion)
 
     /**
-     * Optional publicly reachable URL for the current photo. The Agnes 3.0 Pro
+     * Optional publicly reachable URL for the current photo. The Agnes 3.0 Flash
      * checklist asks for a public `image_url`; by default the client sends a
      * base64 Data URI instead, which needs no image host. Set this only when
      * your account/gateway rejects Data URIs.

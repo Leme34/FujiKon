@@ -936,14 +936,14 @@ class EditorViewModel(
     private var promptJob: Job? = null
 
     /**
-     * Asks Agnes 3.0 Pro to look at the current preview and write an editing
+     * Asks Agnes 3.0 Flash to look at the current preview and write an editing
      * prompt. The result flows through [UiState.promptGen] so the dialog can
      * fill its text field and the user can keep editing before submitting.
      *
-     * The official docs currently label `agnes-3.0-pro` as "即将上线". If the
-     * gateway reports the model unavailable, we fall back to on-device photo
-     * analysis (same measured statistics as 一键优化) instead of leaving the
-     * button dead, and the source is surfaced so the user is never misled.
+     * 3.0 Flash is generally available. If the gateway still reports the model
+     * unavailable or the request fails transiently, we fall back to on-device
+     * photo analysis (same measured statistics as 一键优化) instead of leaving
+     * the button dead, and the source is surfaced so the user is never misled.
      */
     fun generateEditPrompt() {
         val preview = _state.value.rendered
@@ -989,7 +989,7 @@ class EditorViewModel(
     }
 
     /**
-     * Fallback used when Agnes 3.0 Pro is not reachable / not enabled yet.
+     * Fallback used when the cloud model is not reachable / not enabled for this account.
      * The prompt is derived from the very same measured pixel statistics that
      * drive 一键优化, so it is specific to this photo rather than generic.
      */

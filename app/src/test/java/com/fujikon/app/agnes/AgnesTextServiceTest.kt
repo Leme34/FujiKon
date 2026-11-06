@@ -21,7 +21,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 
 /**
- * Exercises the real Agnes 3.0 Pro Chat Completions exchange against a local
+ * Exercises the real Agnes 3.0 Flash Chat Completions exchange against a local
  * socket server. The production [AgnesTextService] builds the request and
  * parses the reply; nothing here is stubbed.
  */
@@ -66,7 +66,7 @@ class AgnesTextServiceTest {
     )
 
     private fun completion(content: String): String =
-        """{"id":"chatcmpl_x","object":"chat.completion","model":"agnes-3.0-pro",""" +
+        """{"id":"chatcmpl_x","object":"chat.completion","model":"agnes-3.0-flash",""" +
             """"choices":[{"index":0,"message":{"role":"assistant","content":""" +
             JSONObject.quote(content) +
             """},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":40}}"""
@@ -90,7 +90,7 @@ class AgnesTextServiceTest {
 
         val body = JSONObject(lastBody)
         assertEquals(AgnesTextService.MODEL, body.getString("model"))
-        assertEquals("agnes-3.0-pro", body.getString("model"))
+        assertEquals("agnes-3.0-flash", body.getString("model"))
         assertFalse(body.getBoolean("stream"))
         assertTrue(body.getInt("max_tokens") > 0)
 
@@ -175,7 +175,7 @@ class AgnesTextServiceTest {
             runBlocking { service().generateEditPrompt("sk", byteArrayOf(1)) }
         }
         assertEquals(404, missing.httpCode)
-        assertTrue(missing.message!!.contains("即将上线") || missing.message!!.contains("不存在"))
+        assertTrue(missing.message!!.contains("接口不存在") || missing.message!!.contains("账户权限"))
 
         status = 429
         response = """{"error":{"message":"rate limited"}}"""

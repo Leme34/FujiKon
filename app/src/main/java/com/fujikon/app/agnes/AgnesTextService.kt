@@ -14,27 +14,29 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /**
- * Client for the Agnes 3.0 Pro TEXT model, used to look at the current photo
+ * Client for the Agnes 3.0 Flash TEXT model, used to look at the current photo
  * and write an image-editing prompt for it.
  *
  * Implements the official docs at
- * https://www.agnes-ai.cn/zh-Hans/docs/agnes-30-pro :
+ * https://www.agnes-ai.cn/zh-Hans/docs/agnes-30-flash :
  *  - endpoint `POST https://api.agnes-ai.cn/v1/chat/completions`
  *  - `Authorization: Bearer <key>`, `Content-Type: application/json`
- *  - model `agnes-3.0-pro`
+ *  - model `agnes-3.0-flash`
  *  - `messages[].content` may be an array of `text` and `image_url` blocks
  *  - generated text lives at `choices[0].message.content`
  *
- * The official checklist says image input needs a publicly reachable
- * `image_url`. A base64 Data URI is used by default because that is the
- * OpenAI-compatible vision format accepted by most gateways and it lets the
- * app analyse the *current* photo without a third-party image host. Pass
- * [imageUrlOverride] when the account requires a real public URL instead.
+ * Unlike the Pro variant, 3.0 Flash is generally available: the docs list
+ * pricing and do not mark it as "即将上线".
  *
- * NOTE: as of the docs this model is announced as "即将上线" (coming soon),
- * so a 404 / model-not-found 400 is a real possibility. [AgnesException.httpCode]
- * and [AgnesException.serverMessage] let the caller detect that and fall back
- * to on-device analysis instead of leaving the button dead.
+ * The official docs describe image input as a publicly reachable `image_url`.
+ * A base64 Data URI is used by default because that is the OpenAI-compatible
+ * vision format accepted by most gateways and it lets the app analyse the
+ * *current* photo without a third-party image host. Pass [imageUrlOverride]
+ * when the account requires a real public URL instead.
+ *
+ * Transient failures (404 / model-not-found 400 / 5xx / network) still let
+ * the caller fall back to on-device analysis via [AgnesException.httpCode]
+ * and [AgnesException.serverMessage] instead of leaving the button dead.
  */
 class AgnesTextService(
     private val baseUrl: String = DEFAULT_BASE_URL,
@@ -206,7 +208,7 @@ class AgnesTextService(
         return when (code) {
             400 -> "文本模型请求被拒绝（HTTP 400）$suffix。请确认账户已开通 $MODEL 访问权限"
             401, 403 -> "API 密钥无效或没有权限$suffix。请在「设置 → AI 修图」核对密钥与接入区域（当前端点 ${host()}）"
-            404 -> "Agnes 文本模型接口不存在（HTTP 404）$suffix。官方标注 $MODEL 为「即将上线」，请确认已开放"
+            404 -> "Agnes 文本模型接口不存在（HTTP 404）$suffix。请确认接入区域与 $MODEL 的账户权限"
             429 -> "请求过于频繁或额度不足，请稍后再试$suffix"
             in 500..599 -> "Agnes 文本模型服务暂时不可用（HTTP $code），请稍后再试$suffix"
             else -> "Agnes 文本模型请求失败（HTTP $code）$suffix"
@@ -214,8 +216,8 @@ class AgnesTextService(
     }
 
     companion object {
-        /** Official model name from https://www.agnes-ai.cn/zh-Hans/docs/agnes-30-pro */
-        const val MODEL = "agnes-3.0-pro"
+        /** Official model name from https://www.agnes-ai.cn/zh-Hans/docs/agnes-30-flash */
+        const val MODEL = "agnes-3.0-flash"
 
         /** Official China base URL; region mapping matches the image service. */
         const val DEFAULT_BASE_URL = "https://api.agnes-ai.cn"
@@ -229,7 +231,7 @@ class AgnesTextService(
         private const val ENDPOINT_PATH = "/v1/chat/completions"
         private const val CONNECT_TIMEOUT_MS = 20_000
         private const val READ_TIMEOUT_MS = 90_000
-        private const val USER_AGENT = "FujiKon/1.8 Android"
+        private const val USER_AGENT = "FujiKon Android"
 
         private const val SYSTEM_PROMPT =
             "你是资深摄影后期师和 AI 图像编辑提示词专家。用户会给你一张照片。" +

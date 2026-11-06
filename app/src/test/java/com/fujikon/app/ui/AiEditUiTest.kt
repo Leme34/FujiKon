@@ -319,7 +319,7 @@ class AiEditUiTest {
         gen.value = AiPromptGenState.Done("提升曝光，校正偏蓝，保留原构图", fromLocal = false)
         rule.waitForIdle()
         rule.onNodeWithTag("ai_prompt_input").assertTextContains("提升曝光", substring = true)
-        rule.onNodeWithTag("ai_generate_notice").assertTextContains("Agnes 3.0 Pro", substring = true)
+        rule.onNodeWithTag("ai_generate_notice").assertTextContains("Agnes 3.0 Flash", substring = true)
 
         // The user stays in control and can replace the generated text.
         rule.onNodeWithTag("ai_prompt_input").performTextClearance()
@@ -346,6 +346,27 @@ class AiEditUiTest {
         rule.waitForIdle()
         rule.onNodeWithTag("ai_generate_notice").assertTextContains("本机图像分析", substring = true)
         rule.onNodeWithTag("ai_prompt_input").assertTextContains("本机分析", substring = true)
+    }
+
+    /** 未配置密钥时降级说明要点明原因，不能笼统说成「模型暂不可用」。 */
+    @Test
+    fun localFallbackWithoutKeyNamesTheRealReason() {
+        val gen = mutableStateOf<AiPromptGenState>(AiPromptGenState.Idle)
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = emptyList(),
+                onDismiss = {},
+                onConfirm = {},
+                promptGen = gen.value,
+                hasApiKey = false,
+                onPromptConsumed = { gen.value = AiPromptGenState.Idle }
+            )
+        }
+        gen.value = AiPromptGenState.Done("本机分析生成的提示词", fromLocal = true)
+        rule.waitForIdle()
+        rule.onNodeWithTag("ai_generate_notice").assertTextContains("尚未配置密钥", substring = true)
+        rule.onNodeWithTag("ai_generate_notice").assertTextContains("Agnes 3.0 Flash", substring = true)
     }
 
     @Test

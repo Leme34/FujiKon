@@ -95,9 +95,13 @@ fun AiEditDialog(
         if (promptGen is AiPromptGenState.Done) {
             text = promptGen.prompt.take(500)
             genNotice = if (promptGen.fromLocal) {
-                "Agnes 文本模型暂不可用，已用本机图像分析生成提示词，可继续修改"
+                if (hasApiKey) {
+                    "云端分析本次未响应，已用本机图像分析生成提示词，可继续修改或重试"
+                } else {
+                    "尚未配置密钥，已用本机图像分析生成提示词；录入密钥后可由 Agnes 3.0 Flash 云端分析"
+                }
             } else {
-                "已根据 Agnes 3.0 Pro 的画面分析生成提示词，可继续修改"
+                "已根据 Agnes 3.0 Flash 的画面分析生成提示词，可继续修改"
             }
             onPromptConsumed()
         }
@@ -170,7 +174,7 @@ fun AiEditDialog(
                     }
                 }
 
-                // 生成提示词：上传当前预览图由 Agnes 3.0 Pro 分析画面，结果
+                // 生成提示词：上传当前预览图由 Agnes 3.0 Flash 分析画面，结果
                 // 自动填入上方输入框，用户可继续修改后再开始修图。
                 Spacer(Modifier.height(10.dp))
                 Button(
@@ -201,7 +205,7 @@ fun AiEditDialog(
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "上传当前预览图，由 Agnes 3.0 Pro 分析画面后生成优化提示词，自动填入输入框，可继续修改",
+                    "上传当前预览图，由 Agnes 3.0 Flash 分析画面后生成优化提示词，自动填入输入框，可继续修改",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary
                 )
@@ -592,7 +596,7 @@ fun AgnesKeySettingsCard(
                 color = TextSecondary
             )
 
-            // Optional advanced setting: the Agnes 3.0 Pro doc asks for a
+            // Optional advanced setting: the Agnes 3.0 Flash doc asks for a
             // publicly reachable image_url. Data URI works on most gateways;
             // this field is only needed when the account rejects Data URIs.
             Spacer(Modifier.height(4.dp))
