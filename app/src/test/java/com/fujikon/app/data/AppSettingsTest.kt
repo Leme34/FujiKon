@@ -68,6 +68,21 @@ class AppSettingsTest {
     }
 
     @Test
+    fun agnesRegionDefaultsToChinaAndPersists() {
+        val settings = AppSettings(context)
+        assertEquals("cn", settings.agnesRegion)
+        assertEquals("https://api.agnes-ai.cn", settings.agnesBaseUrl)
+
+        settings.agnesRegion = "global"
+        val reread = AppSettings(context)
+        assertEquals("global", reread.agnesRegion)
+        assertEquals("https://apihub.agnes-ai.com", reread.agnesBaseUrl)
+
+        settings.agnesRegion = "unknown"
+        assertEquals("https://api.agnes-ai.cn", AppSettings(context).agnesBaseUrl)
+    }
+
+    @Test
     fun existingSettingsAreUnaffected() {
         val settings = AppSettings(context)
         settings.albumName = "MyAlbum"

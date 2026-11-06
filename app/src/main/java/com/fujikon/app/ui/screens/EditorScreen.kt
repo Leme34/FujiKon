@@ -946,7 +946,11 @@ fun EditorScreen(
         )
         is EditorViewModel.AiEditState.Failed -> AiErrorDialog(
             message = ai.message,
-            onDismiss = { viewModel.dismissAiState() }
+            onDismiss = { viewModel.dismissAiState() },
+            onGoToSettings = {
+                viewModel.dismissAiState()
+                navController.navigate(Routes.SETTINGS)
+            }
         )
         else -> Unit
     }

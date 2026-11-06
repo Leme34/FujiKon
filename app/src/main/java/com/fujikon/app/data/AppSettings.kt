@@ -1,6 +1,7 @@
 package com.fujikon.app.data
 
 import android.content.Context
+import com.fujikon.app.agnes.AgnesImageService
 
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("fujikon_settings", Context.MODE_PRIVATE)
@@ -41,6 +42,28 @@ class AppSettings(context: Context) {
         }
 
     val hasAgnesApiKey: Boolean get() = agnesApiKey.isNotBlank()
+
+    /**
+     * Which Agnes gateway the key belongs to. The official China endpoint is
+     * the default; the international apihub gateway is kept as an explicit
+     * alternative because tokens are not shared between the two.
+     */
+    var agnesRegion: String
+        get() = prefs.getString("agnes_region", null)
+            ?.takeIf { it == AgnesImageService.REGION_GLOBAL }
+            ?: AgnesImageService.REGION_CN
+        set(value) {
+            prefs.edit().putString(
+                "agnes_region",
+                if (value == AgnesImageService.REGION_GLOBAL) {
+                    AgnesImageService.REGION_GLOBAL
+                } else {
+                    AgnesImageService.REGION_CN
+                }
+            ).apply()
+        }
+
+    val agnesBaseUrl: String get() = AgnesImageService.baseUrlFor(agnesRegion)
 
     /** Last prompt used, offered as the starting point for the next AI edit. */
     var agnesPrompt: String

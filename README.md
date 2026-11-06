@@ -2,7 +2,7 @@
 
 FujiKon 是一个 Android 端的尼康 Picture Control 预设工具：导入 `.NCP` / `.NP3` 文件，批量套用到手机相册照片，套用后可继续通过 Lightroom 风格调节面板、RGB 色调曲线微调，自由移动/缩放的裁剪与纠偏重新构图，以及点选焦点的镜头模糊制造景深，长按对比原图、双指缩放查看细节，并尽量以原图尺寸导出到相册、保留相机 EXIF 信息；也可以输入自定义提示词，调用 Agnes 图像大模型进行**一键 AI 修图**。
 
-解析、调色与渲染都在本机 CPU 完成。在线预设库只读取公开接口，不会上传照片或本地预设；**只有「一键 AI 修图」会把当前预览图发送给 Agnes 图像大模型**（需要你先在「设置」里录入 API 密钥），详见下文。
+解析、调色与渲染都在本机 CPU 完成。在线预设库只读取公开接口，不会上传照片或本地预设；**只有「一键 AI 修图」会把当前预览图发送给 Agnes 图像大模型**（需要你先在「设置」里录入 API 密钥，可回显、明文查看并验证），「验证密钥」只发送一句测试提示词、不上传照片，详见下文。
 
 ## 功能
 
@@ -25,7 +25,7 @@ FujiKon 是一个 Android 端的尼康 Picture Control 预设工具：导入 `.N
 - 将当前调节、HSL、人像美颜、裁剪、镜头模糊、滤镜、RGB 与分通道曲线及预设参数保存为预设列表中的新副本，不修改原始 NCP/NP3 文件
 - 批量导出：JPEG（最高画质、保留 EXIF）或 PNG（无损、不写 EXIF）
 - 显示 RGB 直方图，并根据当前直方图分布动态给出修图提示
-- **一键 AI 修图**：输入任意自定义提示词，调用 Agnes `agnes-image-2.1-flash` 图像大模型对当前预览图做图生图编辑，结果作为最终照片直接预览与导出；未配置 API 密钥时会弹窗提示跳转「设置」录入并保存
+- **一键 AI 修图**：输入任意自定义提示词，调用 Agnes 最新 `agnes-image-2.5-flash` 图像大模型对当前预览图做图生图编辑，结果作为最终照片直接预览与导出；未配置 API 密钥时会弹窗提示跳转「设置」录入并保存，设置页可回显/明文查看已存密钥并「验证密钥」
 - 导出到 `Pictures/<相册名>`，原图尺寸（受设备内存限制时自动降到可处理的最大尺寸）
 - 深色界面，适配 Android 13/14/15 的照片权限（含“仅选择部分照片”）
 
@@ -125,21 +125,21 @@ sdk.dir=D:/Android/Sdk
 产物按应用版本号命名，不使用 `debug` 后缀：
 
 ```
-app/build/outputs/apk/debug/FujiKon-1.7.0.apk
-app/build/outputs/apk/release/FujiKon-1.7.0.apk
+app/build/outputs/apk/debug/FujiKon-1.7.1.apk
+app/build/outputs/apk/release/FujiKon-1.7.1.apk
 ```
 
 安装：
 
 ```bat
-adb install -r app/build/outputs/apk/debug/FujiKon-1.7.0.apk
+adb install -r app/build/outputs/apk/debug/FujiKon-1.7.1.apk
 ```
 
 版本规范：
 
 - `versionName` 使用语义化版本 `MAJOR.MINOR.PATCH`，`versionCode` 单调递增。
-- APK 统一命名为 `FujiKon-<versionName>.apk`，例如 `FujiKon-1.7.0.apk`。
-- 每次提交新版本代码时创建对应的 annotated Git tag，例如 `v1.7.0`。
+- APK 统一命名为 `FujiKon-<versionName>.apk`，例如 `FujiKon-1.7.1.apk`。
+- 每次提交新版本代码时创建对应的 annotated Git tag，例如 `v1.7.1`。
 
 ## 使用
 
@@ -251,17 +251,20 @@ CPU 渲染，按行分块并行：
 
 ## 一键 AI 修图（Agnes）
 
-FujiKon 接入 Agnes 最新图像大模型 `agnes-image-2.1-flash`（图生图 / 图像编辑）。与本机 CPU 渲染不同，这是**唯一会联网上传照片**的功能。
+FujiKon 接入 Agnes 最新一代图像大模型 `agnes-image-2.5-flash`（图生图 / 图像编辑），严格按[官方接入文档](https://www.agnes-ai.cn/zh-Hans/docs/agnes-image-25-flash)实现。与本机 CPU 渲染不同，这是**唯一会联网上传照片**的功能。
 
 ### 配置密钥
 
 1. 打开「设置 → AI 修图」（设置页第一项），在「API 密钥」输入框粘贴你的 Agnes API 密钥，点「保存密钥」。密钥以 `SharedPreferences` 保存在**本机**，只作为 `Authorization: Bearer` 头附加到你主动发起的请求，不会同步到别处。
-2. 未配置密钥时在编辑页点「AI」，会弹窗提示并给出「去设置」按钮，直接跳到该输入项；已配置的密钥可随时「清除」。
-3. 密钥是否有效由 Agnes 服务判定：401/403 提示「API 密钥无效或没有权限」，429 提示额度/限流，5xx 提示服务暂不可用，网络异常也会给出可读提示。
+2. **保存后输入框不清空**，卡片会常驻显示「已配置」状态、密钥指纹（首尾各 4 位 + 总位数）；重新进入设置页也会回显已存密钥，点右侧眼睛可随时查看完整明文核对是否正确。
+3. **接入区域**：密钥不跨区域通用。默认「中国区 `api.agnes-ai.cn`」（官方端点）；若密钥申请自国际网关，切换到「国际区 `apihub.agnes-ai.com`」。选错时服务会返回「无效的令牌」。
+4. 点「**验证密钥**」会用一句最小提示词发起一次真实请求（不上传照片，当前体验价免费），结果常驻显示：密钥有效 / 无效（附服务端原文如「无效的令牌」）/ 额度受限 / 服务或网络异常。**当前区域返回 401/403 时会自动再试另一区域**，成功则自动记住可用区域，无需手工判断密钥属于哪个站点；两次都失败才会报告密钥无效。
+5. 未配置密钥时在编辑页点「AI」会弹窗并给出「去设置」按钮；修图失败的弹窗也带「去设置」；已配置的密钥可随时「清除」。
+6. 401/403 会显示服务端原始原因和**当前端点域名**，429 提示额度/限流，5xx 提示服务暂不可用，网络异常也会给出可读提示。
 
 ### 使用流程
 
-编辑页底部点「AI」→ 在弹窗中输入自定义提示词（最多 500 字，可选「快捷灵感」）→「开始修图」。App 把**当前预览图**（已含预设、调节、曲线、裁剪等全部本地效果）压缩为 JPEG，以 Data URI 放进 `extra_body.image`，连同提示词一起 POST 到 `https://apihub.agnes-ai.com/v1/images/generations`，并要求 `extra_body.response_format = "b64_json"`。生成通常需要十几秒到数十秒，期间可取消。
+编辑页底部点「AI」→ 在弹窗中输入自定义提示词（最多 500 字，可选「快捷灵感」）→「开始修图」。App 把**当前预览图**（已含预设、调节、曲线、裁剪等全部本地效果）压缩为 JPEG，以 Data URI 放进 `extra_body.image`，连同提示词一起 POST 到官方文档指定的 `https://api.agnes-ai.cn/v1/images/generations`（国际区密钥走 `https://apihub.agnes-ai.com/v1/images/generations`），并要求 `extra_body.response_format = "b64_json"`。生成通常需要十几秒到数十秒，期间可取消。
 
 返回的图片字节经合法性校验后**原样写入应用缓存**（不二次压缩），作为该照片的「最终成品图」：预览直接显示它，长按仍可对比原图，导出时跳过本机渲染直接保存它（因此不会把预设叠加第二次）。底部出现「已应用 AI 修图结果」标记条，点「撤销」即可删除缓存并返回本地渲染链路。多张照片各自的 AI 结果独立保存；修改本地参数前需先撤销 AI 结果。
 
@@ -269,7 +272,7 @@ FujiKon 接入 Agnes 最新图像大模型 `agnes-image-2.1-flash`（图生图 /
 
 ```json
 {
-  "model": "agnes-image-2.1-flash",
+  "model": "agnes-image-2.5-flash",
   "prompt": "把天空改成星空，保留原构图",
   "size": "1K",
   "ratio": "3:4",
@@ -282,11 +285,26 @@ FujiKon 接入 Agnes 最新图像大模型 `agnes-image-2.1-flash`（图生图 /
 
 `ratio` 按当前预览图宽高比映射到模型支持的最接近档位（1:1 / 3:4 / 4:3 / 16:9 / 9:16 / 2:3 / 3:2 / 21:9）。响应优先取 `data[0].b64_json`，也兼容返回临时 `data[0].url` 时下载图片。
 
+### 接入检查清单（对照官方文档）
+
+| 项 | 实现 |
+|---|---|
+| Endpoint | `POST https://api.agnes-ai.cn/v1/images/generations`（可选国际区 `apihub.agnes-ai.com`）|
+| 认证 | `Authorization: Bearer <API_KEY>` |
+| 模型名 | `agnes-image-2.5-flash` |
+| 必填参数 | `model`、`prompt`、`size`（`1K`），配 `ratio` |
+| 图生图 | `extra_body.image` 传 Data URI 数组 `["data:image/jpeg;base64,…"]` |
+| Base64 输出 | `extra_body.response_format: "b64_json"` |
+| 禁止 | 顶层 `response_format`、`tags: ["img2img"]` |
+| 超时 | 读超时 180s（文档建议 60–360s）|
+
+> 1.7.0 曾误用 `apihub.agnes-ai.com` + `agnes-image-2.1-flash`（来自旧版英文 wiki），导致中国区密钥始终返回 401「Invalid token」。1.7.1 起改用官方文档端点与模型，并保留区域切换兼容国际网关密钥。
+
 ### 隐私与限制
 
 - 只有点击「开始修图」才会上传**当前这一张预览图**（最长边 1800 px 的 JPEG）；不会上传原图文件、其它照片、预设或相册信息。
 - AI 结果是模型生成的**新图像**，尺寸由模型输出档位决定，可能与原图不同；EXIF 仍从原图复制到导出文件，但模型不会保留原始像素细节。
-- 效果取决于提示词与模型，具有不确定性；网络断开、密钥失效、服务限流都会返回可读错误，不会改动本地预设或原图。
+- 效果取决于提示词与模型，具有不确定性；网络断开、密钥失效、服务限流都会返回可读错误（含服务端原文与当前端点域名），不会改动本地预设或原图。
 - 密钥安全由使用者自行负责：设备本地存储，卸载 App 即清除；建议使用可撤销的密钥。
 
 ## 导出与“无损”

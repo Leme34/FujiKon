@@ -31,7 +31,8 @@ class AppContainer(context: Context) {
     val exportManager = ExportManager(appContext, imageRenderer, settings)
     val nikonPcService = NikonPcService(cacheDir = File(appContext.cacheDir, "nikonpc"))
     val nikonCloudService = NikonCloudService()
-    val agnesImageService = AgnesImageService()
+    // Resolved per request so a region switch in Settings takes effect at once.
+    val agnesImageService = AgnesImageService(baseUrlProvider = { settings.agnesBaseUrl })
     /** Final images returned by one-tap AI retouching, keyed by photo id. */
     val aiEditCacheDir: File = File(appContext.cacheDir, "ai_edit").apply { mkdirs() }
 
