@@ -1,6 +1,10 @@
 package com.fujikon.app.ui
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -10,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import com.fujikon.app.agnes.AgnesImageService
 import com.fujikon.app.agnes.AgnesKeyCheck
@@ -19,6 +25,7 @@ import com.fujikon.app.ui.components.AgnesKeySettingsCard
 import com.fujikon.app.ui.components.AiApiKeyRequiredDialog
 import com.fujikon.app.ui.components.AiEditDialog
 import com.fujikon.app.ui.components.AiErrorDialog
+import com.fujikon.app.ui.components.AiPromptGenState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -269,4 +276,150 @@ class AiEditUiTest {
         rule.onNodeWithText("去设置").performClick()
         assertTrue(goToSettings)
     }
+
+    /** 生成提示词按钮位于「快捷灵感」下方，并把点击传给上层。 */
+    @Test
+    fun generatePromptButtonSitsBelowSuggestionsAndReportsClicks() {
+        var calls = 0
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = listOf("改成胶片风"),
+                onDismiss = {},
+                onConfirm = {},
+                onGeneratePrompt = { calls++ }
+            )
+        }
+        rule.onNodeWithText("快捷灵感").assertExists()
+        rule.onNodeWithTag("ai_generate_prompt").assertExists()
+        // In Robolectric the dialog body may be taller than the test window;
+        // scroll the button into view before clicking its centre.
+        rule.onNodeWithTag("ai_generate_prompt").performScrollTo()
+        rule.onNodeWithText("生成提示词").performClick()
+        println("DIAG generatePrompt calls=$calls")
+        assertEquals(1, calls)
+    }
+
+    /** 生成的提示词自动填入输入框，且仍可被用户改写后提交。 */
+    @Test
+    fun generatedPromptFillsTheInputAndRemainsEditable() {
+        val gen = mutableStateOf<AiPromptGenState>(AiPromptGenState.Idle)
+        var confirmed: String? = null
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = emptyList(),
+                onDismiss = {},
+                onConfirm = { confirmed = it },
+                promptGen = gen.value,
+                onGeneratePrompt = {},
+                onPromptConsumed = { gen.value = AiPromptGenState.Idle }
+            )
+        }
+        gen.value = AiPromptGenState.Done("提升曝光，校正偏蓝，保留原构图", fromLocal = false)
+        rule.waitForIdle()
+        rule.onNodeWithTag("ai_prompt_input").assertTextContains("提升曝光", substring = true)
+        rule.onNodeWithTag("ai_generate_notice").assertTextContains("Agnes 3.0 Pro", substring = true)
+
+        // The user stays in control and can replace the generated text.
+        rule.onNodeWithTag("ai_prompt_input").performTextClearance()
+        rule.onNodeWithTag("ai_prompt_input").performTextInput("我改成自己的提示词")
+        rule.onNodeWithTag("ai_confirm").performClick()
+        assertEquals("我改成自己的提示词", confirmed)
+    }
+
+    /** 模型不可用时本机降级，必须如实标注来源而不是伪装成 AI 结果。 */
+    @Test
+    fun localFallbackIsClearlyLabelled() {
+        val gen = mutableStateOf<AiPromptGenState>(AiPromptGenState.Idle)
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = emptyList(),
+                onDismiss = {},
+                onConfirm = {},
+                promptGen = gen.value,
+                onPromptConsumed = { gen.value = AiPromptGenState.Idle }
+            )
+        }
+        gen.value = AiPromptGenState.Done("本机分析生成的提示词", fromLocal = true)
+        rule.waitForIdle()
+        rule.onNodeWithTag("ai_generate_notice").assertTextContains("本机图像分析", substring = true)
+        rule.onNodeWithTag("ai_prompt_input").assertTextContains("本机分析", substring = true)
+    }
+
+    @Test
+    fun runningStateDisablesTheButton() {
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = emptyList(),
+                onDismiss = {},
+                onConfirm = {},
+                promptGen = AiPromptGenState.Running
+            )
+        }
+        rule.onNodeWithTag("ai_generate_prompt").assertIsNotEnabled()
+        rule.onNodeWithText("分析中…").assertExists()
+    }
+
+    @Test
+    fun failedGenerationShowsAnInlineError() {
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = emptyList(),
+                onDismiss = {},
+                onConfirm = {},
+                promptGen = AiPromptGenState.Failed("API 密钥无效")
+            )
+        }
+        rule.onNodeWithTag("ai_generate_error").assertTextContains("API 密钥无效", substring = true)
+    }
+
+    @Test
+    fun missingKeyHintExplainsTheFallback() {
+        rule.setContent {
+            AiEditDialog(
+                initialPrompt = "",
+                suggestedPrompts = emptyList(),
+                onDismiss = {},
+                onConfirm = {},
+                hasApiKey = false
+            )
+        }
+        rule.onNodeWithTag("ai_no_key_hint").assertTextContains("本机图像分析", substring = true)
+    }
+
+
+    /** 文档承诺的公网 URL 高级设置确实可填、可回读。 */
+    @Test
+    fun advancedImageUrlSettingIsEditable() {
+        val url = mutableStateOf("")
+        // The real Settings screen is a scrollable LazyColumn; wrap the card
+        // the same way so bottom-of-card controls are laid out and clickable.
+        rule.setContent {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                AgnesKeySettingsCard(
+                    configured = false,
+                    savedKey = "",
+                    modelName = AgnesImageService.MODEL,
+                    region = AgnesImageService.REGION_CN,
+                    checkState = AgnesKeyCheckUiState.Idle,
+                    onSave = {},
+                    onClear = {},
+                    onRegionChange = {},
+                    onVerify = {},
+                    imagePublicUrl = url.value,
+                    onImagePublicUrlChange = { url.value = it }
+                )
+            }
+        }
+        rule.onNodeWithTag("agnes_advanced_toggle").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("收起高级设置").assertExists()
+        rule.onNodeWithTag("agnes_image_url_input").performTextInput("https://cdn.example.com/p.jpg")
+        assertEquals("https://cdn.example.com/p.jpg", url.value)
+    }
+
 }

@@ -378,6 +378,6 @@ class AgnesImageService(
         // Image generation may take tens of seconds; the docs recommend 60-360s.
         private const val READ_TIMEOUT_MS = 180_000
         private const val MAX_IMAGE_BYTES = 48 * 1024 * 1024
-        private const val USER_AGENT = "FujiKon/1.7 Android"
+        private const val USER_AGENT = "FujiKon/1.8 Android"
     }
 }

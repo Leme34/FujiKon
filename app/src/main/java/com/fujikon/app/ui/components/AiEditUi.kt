@@ -1,6 +1,8 @@
 package com.fujikon.app.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,15 +60,48 @@ import com.fujikon.app.ui.theme.Ink
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 
+/**
+ * UI state of the "生成提示词" action. Kept in the component layer so the
+ * dialog has no dependency on a concrete ViewModel; EditorScreen maps the
+ * ViewModel state onto this.
+ */
+sealed interface AiPromptGenState {
+    data object Idle : AiPromptGenState
+    data object Running : AiPromptGenState
+    /** [fromLocal] is true when Agnes was unavailable and on-device analysis ran. */
+    data class Done(val prompt: String, val fromLocal: Boolean) : AiPromptGenState
+    data class Failed(val message: String) : AiPromptGenState
+}
+
 /** Prompt editor for one-tap AI retouching; the prompt is fully user-defined. */
 @Composable
 fun AiEditDialog(
     initialPrompt: String,
     suggestedPrompts: List<String>,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: (String) -> Unit,
+    promptGen: AiPromptGenState = AiPromptGenState.Idle,
+    hasApiKey: Boolean = true,
+    onGeneratePrompt: () -> Unit = {},
+    onPromptConsumed: () -> Unit = {}
 ) {
     var text by remember(initialPrompt) { mutableStateOf(initialPrompt) }
+    var genNotice by remember { mutableStateOf<String?>(null) }
+
+    // A generated prompt is delivered as a one-shot event: fill the field,
+    // show where it came from, then let the caller clear the state so the
+    // button can be used again. The user stays in full control of the text.
+    LaunchedEffect(promptGen) {
+        if (promptGen is AiPromptGenState.Done) {
+            text = promptGen.prompt.take(500)
+            genNotice = if (promptGen.fromLocal) {
+                "Agnes 文本模型暂不可用，已用本机图像分析生成提示词，可继续修改"
+            } else {
+                "已根据 Agnes 3.0 Pro 的画面分析生成提示词，可继续修改"
+            }
+            onPromptConsumed()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -75,7 +110,14 @@ fun AiEditDialog(
             Text("一键 AI 修图", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
         },
         text = {
-            Column(Modifier.fillMaxWidth()) {
+            // The dialog now has a scrollable body: with the prompt field,
+            // suggestion chips and the 生成提示词 action it can exceed the
+            // available height on small screens (and in Robolectric tests).
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(
                     "用自然语言描述想要的改动，例如「改成胶片色调，保留原构图」。当前预览图会发送给 Agnes 图像大模型处理。",
                     style = MaterialTheme.typography.bodySmall,
@@ -126,6 +168,66 @@ fun AiEditDialog(
                             )
                         }
                     }
+                }
+
+                // 生成提示词：上传当前预览图由 Agnes 3.0 Pro 分析画面，结果
+                // 自动填入上方输入框，用户可继续修改后再开始修图。
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { genNotice = null; onGeneratePrompt() },
+                    enabled = promptGen !is AiPromptGenState.Running,
+                    modifier = Modifier.fillMaxWidth().testTag("ai_generate_prompt"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = CardHigh, contentColor = Amber)
+                ) {
+                    if (promptGen is AiPromptGenState.Running) {
+                        CircularProgressIndicator(
+                            color = Amber,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("分析中…", style = MaterialTheme.typography.labelMedium)
+                    } else {
+                        Icon(
+                            Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = Amber,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("生成提示词", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "上传当前预览图，由 Agnes 3.0 Pro 分析画面后生成优化提示词，自动填入输入框，可继续修改",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
+                if (!hasApiKey) {
+                    Text(
+                        "尚未配置密钥：生成提示词将使用本机图像分析；开始修图前请到「设置 → AI 修图」录入密钥",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Danger,
+                        modifier = Modifier.testTag("ai_no_key_hint")
+                    )
+                }
+                if (genNotice != null) {
+                    Text(
+                        genNotice!!,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Amber,
+                        modifier = Modifier.testTag("ai_generate_notice")
+                    )
+                }
+                if (promptGen is AiPromptGenState.Failed) {
+                    Text(
+                        "生成失败：${promptGen.message}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Danger,
+                        modifier = Modifier.testTag("ai_generate_error")
+                    )
                 }
             }
         },
@@ -263,10 +365,13 @@ fun AgnesKeySettingsCard(
     onClear: () -> Unit,
     onRegionChange: (String) -> Unit,
     onVerify: () -> Unit,
+    imagePublicUrl: String = "",
+    onImagePublicUrlChange: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var field by remember { mutableStateOf(TextFieldValue(savedKey)) }
     var visible by remember { mutableStateOf(false) }
+    var showAdvanced by remember { mutableStateOf(false) }
 
     // Re-entry, save and clear all converge here; never clear the field behind
     // the user's back while they are typing something different.
@@ -486,6 +591,45 @@ fun AgnesKeySettingsCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
+
+            // Optional advanced setting: the Agnes 3.0 Pro doc asks for a
+            // publicly reachable image_url. Data URI works on most gateways;
+            // this field is only needed when the account rejects Data URIs.
+            Spacer(Modifier.height(4.dp))
+            TextButton(
+                onClick = { showAdvanced = !showAdvanced },
+                modifier = Modifier.testTag("agnes_advanced_toggle")
+            ) {
+                Text(
+                    if (showAdvanced) "收起高级设置" else "高级设置 · 图像公网 URL",
+                    color = Amber,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            if (showAdvanced) {
+                OutlinedTextField(
+                    value = imagePublicUrl,
+                    onValueChange = onImagePublicUrlChange,
+                    label = { Text("图片公网 URL（选填）") },
+                    placeholder = { Text("https://…/photo.jpg") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("agnes_image_url_input"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Amber,
+                        unfocusedBorderColor = CardHigh,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "「生成提示词」默认把当前预览图编码为 Data URI 上传，无需填写。" +
+                        "仅当网关明确要求公开可访问的 image_url 时，才把照片上传到你自己的图床并在此粘贴链接。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
+            }
         }
     }
 }

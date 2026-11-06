@@ -85,6 +85,7 @@ fun SettingsScreen(
     var agnesConfigured by remember { mutableStateOf(settings.hasAgnesApiKey) }
     var agnesSavedKey by remember { mutableStateOf(settings.agnesApiKey) }
     var agnesRegion by remember { mutableStateOf(settings.agnesRegion) }
+    var agnesImageUrl by remember { mutableStateOf(settings.agnesImagePublicUrl) }
     var keyCheck by remember { mutableStateOf<AgnesKeyCheckUiState>(AgnesKeyCheckUiState.Idle) }
 
     Scaffold(
@@ -115,6 +116,11 @@ fun SettingsScreen(
                     modelName = AgnesImageService.MODEL,
                     region = agnesRegion,
                     checkState = keyCheck,
+                    imagePublicUrl = agnesImageUrl,
+                    onImagePublicUrlChange = { url ->
+                        agnesImageUrl = url
+                        settings.agnesImagePublicUrl = url
+                    },
                     onSave = { key ->
                         settings.agnesApiKey = key
                         agnesSavedKey = settings.agnesApiKey
@@ -314,8 +320,9 @@ fun SettingsScreen(
                         StepRow("1", "导入或选择一个尼康 Picture Control 预设")
                         StepRow("2", "在相册中勾选一张或多张照片")
                         StepRow("3", "预览界面长按对比原图，双指缩放查看细节")
-                        StepRow("4", "编辑页点「AI」输入提示词，可一键调用 Agnes 大模型修图")
-                        StepRow("5", "尽量按原图尺寸批量导出，自动保留相机信息")
+                        StepRow("4", "直方图卡片点「一键优化」，本机自动校正曝光、白平衡、层次与细节")
+                        StepRow("5", "编辑页点「AI」，可点「生成提示词」让 Agnes 3.0 Pro 分析画面并自动填词")
+                        StepRow("6", "尽量按原图尺寸批量导出，自动保留相机信息")
                     }
                 }
             }

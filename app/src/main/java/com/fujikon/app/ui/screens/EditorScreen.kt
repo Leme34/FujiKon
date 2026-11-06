@@ -95,6 +95,7 @@ import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.AiApiKeyRequiredDialog
 import com.fujikon.app.ui.components.AiEditDialog
+import com.fujikon.app.ui.components.AiPromptGenState
 import com.fujikon.app.ui.components.AiErrorDialog
 import com.fujikon.app.ui.components.AiProgressDialog
 import com.fujikon.app.ui.components.AdjustmentsSheet
@@ -924,9 +925,17 @@ fun EditorScreen(
         AiEditDialog(
             initialPrompt = state.aiPrompt,
             suggestedPrompts = SUGGESTED_AI_PROMPTS,
-            onDismiss = { showAiDialog = false },
+            promptGen = mapPromptGen(state.promptGen),
+            hasApiKey = state.hasApiKey,
+            onGeneratePrompt = { viewModel.generateEditPrompt() },
+            onPromptConsumed = { viewModel.consumePromptGen() },
+            onDismiss = {
+                showAiDialog = false
+                viewModel.cancelPromptGen()
+            },
             onConfirm = { prompt ->
                 showAiDialog = false
+                viewModel.cancelPromptGen()
                 viewModel.runAiEdit(prompt)
             }
         )
@@ -955,4 +964,16 @@ fun EditorScreen(
         else -> Unit
     }
 
+}
+
+
+/** Maps ViewModel prompt-generation state onto the dialog's UI-only state. */
+private fun mapPromptGen(state: EditorViewModel.PromptGenState): AiPromptGenState = when (state) {
+    EditorViewModel.PromptGenState.Idle -> AiPromptGenState.Idle
+    EditorViewModel.PromptGenState.Running -> AiPromptGenState.Running
+    is EditorViewModel.PromptGenState.Done -> AiPromptGenState.Done(
+        state.prompt,
+        state.source == EditorViewModel.PromptSource.LOCAL
+    )
+    is EditorViewModel.PromptGenState.Failed -> AiPromptGenState.Failed(state.message)
 }

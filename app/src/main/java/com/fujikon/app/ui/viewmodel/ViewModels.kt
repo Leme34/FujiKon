@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.fujikon.app.AppContainer
 import com.fujikon.app.agnes.AgnesException
 import com.fujikon.app.agnes.AgnesImageService
+import com.fujikon.app.agnes.AgnesTextService
 import com.fujikon.app.data.Album
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.ChannelToneCurves
@@ -33,6 +34,7 @@ import com.fujikon.app.ncp.PictureControlParser
 import com.fujikon.app.nikonpc.NikonPcPreset
 import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.nikonpc.presetSummary
+import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.BitmapLoader
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
@@ -621,7 +623,8 @@ class EditorViewModel(
     private val exportManager: ExportManager,
     private val settings: AppSettings,
     private val agnesImageService: AgnesImageService,
-    private val aiCacheDir: File
+    private val aiCacheDir: File,
+    private val agnesTextService: AgnesTextService = AgnesTextService()
 ) : ViewModel() {
 
     sealed interface AiEditState {
@@ -632,6 +635,17 @@ class EditorViewModel(
         data class Failed(val message: String) : AiEditState
         data class Done(val message: String) : AiEditState
     }
+
+    /** State of the "生成提示词" action driven by the Agnes text model. */
+    sealed interface PromptGenState {
+        data object Idle : PromptGenState
+        data object Running : PromptGenState
+        /** [source] tells the UI whether this came from Agnes or local analysis. */
+        data class Done(val prompt: String, val source: PromptSource) : PromptGenState
+        data class Failed(val message: String) : PromptGenState
+    }
+
+    enum class PromptSource { AGNES, LOCAL }
 
     sealed interface ExportState {
         data object Idle : ExportState
@@ -672,7 +686,11 @@ class EditorViewModel(
         /** Final AI images, keyed by photo id; these bypass local rendering. */
         val aiResultUris: Map<Long, Uri> = emptyMap(),
         /** Last prompt, pre-filled into the AI dialog. */
-        val aiPrompt: String = ""
+        val aiPrompt: String = "",
+        /** State of the Agnes text-model prompt generation. */
+        val promptGen: PromptGenState = PromptGenState.Idle,
+        /** Whether a key is configured, shown as a hint in the prompt editor. */
+        val hasApiKey: Boolean = false
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
         val selectedPreset: Preset? get() = when (presetId) {
@@ -794,11 +812,13 @@ class EditorViewModel(
      * straight into Settings; no network request is made in that case.
      */
     fun requestAiEdit(): Boolean {
-        if (!settings.hasAgnesApiKey) {
-            _state.update { it.copy(aiState = AiEditState.NeedApiKey) }
-            return false
+        // The AI dialog is a prompt editor and must stay reachable even with
+        // no key: "生成提示词" can fall back to on-device analysis. The key is
+        // only really required when the user taps 开始修图, where runAiEdit()
+        // raises NeedApiKey and offers the Settings shortcut.
+        _state.update {
+            it.copy(aiState = AiEditState.Idle, hasApiKey = settings.hasAgnesApiKey)
         }
-        _state.update { it.copy(aiState = AiEditState.Idle) }
         return true
     }
 
@@ -909,6 +929,129 @@ class EditorViewModel(
     private fun closestRatio(width: Int, height: Int): String {
         val value = width.toFloat() / height.coerceAtLeast(1)
         return SUPPORTED_RATIOS.minByOrNull { abs(it.second - value) }?.first ?: "1:1"
+    }
+
+    // --------------------------------------------------- prompt generation
+
+    private var promptJob: Job? = null
+
+    /**
+     * Asks Agnes 3.0 Pro to look at the current preview and write an editing
+     * prompt. The result flows through [UiState.promptGen] so the dialog can
+     * fill its text field and the user can keep editing before submitting.
+     *
+     * The official docs currently label `agnes-3.0-pro` as "即将上线". If the
+     * gateway reports the model unavailable, we fall back to on-device photo
+     * analysis (same measured statistics as 一键优化) instead of leaving the
+     * button dead, and the source is surfaced so the user is never misled.
+     */
+    fun generateEditPrompt() {
+        val preview = _state.value.rendered
+        if (preview == null || preview.isRecycled) {
+            _state.update { it.copy(promptGen = PromptGenState.Failed("当前没有可分析的预览图")) }
+            return
+        }
+        val key = settings.agnesApiKey.trim()
+        promptJob?.cancel()
+        promptJob = viewModelScope.launch {
+            _state.update { it.copy(promptGen = PromptGenState.Running) }
+            // No key: still produce a usable prompt from on-device analysis so
+            // the button never leaves the user with an empty, dead input.
+            if (key.isEmpty()) {
+                emitLocalPrompt(preview, "尚未配置 Agnes 密钥")
+                return@launch
+            }
+            try {
+                val bytes = withContext(Dispatchers.IO) { encodeForAnalysis(preview) }
+                val prompt = agnesTextService.generateEditPrompt(
+                    apiKey = key,
+                    imageBytes = bytes,
+                    mimeType = "image/jpeg",
+                    imageUrlOverride = settings.agnesImagePublicUrl.takeIf { it.isNotBlank() }
+                )
+                _state.update {
+                    it.copy(promptGen = PromptGenState.Done(prompt, PromptSource.AGNES))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AgnesException) {
+                if (!modelUnavailable(e)) {
+                    _state.update {
+                        it.copy(promptGen = PromptGenState.Failed(e.message ?: "生成提示词失败"))
+                    }
+                } else {
+                    emitLocalPrompt(preview, e.message)
+                }
+            } catch (e: Exception) {
+                emitLocalPrompt(preview, e.message)
+            }
+        }
+    }
+
+    /**
+     * Fallback used when Agnes 3.0 Pro is not reachable / not enabled yet.
+     * The prompt is derived from the very same measured pixel statistics that
+     * drive 一键优化, so it is specific to this photo rather than generic.
+     */
+    private suspend fun emitLocalPrompt(preview: Bitmap, reason: String?) {
+        val local = withContext(Dispatchers.Default) {
+            AutoEnhance.analyse(preview)?.let { AutoEnhance.describeForPrompt(it) }
+        }
+        _state.update {
+            if (local == null) {
+                it.copy(promptGen = PromptGenState.Failed(reason ?: "生成提示词失败"))
+            } else {
+                it.copy(promptGen = PromptGenState.Done(local, PromptSource.LOCAL))
+            }
+        }
+    }
+
+    /** Clears a delivered result/error so the dialog can accept another run. */
+    fun consumePromptGen() {
+        _state.update {
+            if (it.promptGen is PromptGenState.Idle) it
+            else it.copy(promptGen = PromptGenState.Idle)
+        }
+    }
+
+    fun cancelPromptGen() {
+        promptJob?.cancel()
+        promptJob = null
+        consumePromptGen()
+    }
+
+    /** Auth / quota errors must surface, not be masked by a local fallback. */
+    private fun modelUnavailable(e: AgnesException): Boolean {
+        val code = e.httpCode
+        if (code == null || code == 404 || code >= 500) return true
+        if (code == 400) {
+            val text = ((e.serverMessage ?: "") + " " + (e.message ?: "")).lowercase()
+            return "model" in text || "模型" in text || "not found" in text
+        }
+        return false
+    }
+
+    /** Downscale to <= 768 px and JPEG-encode to keep the vision request small. */
+    private fun encodeForAnalysis(bitmap: Bitmap): ByteArray {
+        val longest = maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+        val scaled = if (longest > 768) {
+            val scale = 768f / longest
+            Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true
+            )
+        } else {
+            bitmap
+        }
+        try {
+            val out = ByteArrayOutputStream()
+            check(scaled.compress(Bitmap.CompressFormat.JPEG, 82, out)) { "图片编码失败" }
+            return out.toByteArray()
+        } finally {
+            if (scaled !== bitmap) scaled.recycle()
+        }
     }
 
     // ------------------------------------------------------------- history
@@ -1320,7 +1463,8 @@ class FujiKonViewModelFactory(private val container: AppContainer) : ViewModelPr
                 exportManager = container.exportManager,
                 settings = container.settings,
                 agnesImageService = container.agnesImageService,
-                aiCacheDir = container.aiEditCacheDir
+                aiCacheDir = container.aiEditCacheDir,
+                agnesTextService = container.agnesTextService
             ) as T
         else -> throw IllegalArgumentException("Unknown ViewModel: ${modelClass.name}")
     }

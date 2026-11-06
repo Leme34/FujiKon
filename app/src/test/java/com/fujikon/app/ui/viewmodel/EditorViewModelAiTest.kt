@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.fujikon.app.agnes.AgnesImageService
+import com.fujikon.app.agnes.AgnesTextService
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
@@ -136,6 +137,12 @@ class EditorViewModelAiTest {
     private fun b64Response(): String =
         """{"created":1,"data":[{"url":null,"b64_json":"${Base64.getEncoder().encodeToString(png)}"}]}"""
 
+    private fun textService() = AgnesTextService(
+        baseUrl = "http://127.0.0.1:${server.localPort}",
+        connectTimeoutMs = 3_000,
+        readTimeoutMs = 5_000
+    )
+
     private suspend fun createViewModel() {
         vm = EditorViewModel(
             context = context,
@@ -145,7 +152,8 @@ class EditorViewModelAiTest {
             exportManager = exportManager,
             settings = settings,
             agnesImageService = service(),
-            aiCacheDir = cacheDir
+            aiCacheDir = cacheDir,
+            agnesTextService = textService()
         )
         // Let the initial render settle before seeding a preview (Robolectric
         // decodeStream bitmaps cannot be read by the CPU renderer).
@@ -183,11 +191,18 @@ class EditorViewModelAiTest {
     }
 
     @Test
-    fun withoutKeyTheEditorAsksForSettingsAndMakesNoRequest() = runBlocking {
+    fun withoutKeyThePromptEditorStillOpensButRetouchAsksForSettings() = runBlocking {
         createViewModel()
         assertNotNull(vm.state.value.rendered)
 
-        assertFalse(vm.requestAiEdit())
+        // The AI dialog is a prompt editor: it stays reachable without a key
+        // so "生成提示词" can fall back to on-device analysis.
+        assertTrue(vm.requestAiEdit())
+        assertFalse(vm.state.value.hasApiKey)
+        assertTrue(vm.state.value.aiState is EditorViewModel.AiEditState.Idle)
+
+        // Only starting a real retouch requires the key; no request is sent.
+        vm.runAiEdit("任意提示词")
         assertTrue(vm.state.value.aiState is EditorViewModel.AiEditState.NeedApiKey)
         assertEquals(0, requestCount)
     }
@@ -247,6 +262,77 @@ class EditorViewModelAiTest {
         val failed = vm.state.value.aiState as EditorViewModel.AiEditState.Failed
         assertTrue(failed.message.contains("密钥无效"))
         assertTrue(vm.state.value.aiResultUris.isEmpty())
+    }
+
+
+    @Test
+    fun generateEditPromptCallsAgnesTextModelWithThePhoto() = runBlocking {
+        settings.agnesApiKey = "sk-e2e-key"
+        response = """{"choices":[{"message":{"content":"提升曝光，校正偏蓝，保留原构图"}}]}"""
+        createViewModel()
+
+        vm.generateEditPrompt()
+        await("提示词生成完成") {
+            it.promptGen is EditorViewModel.PromptGenState.Done ||
+                it.promptGen is EditorViewModel.PromptGenState.Failed
+        }
+        val done = vm.state.value.promptGen
+        assertTrue("实际=$done", done is EditorViewModel.PromptGenState.Done)
+        done as EditorViewModel.PromptGenState.Done
+        assertEquals("提升曝光，校正偏蓝，保留原构图", done.prompt)
+        assertEquals(EditorViewModel.PromptSource.AGNES, done.source)
+        assertEquals(1, requestCount)
+        assertEquals("Bearer sk-e2e-key", lastHeaders["authorization"])
+
+        val body = JSONObject(lastBody)
+        assertEquals("agnes-3.0-pro", body.getString("model"))
+        val parts = body.getJSONArray("messages").getJSONObject(1).getJSONArray("content")
+        val url = parts.getJSONObject(1).getJSONObject("image_url").getString("url")
+        assertTrue("必须上传当前预览图", url.startsWith("data:image/jpeg;base64,"))
+
+        // The result is a one-shot event: consuming it returns to Idle.
+        vm.consumePromptGen()
+        assertTrue(vm.state.value.promptGen is EditorViewModel.PromptGenState.Idle)
+    }
+
+    @Test
+    fun modelUnavailableFallsBackToOnDeviceAnalysis() = runBlocking {
+        settings.agnesApiKey = "sk"
+        status = 404
+        response = """{"error":{"message":"model agnes-3.0-pro not found"}}"""
+        createViewModel()
+
+        vm.generateEditPrompt()
+        await("降级提示词") { it.promptGen is EditorViewModel.PromptGenState.Done }
+        val done = vm.state.value.promptGen as EditorViewModel.PromptGenState.Done
+        assertEquals(EditorViewModel.PromptSource.LOCAL, done.source)
+        assertTrue("应是可执行的中文提示词: ${done.prompt}", done.prompt.contains("保留原构图"))
+        assertTrue(done.prompt.length <= 500)
+    }
+
+    @Test
+    fun authErrorIsNotMaskedByTheLocalFallback() = runBlocking {
+        settings.agnesApiKey = "bad"
+        status = 401
+        response = """{"error":{"message":"无效的令牌"}}"""
+        createViewModel()
+
+        vm.generateEditPrompt()
+        await("认证错误") { it.promptGen is EditorViewModel.PromptGenState.Failed }
+        val failed = vm.state.value.promptGen as EditorViewModel.PromptGenState.Failed
+        assertTrue(failed.message.contains("密钥") || failed.message.contains("无效的令牌"))
+    }
+
+    @Test
+    fun withoutKeyPromptGenerationStillWorksOffline() = runBlocking {
+        settings.agnesApiKey = ""
+        createViewModel()
+
+        vm.generateEditPrompt()
+        await("离线提示词") { it.promptGen is EditorViewModel.PromptGenState.Done }
+        val done = vm.state.value.promptGen as EditorViewModel.PromptGenState.Done
+        assertEquals(EditorViewModel.PromptSource.LOCAL, done.source)
+        assertEquals(0, requestCount)
     }
 
     private fun handle(socket: Socket) {

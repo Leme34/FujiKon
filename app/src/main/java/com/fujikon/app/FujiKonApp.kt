@@ -3,6 +3,7 @@ package com.fujikon.app
 import android.app.Application
 import android.content.Context
 import com.fujikon.app.agnes.AgnesImageService
+import com.fujikon.app.agnes.AgnesTextService
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.PresetRepository
@@ -33,6 +34,10 @@ class AppContainer(context: Context) {
     val nikonCloudService = NikonCloudService()
     // Resolved per request so a region switch in Settings takes effect at once.
     val agnesImageService = AgnesImageService(baseUrlProvider = { settings.agnesBaseUrl })
+    /** Agnes 3.0 Pro text model, used to analyse the photo and write prompts. */
+    val agnesTextService = AgnesTextService(
+        baseUrlProvider = { AgnesTextService.baseUrlFor(settings.agnesRegion) }
+    )
     /** Final images returned by one-tap AI retouching, keyed by photo id. */
     val aiEditCacheDir: File = File(appContext.cacheDir, "ai_edit").apply { mkdirs() }
 

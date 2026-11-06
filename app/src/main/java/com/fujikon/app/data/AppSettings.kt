@@ -65,6 +65,18 @@ class AppSettings(context: Context) {
 
     val agnesBaseUrl: String get() = AgnesImageService.baseUrlFor(agnesRegion)
 
+    /**
+     * Optional publicly reachable URL for the current photo. The Agnes 3.0 Pro
+     * checklist asks for a public `image_url`; by default the client sends a
+     * base64 Data URI instead, which needs no image host. Set this only when
+     * your account/gateway rejects Data URIs.
+     */
+    var agnesImagePublicUrl: String
+        get() = prefs.getString("agnes_image_public_url", "") ?: ""
+        set(value) {
+            prefs.edit().putString("agnes_image_public_url", value.trim()).apply()
+        }
+
     /** Last prompt used, offered as the starting point for the next AI edit. */
     var agnesPrompt: String
         get() = prefs.getString("agnes_prompt", "") ?: ""
