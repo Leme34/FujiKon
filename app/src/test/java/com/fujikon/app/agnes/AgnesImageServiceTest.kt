@@ -147,13 +147,138 @@ class AgnesImageServiceTest {
     @Test
     fun invalidKeyProducesActionableMessage() {
         status = 401
-        // Captured verbatim from the live Agnes endpoint on 2026-11-06.
-        response = """{"error":{"code":"","message":"Token not provided (request id: 20261106064911347739112voHTVPmu)","type":"AgnesAI_error"}}"""
+        // Captured verbatim from https://api.agnes-ai.cn on 2026-11-06.
+        response = """{"error":{"code":"","message":"无效的令牌 (request id: 20261106080435901262164sHWFxsCt)","type":"AgnesAI_error"}}"""
         val error = assertThrows(AgnesException::class.java) {
             runBlocking { service().editImage("bad-key", "prompt", byteArrayOf(1)) }
         }
         assertTrue(error.message!!.contains("密钥无效"))
+        // The raw server reason and the active endpoint must not be swallowed:
+        // previously the UI only said "密钥无效" with no way to self-diagnose.
+        assertTrue("实际=${error.message} / server=${error.serverMessage}", error.message!!.contains("无效的令牌"))
+        // The live endpoint host is 127.0.0.1 in this socket test; what
+        // matters is that the message names the endpoint actually used.
+        assertTrue(error.message!!.contains("当前端点"))
+        assertTrue(error.message!!.contains("127.0.0.1"))
+        assertEquals("无效的令牌 (request id: 20261106080435901262164sHWFxsCt)", error.serverMessage)
         assertEquals(401, error.httpCode)
+    }
+
+    @Test
+    fun officialEndpointModelAndRegionMappingMatchTheDocs() {
+        assertEquals("agnes-image-2.5-flash", AgnesImageService.MODEL)
+        assertEquals("https://api.agnes-ai.cn", AgnesImageService.DEFAULT_BASE_URL)
+        assertEquals("https://apihub.agnes-ai.com", AgnesImageService.GLOBAL_BASE_URL)
+        assertEquals(
+            AgnesImageService.DEFAULT_BASE_URL,
+            AgnesImageService.baseUrlFor(AgnesImageService.REGION_CN)
+        )
+        assertEquals(
+            AgnesImageService.GLOBAL_BASE_URL,
+            AgnesImageService.baseUrlFor(AgnesImageService.REGION_GLOBAL)
+        )
+        // The docs require exactly this path on either host.
+        assertEquals(
+            "https://api.agnes-ai.cn/v1/images/generations",
+            AgnesImageService.DEFAULT_BASE_URL + "/v1/images/generations"
+        )
+    }
+
+    @Test
+    fun regionProviderSwitchesEndpointPerRequest() = runBlocking {
+        var region = AgnesImageService.REGION_CN
+        val service = AgnesImageService(
+            baseUrl = "http://127.0.0.1:${server.localPort}",
+            connectTimeoutMs = 3_000,
+            readTimeoutMs = 5_000,
+            baseUrlProvider = {
+                if (region == AgnesImageService.REGION_GLOBAL) "http://127.0.0.1:${server.localPort}/alt"
+                else "http://127.0.0.1:${server.localPort}"
+            }
+        )
+        response = b64Response()
+        service.editImage("sk", "p", byteArrayOf(1))
+        assertEquals("/v1/images/generations", lastPath)
+        region = AgnesImageService.REGION_GLOBAL
+        service.editImage("sk", "p", byteArrayOf(1))
+        assertEquals("/alt/v1/images/generations", lastPath)
+    }
+
+    @Test
+    fun verifyApiKeyUsesMinimalDocumentedRequest() = runBlocking {
+        response = """{"data":[{"url":"https://example.com/x.png"}]}"""
+        val check = service().verifyApiKey("sk-valid")
+        assertEquals(AgnesKeyStatus.VALID, check.status)
+        assertTrue(check.message.contains("127.0.0.1"))
+        val body = JSONObject(lastBody)
+        assertEquals(AgnesImageService.MODEL, body.getString("model"))
+        assertEquals("1K", body.getString("size"))
+        assertTrue(body.getString("prompt").isNotBlank())
+        assertFalse("verification must not upload an image", body.has("image"))
+        assertFalse(body.getJSONObject("extra_body").has("image"))
+        assertEquals("url", body.getJSONObject("extra_body").getString("response_format"))
+        assertFalse(body.has("response_format"))
+        assertEquals("Bearer sk-valid", lastHeaders["authorization"])
+    }
+
+    @Test
+    fun verifyApiKeyRejectsInvalidKeyWithServerReason() = runBlocking {
+        status = 401
+        response = """{"error":{"message":"无效的令牌"}}"""
+        val check = service().verifyApiKey("bad-key")
+        assertEquals(AgnesKeyStatus.INVALID, check.status)
+        assertEquals(401, check.httpCode)
+        assertTrue("实际=$check", check.message.contains("无效的令牌"))
+        assertTrue("实际=$check", check.message.contains("切换"))
+    }
+
+    @Test
+    fun verifyApiKeySeparatesRateLimitAndOutOfKeyFromInvalidKey() = runBlocking {
+        status = 429
+        response = """{"error":{"message":"quota"}}"""
+        assertEquals(AgnesKeyStatus.SERVICE_ISSUE, service().verifyApiKey("sk").status)
+
+        status = 500
+        assertEquals(AgnesKeyStatus.SERVICE_ISSUE, service().verifyApiKey("sk").status)
+    }
+
+    @Test
+    fun verificationRetargetsWhenRegionProviderChanges() = runBlocking {
+        var region = AgnesImageService.REGION_CN
+        val service = AgnesImageService(
+            baseUrl = "http://127.0.0.1:${server.localPort}",
+            connectTimeoutMs = 3_000,
+            readTimeoutMs = 5_000,
+            baseUrlProvider = { "http://127.0.0.1:${server.localPort}/$region" }
+        )
+        status = 401
+        response = """{"error":{"message":"无效的令牌"}}"""
+        assertEquals(AgnesKeyStatus.INVALID, service.verifyApiKey("sk").status)
+        assertEquals("/cn/v1/images/generations", lastPath)
+
+        // Settings switches the persisted region; the provider is read on
+        // every request, so the retry hits the other gateway immediately.
+        region = AgnesImageService.REGION_GLOBAL
+        status = 200
+        response = """{"data":[{"url":"https://example.com/x.png"}]}"""
+        assertEquals(AgnesKeyStatus.VALID, service.verifyApiKey("sk").status)
+        assertEquals("/global/v1/images/generations", lastPath)
+    }
+
+    @Test
+    fun verifyApiKeyWithoutSavedKeySkipsTheNetwork() = runBlocking {
+        val check = service().verifyApiKey("   ")
+        assertEquals(AgnesKeyStatus.INVALID, check.status)
+        assertEquals(0, requestCount)
+    }
+
+    @Test
+    fun maskKeyShowsOnlyTheEdges() {
+        assertEquals("", AgnesImageService.maskKey(""))
+        val masked = AgnesImageService.maskKey("sk-abcdefgh-1234567890")
+        assertTrue(masked.startsWith("sk-a"))
+        assertTrue(masked.endsWith("7890"))
+        assertFalse(masked.contains("abcdefgh"))
     }
 
     @Test

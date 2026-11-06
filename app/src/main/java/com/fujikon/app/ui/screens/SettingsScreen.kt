@@ -53,6 +53,8 @@ import androidx.navigation.NavHostController
 import com.fujikon.app.BuildConfig
 import com.fujikon.app.FujiKonApp
 import com.fujikon.app.agnes.AgnesImageService
+import com.fujikon.app.agnes.AgnesKeyStatus
+import com.fujikon.app.ui.components.AgnesKeyCheckUiState
 import com.fujikon.app.ui.components.AgnesKeySettingsCard
 import com.fujikon.app.ui.components.SectionHeader
 import com.fujikon.app.ui.theme.Amber
@@ -81,6 +83,9 @@ fun SettingsScreen(
     var format by remember { mutableStateOf(settings.exportFormat) }
     var preserveExif by remember { mutableStateOf(settings.preserveExif) }
     var agnesConfigured by remember { mutableStateOf(settings.hasAgnesApiKey) }
+    var agnesSavedKey by remember { mutableStateOf(settings.agnesApiKey) }
+    var agnesRegion by remember { mutableStateOf(settings.agnesRegion) }
+    var keyCheck by remember { mutableStateOf<AgnesKeyCheckUiState>(AgnesKeyCheckUiState.Idle) }
 
     Scaffold(
         containerColor = Ink,
@@ -106,16 +111,74 @@ fun SettingsScreen(
             item {
                 AgnesKeySettingsCard(
                     configured = agnesConfigured,
+                    savedKey = agnesSavedKey,
                     modelName = AgnesImageService.MODEL,
+                    region = agnesRegion,
+                    checkState = keyCheck,
                     onSave = { key ->
                         settings.agnesApiKey = key
+                        agnesSavedKey = settings.agnesApiKey
                         agnesConfigured = settings.hasAgnesApiKey
-                        scope.launch { snackbar.showSnackbar("Agnes API 密钥已保存到本机") }
+                        keyCheck = AgnesKeyCheckUiState.Idle
+                        scope.launch {
+                            snackbar.showSnackbar(
+                                "已保存密钥 ${AgnesImageService.maskKey(settings.agnesApiKey)}，可点「验证密钥」确认是否可用"
+                            )
+                        }
                     },
                     onClear = {
                         settings.agnesApiKey = ""
+                        agnesSavedKey = ""
                         agnesConfigured = false
+                        keyCheck = AgnesKeyCheckUiState.Idle
                         scope.launch { snackbar.showSnackbar("已清除 Agnes API 密钥") }
+                    },
+                    onRegionChange = { region ->
+                        if (region != agnesRegion) {
+                            settings.agnesRegion = region
+                            agnesRegion = settings.agnesRegion
+                            keyCheck = AgnesKeyCheckUiState.Idle
+                            scope.launch {
+                                snackbar.showSnackbar(
+                                    "已切换到 ${AgnesImageService.hostFor(region)}，请重新验证密钥"
+                                )
+                            }
+                        }
+                    },
+                    onVerify = {
+                        scope.launch {
+                            keyCheck = AgnesKeyCheckUiState.Checking
+                            val service = app.container.agnesImageService
+                            var result = service.verifyApiKey(settings.agnesApiKey)
+                            // Tokens are not shared between the China and the
+                            // international gateway. If the current region
+                            // rejects the key, retry once on the other one and
+                            // keep the region that actually works.
+                            if (result.status == AgnesKeyStatus.INVALID &&
+                                (result.httpCode == 401 || result.httpCode == 403)
+                            ) {
+                                val original = settings.agnesRegion
+                                val other = if (original == AgnesImageService.REGION_GLOBAL) {
+                                    AgnesImageService.REGION_CN
+                                } else {
+                                    AgnesImageService.REGION_GLOBAL
+                                }
+                                settings.agnesRegion = other
+                                val retry = service.verifyApiKey(settings.agnesApiKey)
+                                if (retry.status == AgnesKeyStatus.VALID) {
+                                    agnesRegion = other
+                                    result = retry.copy(
+                                        message = "已自动切换到 " +
+                                            "${AgnesImageService.hostFor(other)} · " +
+                                            "密钥有效，可以开始 AI 修图"
+                                    )
+                                } else {
+                                    settings.agnesRegion = original
+                                }
+                            }
+                            keyCheck = AgnesKeyCheckUiState.Result(result)
+                            snackbar.showSnackbar(result.message)
+                        }
                     }
                 )
             }

@@ -13,7 +13,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 10
-        versionName = "1.7.0"
+        versionName = "1.6.3"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -93,6 +93,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
 
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // Also a transitive dependency of coil; declared explicitly because the
+    // Agnes client needs a reliable non-2xx response body on all devices.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 

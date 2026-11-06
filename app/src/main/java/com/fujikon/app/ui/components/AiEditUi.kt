@@ -23,6 +23,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,7 +34,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -40,8 +44,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.fujikon.app.agnes.AgnesImageService
+import com.fujikon.app.agnes.AgnesKeyCheck
+import com.fujikon.app.agnes.AgnesKeyStatus
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card as CardColor
 import com.fujikon.app.ui.theme.CardHigh
@@ -205,7 +213,11 @@ fun AiProgressDialog(prompt: String, onCancel: () -> Unit) {
 }
 
 @Composable
-fun AiErrorDialog(message: String, onDismiss: () -> Unit) {
+fun AiErrorDialog(
+    message: String,
+    onDismiss: () -> Unit,
+    onGoToSettings: (() -> Unit)? = null
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CardColor,
@@ -217,21 +229,53 @@ fun AiErrorDialog(message: String, onDismiss: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
             ) { Text("知道了") }
         },
-        dismissButton = {}
+        dismissButton = {
+            if (onGoToSettings != null) {
+                TextButton(onClick = onGoToSettings) { Text("去设置", color = Amber) }
+            }
+        }
     )
 }
 
-/** Settings card for entering and saving the Agnes API key. */
+/** UI state of the "verify key" action, persisted while Settings is open. */
+sealed interface AgnesKeyCheckUiState {
+    data object Idle : AgnesKeyCheckUiState
+    data object Checking : AgnesKeyCheckUiState
+    data class Result(val check: AgnesKeyCheck) : AgnesKeyCheckUiState
+}
+
+/**
+ * Settings card for entering, inspecting and verifying the Agnes API key.
+ *
+ * The saved key is pre-filled on every entry (masked by default), so the user
+ * can always confirm what is stored and reveal it with the eye button. Save no
+ * longer wipes the field, and a real verification request reports whether the
+ * key and the selected region actually work.
+ */
 @Composable
 fun AgnesKeySettingsCard(
     configured: Boolean,
+    savedKey: String,
     modelName: String,
+    region: String,
+    checkState: AgnesKeyCheckUiState,
     onSave: (String) -> Unit,
     onClear: () -> Unit,
+    onRegionChange: (String) -> Unit,
+    onVerify: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var input by remember { mutableStateOf("") }
+    var field by remember { mutableStateOf(TextFieldValue(savedKey)) }
     var visible by remember { mutableStateOf(false) }
+
+    // Re-entry, save and clear all converge here; never clear the field behind
+    // the user's back while they are typing something different.
+    LaunchedEffect(savedKey) {
+        if (field.text != savedKey) field = TextFieldValue(savedKey)
+    }
+
+    val dirty = field.text.trim() != savedKey.trim()
+    val global = region == AgnesImageService.REGION_GLOBAL
 
     Card(
         colors = CardDefaults.cardColors(containerColor = CardColor),
@@ -273,39 +317,104 @@ fun AgnesKeySettingsCard(
                 color = TextSecondary
             )
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                label = { Text("API 密钥") },
-                placeholder = { Text("粘贴你的 Agnes API 密钥") },
-                singleLine = true,
-                visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    IconButton(onClick = { visible = !visible }) {
-                        Icon(
-                            if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (visible) "隐藏密钥" else "显示密钥",
-                            tint = TextSecondary
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().testTag("agnes_key_input"),
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Amber,
-                    unfocusedBorderColor = CardHigh,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary
+
+            // key() rebuilds the field on toggle so the new visual
+            // transformation is always applied, even on Compose versions that
+            // otherwise reuse the masked layout.
+            key(visible) {
+                OutlinedTextField(
+                    value = field,
+                    onValueChange = { field = it },
+                    label = { Text("API 密钥") },
+                    placeholder = { Text("粘贴你的 Agnes API 密钥") },
+                    singleLine = true,
+                    visualTransformation = if (visible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { visible = !visible },
+                            modifier = Modifier.testTag("agnes_key_toggle")
+                        ) {
+                            Icon(
+                                if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (visible) "隐藏密钥" else "显示密钥",
+                                tint = Amber
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("agnes_key_input"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Amber,
+                        unfocusedBorderColor = CardHigh,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
                 )
+            }
+            Spacer(Modifier.height(6.dp))
+            if (configured) {
+                Text(
+                    "已保存密钥：${AgnesImageService.maskKey(savedKey)}（共 ${savedKey.length} 位）· 点右侧眼睛可查看完整明文",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Amber,
+                    modifier = Modifier.testTag("agnes_key_fingerprint")
+                )
+            } else {
+                Text(
+                    "尚未保存密钥。保存后这里会常驻显示密钥指纹，可随时点眼睛核对明文。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+            if (dirty && field.text.isNotBlank()) {
+                Text(
+                    "输入框有未保存的修改，点「保存密钥」生效",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Danger
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Text("接入区域", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = !global,
+                    onClick = { onRegionChange(AgnesImageService.REGION_CN) },
+                    label = { Text("中国区 api.agnes-ai.cn") },
+                    modifier = Modifier.testTag("agnes_region_cn"),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Amber,
+                        selectedLabelColor = Ink
+                    )
+                )
+                FilterChip(
+                    selected = global,
+                    onClick = { onRegionChange(AgnesImageService.REGION_GLOBAL) },
+                    label = { Text("国际区 apihub") },
+                    modifier = Modifier.testTag("agnes_region_global"),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Amber,
+                        selectedLabelColor = Ink
+                    )
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "密钥不跨区域通用：按密钥申请站点选择，选错会提示「无效的令牌」。",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary
             )
+
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Button(
-                    onClick = {
-                        onSave(input)
-                        input = ""
-                    },
-                    enabled = input.isNotBlank(),
+                    onClick = { onSave(field.text) },
+                    enabled = field.text.isNotBlank(),
                     modifier = Modifier.testTag("agnes_key_save"),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
@@ -313,15 +422,67 @@ fun AgnesKeySettingsCard(
                     Text("保存密钥")
                 }
                 if (configured) {
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(4.dp))
                     TextButton(onClick = onClear, modifier = Modifier.testTag("agnes_key_clear")) {
                         Text("清除", color = Danger)
                     }
                 }
+                Spacer(Modifier.width(4.dp))
+                TextButton(
+                    onClick = onVerify,
+                    enabled = configured && checkState !is AgnesKeyCheckUiState.Checking,
+                    modifier = Modifier.testTag("agnes_key_verify")
+                ) {
+                    Text("验证密钥", color = Amber)
+                }
             }
+
+            Spacer(Modifier.height(8.dp))
+            when (checkState) {
+                AgnesKeyCheckUiState.Idle -> {
+                    Text(
+                        if (configured) "建议点「验证密钥」确认密钥与接入区域是否匹配。"
+                        else "保存密钥后可一键验证是否可用。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                }
+                AgnesKeyCheckUiState.Checking -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            color = Amber,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "正在向 ${AgnesImageService.hostFor(region)} 验证密钥…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary
+                        )
+                    }
+                }
+                is AgnesKeyCheckUiState.Result -> {
+                    val ok = checkState.check.status == AgnesKeyStatus.VALID
+                    val tint = if (ok) Amber else Danger
+                    Surface(
+                        color = tint.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            (if (ok) "✓ " else "✕ ") + checkState.check.message,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = tint,
+                            modifier = Modifier.fillMaxWidth().padding(10.dp)
+                                .testTag("agnes_key_verify_result")
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
             Text(
-                "密钥仅保存在本机；发起 AI 修图时，当前预览图会上传至 Agnes 服务。未配置密钥时编辑页会提示跳转到这里。",
+                "验证会发起最小化生成请求（当前体验价免费），只发送一句测试提示词、不上传照片；当前区域拒绝时会自动尝试另一区域。密钥仅保存在本机；发起 AI 修图时，当前预览图才会上传至所选 Agnes 端点。",
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
