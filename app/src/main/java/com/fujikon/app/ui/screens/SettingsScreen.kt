@@ -52,6 +52,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.fujikon.app.BuildConfig
 import com.fujikon.app.FujiKonApp
+import com.fujikon.app.agnes.AgnesImageService
+import com.fujikon.app.ui.components.AgnesKeySettingsCard
 import com.fujikon.app.ui.components.SectionHeader
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card as CardColor
@@ -78,6 +80,7 @@ fun SettingsScreen(
     var album by remember { mutableStateOf(settings.albumName) }
     var format by remember { mutableStateOf(settings.exportFormat) }
     var preserveExif by remember { mutableStateOf(settings.preserveExif) }
+    var agnesConfigured by remember { mutableStateOf(settings.hasAgnesApiKey) }
 
     Scaffold(
         containerColor = Ink,
@@ -99,6 +102,24 @@ fun SettingsScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            item { SectionHeader("AI 修图") }
+            item {
+                AgnesKeySettingsCard(
+                    configured = agnesConfigured,
+                    modelName = AgnesImageService.MODEL,
+                    onSave = { key ->
+                        settings.agnesApiKey = key
+                        agnesConfigured = settings.hasAgnesApiKey
+                        scope.launch { snackbar.showSnackbar("Agnes API 密钥已保存到本机") }
+                    },
+                    onClear = {
+                        settings.agnesApiKey = ""
+                        agnesConfigured = false
+                        scope.launch { snackbar.showSnackbar("已清除 Agnes API 密钥") }
+                    }
+                )
+            }
+
             item { SectionHeader("导出") }
             item {
                 Card(
@@ -230,7 +251,8 @@ fun SettingsScreen(
                         StepRow("1", "导入或选择一个尼康 Picture Control 预设")
                         StepRow("2", "在相册中勾选一张或多张照片")
                         StepRow("3", "预览界面长按对比原图，双指缩放查看细节")
-                        StepRow("4", "尽量按原图尺寸批量导出，自动保留相机信息")
+                        StepRow("4", "编辑页点「AI」输入提示词，可一键调用 Agnes 大模型修图")
+                        StepRow("5", "尽量按原图尺寸批量导出，自动保留相机信息")
                     }
                 }
             }
@@ -263,7 +285,7 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.height(14.dp))
                         Text(
-                            "照片与预设都保留在本机；只有在“从 nikonpc 下载”时才会访问 nikonpc.com 获取公开预设，不会上传照片或本地预设。",
+                            "照片与预设都保留在本机，在线预设库只读取公开接口。只有你主动点击「AI 修图」时，当前预览图才会上传至 Agnes 服务；API 密钥仅保存在本机。",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Download
@@ -75,6 +76,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -85,11 +87,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.fujikon.app.agnes.SUGGESTED_AI_PROMPTS
 import com.fujikon.app.data.LensBlur
 import com.fujikon.app.data.ChannelToneCurves
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.ui.Routes
+import com.fujikon.app.ui.components.AiApiKeyRequiredDialog
+import com.fujikon.app.ui.components.AiEditDialog
+import com.fujikon.app.ui.components.AiErrorDialog
+import com.fujikon.app.ui.components.AiProgressDialog
 import com.fujikon.app.ui.components.AdjustmentsSheet
 import com.fujikon.app.ui.components.CropEditorOverlay
 import com.fujikon.app.ui.components.EditHistorySheet
@@ -135,6 +142,7 @@ fun EditorScreen(
     var showBlur by remember { mutableStateOf(false) }
     var blurInitial by remember { mutableStateOf(LensBlur.Off) }
     var showHistory by remember { mutableStateOf(false) }
+    var showAiDialog by remember { mutableStateOf(false) }
     var savingCurve by remember { mutableStateOf(false) }
     var savingAdjustments by remember { mutableStateOf(false) }
     var pendingOptions by remember { mutableStateOf<ExportManager.Options?>(null) }
@@ -170,6 +178,13 @@ fun EditorScreen(
     val preset = state.currentPreset
     val current = state.currentPhoto
     val exporting = state.export is EditorViewModel.ExportState.Running
+
+    // A completed AI edit is announced once, then the transient state is reset.
+    LaunchedEffect(state.aiState) {
+        val done = state.aiState as? EditorViewModel.AiEditState.Done ?: return@LaunchedEffect
+        snackbar.showSnackbar(done.message)
+        viewModel.dismissAiState()
+    }
 
     Scaffold(
         containerColor = Ink,
@@ -250,6 +265,40 @@ fun EditorScreen(
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
+                    if (state.hasAiResult) {
+                        Surface(
+                            color = Amber.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = Amber,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "已应用 AI 修图结果（最终图）· 本地调整请先撤销",
+                                    color = TextPrimary,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = { viewModel.clearAiResult() },
+                                    modifier = Modifier.testTag("ai_clear_result")
+                                ) {
+                                    Text("撤销", color = Amber)
+                                }
+                            }
+                        }
+                    }
                     if (state.photos.size > 1) {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -370,6 +419,28 @@ fun EditorScreen(
                             Icon(Icons.Filled.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(3.dp))
                             Text("曲线", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (viewModel.requestAiEdit()) showAiDialog = true
+                            },
+                            enabled = !exporting && preset != null && state.rendered != null,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                            border = BorderStroke(1.dp, Amber.copy(alpha = 0.7f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp)
+                                .testTag("ai_edit_button")
+                        ) {
+                            Icon(
+                                Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text("AI", style = MaterialTheme.typography.labelMedium)
                         }
                         Button(
                             onClick = { showExport = true },
@@ -848,4 +919,36 @@ fun EditorScreen(
             )
         }
     }
+
+    if (showAiDialog) {
+        AiEditDialog(
+            initialPrompt = state.aiPrompt,
+            suggestedPrompts = SUGGESTED_AI_PROMPTS,
+            onDismiss = { showAiDialog = false },
+            onConfirm = { prompt ->
+                showAiDialog = false
+                viewModel.runAiEdit(prompt)
+            }
+        )
+    }
+
+    when (val ai = state.aiState) {
+        is EditorViewModel.AiEditState.NeedApiKey -> AiApiKeyRequiredDialog(
+            onDismiss = { viewModel.dismissAiState() },
+            onGoToSettings = {
+                viewModel.dismissAiState()
+                navController.navigate(Routes.SETTINGS)
+            }
+        )
+        is EditorViewModel.AiEditState.Running -> AiProgressDialog(
+            prompt = ai.prompt,
+            onCancel = { viewModel.cancelAiEdit() }
+        )
+        is EditorViewModel.AiEditState.Failed -> AiErrorDialog(
+            message = ai.message,
+            onDismiss = { viewModel.dismissAiState() }
+        )
+        else -> Unit
+    }
+
 }

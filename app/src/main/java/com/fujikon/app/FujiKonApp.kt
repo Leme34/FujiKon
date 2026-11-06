@@ -2,6 +2,7 @@ package com.fujikon.app
 
 import android.app.Application
 import android.content.Context
+import com.fujikon.app.agnes.AgnesImageService
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.PhotoRepository
 import com.fujikon.app.data.PresetRepository
@@ -30,6 +31,9 @@ class AppContainer(context: Context) {
     val exportManager = ExportManager(appContext, imageRenderer, settings)
     val nikonPcService = NikonPcService(cacheDir = File(appContext.cacheDir, "nikonpc"))
     val nikonCloudService = NikonCloudService()
+    val agnesImageService = AgnesImageService()
+    /** Final images returned by one-tap AI retouching, keyed by photo id. */
+    val aiEditCacheDir: File = File(appContext.cacheDir, "ai_edit").apply { mkdirs() }
 
     init {
         scope.launch { presetRepository.load() }

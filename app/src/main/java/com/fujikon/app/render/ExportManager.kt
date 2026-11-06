@@ -38,6 +38,12 @@ class ExportManager(
         photos: List<PhotoItem>,
         preset: Preset,
         options: Options,
+        /**
+         * Final images produced by one-tap AI retouching. When a photo has an
+         * entry here the local renderer is skipped entirely: the AI output is
+         * already the finished photo and must not have the preset applied again.
+         */
+        finalImageUris: Map<Long, Uri> = emptyMap(),
         onProgress: (Progress) -> Unit
     ): Result = withContext(Dispatchers.Default) {
         val saved = mutableListOf<Uri>()
@@ -48,9 +54,15 @@ class ExportManager(
             var source: android.graphics.Bitmap? = null
             var rendered: android.graphics.Bitmap? = null
             try {
-                source = BitmapLoader.decodeFull(context, photo.uri)
-                    ?: throw IllegalStateException("无法读取照片")
-                rendered = renderer.render(source, preset, forExport = true)
+                val finalUri = finalImageUris[photo.id]
+                if (finalUri != null) {
+                    rendered = BitmapLoader.decodeFull(context, finalUri)
+                        ?: throw IllegalStateException("无法读取 AI 修图结果")
+                } else {
+                    source = BitmapLoader.decodeFull(context, photo.uri)
+                        ?: throw IllegalStateException("无法读取照片")
+                    rendered = renderer.render(source, preset, forExport = true)
+                }
                 val uri = GallerySaver.save(
                     context = context,
                     bitmap = rendered,

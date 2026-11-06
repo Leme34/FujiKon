@@ -10,6 +10,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.fujikon.app.AppContainer
+import com.fujikon.app.agnes.AgnesException
+import com.fujikon.app.agnes.AgnesImageService
 import com.fujikon.app.data.Album
 import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.ChannelToneCurves
@@ -49,7 +51,11 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.util.Collections
+import kotlin.math.abs
 
 class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
     val presets: StateFlow<List<Preset>> = repository.presets
@@ -613,8 +619,19 @@ class EditorViewModel(
     private val selectionStore: SelectionStore,
     private val renderer: ImageRenderer,
     private val exportManager: ExportManager,
-    private val settings: AppSettings
+    private val settings: AppSettings,
+    private val agnesImageService: AgnesImageService,
+    private val aiCacheDir: File
 ) : ViewModel() {
+
+    sealed interface AiEditState {
+        data object Idle : AiEditState
+        /** No API key saved; the UI offers a shortcut into Settings. */
+        data object NeedApiKey : AiEditState
+        data class Running(val prompt: String) : AiEditState
+        data class Failed(val message: String) : AiEditState
+        data class Done(val message: String) : AiEditState
+    }
 
     sealed interface ExportState {
         data object Idle : ExportState
@@ -649,7 +666,13 @@ class EditorViewModel(
         val adjustments: EditAdjustments = EditAdjustments.Neutral,
         /** Global undo/redo stack shared by every photo in this edit session. */
         val historyEntries: List<EditHistory.Entry> = emptyList(),
-        val historyIndex: Int = -1
+        val historyIndex: Int = -1,
+        /** State of the one-tap Agnes AI retouch request. */
+        val aiState: AiEditState = AiEditState.Idle,
+        /** Final AI images, keyed by photo id; these bypass local rendering. */
+        val aiResultUris: Map<Long, Uri> = emptyMap(),
+        /** Last prompt, pre-filled into the AI dialog. */
+        val aiPrompt: String = ""
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
         val selectedPreset: Preset? get() = when (presetId) {
@@ -675,9 +698,16 @@ class EditorViewModel(
         val canUndo: Boolean get() = historyIndex > 0
         val canRedo: Boolean get() = historyIndex in 0 until historyEntries.lastIndex
         val currentHistoryLabel: String? get() = historyEntries.getOrNull(historyIndex)?.label
+        val hasAiResult: Boolean
+            get() = currentPhoto?.let { aiResultUris.containsKey(it.id) } ?: false
     }
 
-    private val _state = MutableStateFlow(UiState(seenCompareHint = settings.hasSeenCompareHint))
+    private val _state = MutableStateFlow(
+        UiState(
+            seenCompareHint = settings.hasSeenCompareHint,
+            aiPrompt = settings.agnesPrompt
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val originalCache = object : LruCache<Long, Bitmap>(3) {
@@ -689,6 +719,7 @@ class EditorViewModel(
 
     private var renderJob: Job? = null
     private var exportJob: Job? = null
+    private var aiJob: Job? = null
     private var renderGeneration = 0
     private val editHistory = EditHistory()
 
@@ -753,6 +784,131 @@ class EditorViewModel(
     fun markCompareHintSeen() {
         settings.hasSeenCompareHint = true
         _state.update { it.copy(seenCompareHint = true) }
+    }
+
+    // ------------------------------------------------------------- AI retouch
+
+    /**
+     * Checks whether AI retouching can start. With no saved key the state
+     * becomes [AiEditState.NeedApiKey] so the UI can show a dialog that jumps
+     * straight into Settings; no network request is made in that case.
+     */
+    fun requestAiEdit(): Boolean {
+        if (!settings.hasAgnesApiKey) {
+            _state.update { it.copy(aiState = AiEditState.NeedApiKey) }
+            return false
+        }
+        _state.update { it.copy(aiState = AiEditState.Idle) }
+        return true
+    }
+
+    fun dismissAiState() {
+        _state.update { it.copy(aiState = AiEditState.Idle) }
+    }
+
+    /** Runs a one-tap AI retouch with a user-supplied prompt on the current preview. */
+    fun runAiEdit(prompt: String) {
+        val trimmed = prompt.trim()
+        if (trimmed.isEmpty()) {
+            _state.update { it.copy(aiState = AiEditState.Failed("请输入修图提示词")) }
+            return
+        }
+        val key = settings.agnesApiKey.trim()
+        if (key.isEmpty()) {
+            _state.update { it.copy(aiState = AiEditState.NeedApiKey) }
+            return
+        }
+        val snapshot = _state.value
+        val photo = snapshot.currentPhoto ?: return
+        val preview = snapshot.rendered
+        if (preview == null || preview.isRecycled) {
+            _state.update { it.copy(aiState = AiEditState.Failed("当前没有可修图的预览图")) }
+            return
+        }
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            _state.update { it.copy(aiState = AiEditState.Running(trimmed)) }
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    val out = ByteArrayOutputStream()
+                    check(preview.compress(Bitmap.CompressFormat.JPEG, 92, out)) { "图片编码失败" }
+                    out.toByteArray()
+                }
+                val result = agnesImageService.editImage(
+                    apiKey = key,
+                    prompt = trimmed,
+                    imageBytes = bytes,
+                    mimeType = "image/jpeg",
+                    size = "1K",
+                    ratio = closestRatio(preview.width, preview.height)
+                )
+                val uri = withContext(Dispatchers.IO) {
+                    // Validate the payload without allocating a Bitmap, then
+                    // keep the original bytes: recompressing would lose the
+                    // model's output quality and cost a full-size copy.
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(result.bytes, 0, result.bytes.size, bounds)
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                        throw AgnesException("Agnes 返回的不是有效图片")
+                    }
+                    if (!aiCacheDir.exists()) aiCacheDir.mkdirs()
+                    val isPng = result.bytes.size >= 4 &&
+                        result.bytes[0] == 0x89.toByte() &&
+                        result.bytes[1] == 'P'.code.toByte() &&
+                        result.bytes[2] == 'N'.code.toByte() &&
+                        result.bytes[3] == 'G'.code.toByte()
+                    val file = File(
+                        aiCacheDir,
+                        "ai_${photo.id}_${System.currentTimeMillis()}.${if (isPng) "png" else "jpg"}"
+                    )
+                    FileOutputStream(file).use { it.write(result.bytes) }
+                    Uri.fromFile(file)
+                }
+                settings.agnesPrompt = trimmed
+                _state.update { current ->
+                    current.copy(
+                        aiResultUris = current.aiResultUris + (photo.id to uri),
+                        aiPrompt = trimmed,
+                        aiState = AiEditState.Done("AI 修图完成，导出将直接使用这张成品图")
+                    )
+                }
+                renderCurrent()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AgnesException) {
+                _state.update {
+                    it.copy(aiState = AiEditState.Failed(e.message ?: "AI 修图失败"))
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(aiState = AiEditState.Failed(e.message ?: "AI 修图失败"))
+                }
+            }
+        }
+    }
+
+    fun cancelAiEdit() {
+        aiJob?.cancel()
+        aiJob = null
+        _state.update { it.copy(aiState = AiEditState.Idle) }
+    }
+
+    /** Drops the AI result for the current photo and returns to local rendering. */
+    fun clearAiResult() {
+        val id = _state.value.currentPhoto?.id ?: return
+        val uri = _state.value.aiResultUris[id] ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { uri.path?.let { File(it).delete() } }
+        }
+        _state.update {
+            it.copy(aiResultUris = it.aiResultUris - id, aiState = AiEditState.Idle)
+        }
+        renderCurrent()
+    }
+
+    private fun closestRatio(width: Int, height: Int): String {
+        val value = width.toFloat() / height.coerceAtLeast(1)
+        return SUPPORTED_RATIOS.minByOrNull { abs(it.second - value) }?.first ?: "1:1"
     }
 
     // ------------------------------------------------------------- history
@@ -998,6 +1154,30 @@ class EditorViewModel(
                     originalCache.put(photo.id, decoded)
                     decoded
                 }
+                // A finished AI edit is the final photo: show and export it
+                // as-is instead of applying the local preset a second time.
+                val aiUri = snapshot.aiResultUris[photo.id]
+                if (aiUri != null) {
+                    val finalImage = BitmapLoader.decodePreview(context, aiUri, 1800)
+                        ?: throw IllegalStateException("无法读取 AI 修图结果")
+                    _state.update { current ->
+                        if (generation == renderGeneration &&
+                            current.currentPhoto?.id == photo.id &&
+                            current.aiResultUris[photo.id] == aiUri
+                        ) {
+                            current.copy(
+                                original = original,
+                                rendered = finalImage,
+                                cropBase = finalImage,
+                                loading = false,
+                                error = null
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                    return@launch
+                }
                 // Render the uncropped frame once: it is both the base for the
                 // interactive crop editor and the source for the visible crop.
                 val basePreset = if (crop.isFull()) {
@@ -1059,7 +1239,8 @@ class EditorViewModel(
                 val result = exportManager.export(
                     photos = _state.value.photos,
                     preset = preset,
-                    options = options
+                    options = options,
+                    finalImageUris = _state.value.aiResultUris
                 ) { progress ->
                     _state.update { current ->
                         current.copy(
@@ -1101,7 +1282,21 @@ class EditorViewModel(
     override fun onCleared() {
         renderJob?.cancel()
         exportJob?.cancel()
+        aiJob?.cancel()
         super.onCleared()
+    }
+
+    companion object {
+        private val SUPPORTED_RATIOS = listOf(
+            "1:1" to 1f,
+            "3:4" to 0.75f,
+            "4:3" to 4f / 3f,
+            "16:9" to 16f / 9f,
+            "9:16" to 9f / 16f,
+            "2:3" to 2f / 3f,
+            "3:2" to 3f / 2f,
+            "21:9" to 21f / 9f
+        )
     }
 }
 
@@ -1123,7 +1318,9 @@ class FujiKonViewModelFactory(private val container: AppContainer) : ViewModelPr
                 selectionStore = container.selectionStore,
                 renderer = container.imageRenderer,
                 exportManager = container.exportManager,
-                settings = container.settings
+                settings = container.settings,
+                agnesImageService = container.agnesImageService,
+                aiCacheDir = container.aiEditCacheDir
             ) as T
         else -> throw IllegalArgumentException("Unknown ViewModel: ${modelClass.name}")
     }
