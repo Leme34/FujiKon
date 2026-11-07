@@ -2,6 +2,8 @@ package com.fujikon.app.render
 
 import android.graphics.Bitmap
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.HslAdjustments
+import com.fujikon.app.data.HslBand
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.data.ToneCurvePoint
 import kotlin.math.PI
@@ -59,7 +61,21 @@ class ImageStats internal constructor(
     val neutralG: Float = 0f,
     val neutralB: Float = 0f,
     /** Fraction of pixels that are near-neutral; ~0 means no usable white reference. */
-    val neutralCoverage: Float = 0f
+    val neutralCoverage: Float = 0f,
+    // ---- "Follow the photo" colour evidence, used to TRIGGER (not force) the
+    // outdoor-snapshot palette. All are measured fractions / means of real pixels.
+    /** Fraction of green / teal-green pixels (foliage, grass, park background). */
+    val greenCoverage: Float = 0f,
+    /** Fraction of warm yellow / orange pixels (sunlit subject, dress, skin). */
+    val warmCoverage: Float = 0f,
+    /** Fraction of skin-tone pixels — high values suppress the warm white-balance bias. */
+    val skinCoverage: Float = 0f,
+    /** Mean (R-B) of dark pixels: positive = warm/muddy shadows, negative = already cool. */
+    val shadowWarmth: Float = 0f,
+    /** Fraction of dark pixels (luma < 0.40) — gates the shadow blue split-tone. */
+    val shadowFraction: Float = 0f,
+    /** Fraction of bright pixels (luma > 0.72) — drives how firmly highlights are pulled down. */
+    val brightFraction: Float = 0f
 ) {
     val spread: Float get() = p95 - p5
     val dynamicRange: Float get() = p99 - p1
@@ -87,25 +103,25 @@ data class AutoEnhanceResult(
 )
 
 /**
- * Lightroom-class automatic photo optimisation.
+ * Lightroom-class automatic photo optimisation, tuned to the "daily outdoor
+ * snapshot" look (park / street / everyday life): airy light, teal-green
+ * backgrounds with soft warm subjects, retained detail and a whisper of
+ * summer soft-focus — while never ruining a frame that was already good.
  *
- * The PRIMARY tool is a single master tone [ToneCurve] derived from the
- * measured 256-bin luma histogram. The curve — applied exactly like
- * [ImageRenderer] applies `preset.toneCurve` — lifts crushed shadows (fixing
- * 死黑), gently rolls off blown highlights (fixing 死白) and adds a small
- * S-shape for 色彩层次 / 光感. Because every amount is scaled by the *actual*
- * deficiency, a well-exposed frame gets a near-identity curve and is left
- * alone, instead of being hammered by linear exposure + contrast sliders.
+ * Two hard rules, learned from the regressions:
+ *  1. **The tone curve is primary.** A single master [ToneCurve] built from the
+ *     measured histogram fixes 死黑/死白, 光感 and 色彩层次. Linear exposure /
+ *     contrast are only a tiny, capped secondary nudge. No frame is ever
+ *     hammered by big exposure+contrast swings.
+ *  2. **Everything follows the photo.** Every amount is a *continuous function*
+ *     of a measured deficiency, not a fixed preset. Style colour (teal-green
+ *     background, soft warm subject, cool blue shadows) is TRIGGERED only when
+ *     the pixels actually contain that colour — an indoor portrait, a snow
+ *     scene or a night shot is never tinted. Good frames are short-circuited to
+ *     exactly [EditAdjustments.Neutral].
  *
- * Exposure / contrast are only a tiny SECONDARY correction when the curve alone
- * cannot reach photographic mid-grey, and they are hard-capped so the engine
- * can never "destroy" an already-good photo the way over-driven exposure did.
- * White balance uses the neutral-anchor method (no correction without a
- * trustworthy grey reference), and vibrance / clarity / dehaze follow the stats.
- *
- * The output is a plain [EditAdjustments] (now carrying a [ToneCurve]), so the
- * result stays non-destructive, undoable, editable with the manual sliders and
- * shared by preview and export exactly like any other adjustment.
+ * The result is a plain [EditAdjustments]: non-destructive, undoable, editable,
+ * idempotent, and shared by preview and export like any other adjustment.
  */
 object AutoEnhance {
 
@@ -150,6 +166,12 @@ object AutoEnhance {
         var nG = 0f
         var nB = 0f
         var nCount = 0
+        var greenCount = 0
+        var warmCount = 0
+        var skinCount = 0
+        var darkCount = 0
+        var darkWarmSum = 0f
+        var brightCount = 0
 
         for (i in pixels.indices) {
             val px = pixels[i]
@@ -186,6 +208,22 @@ object AutoEnhance {
                 nB += bf
                 nCount++
             }
+            // ---- Colour evidence for the "follow the photo" palette --------
+            // These are cheap chroma/order tests on the RGB triple, not a full
+            // HSL conversion, so the analysis stays O(1) per sampled pixel.
+            if (l > 0.72f) brightCount++
+            if (l < 0.40f) {
+                darkCount++
+                darkWarmSum += rf - bf
+            }
+            if (chroma > 0.05f) {
+                // Green family: green dominates, includes deep green and teal.
+                if (gf > rf * 1.04f && gf >= bf * 0.98f) greenCount++
+                // Warm yellow / orange: red dominates, blue is clearly lower.
+                if (rf > bf * 1.10f && rf >= gf * 0.96f) warmCount++
+                // Skin: red > green > blue, moderate chroma, mid luma.
+                if (rf > gf && gf > bf && rf - bf < 0.45f && l > 0.22f && l < 0.88f) skinCount++
+            }
         }
 
         val total = pixels.size.toFloat().coerceAtLeast(1f)
@@ -205,6 +243,13 @@ object AutoEnhance {
         val neutralR = if (nCount > 0) nR / nCount else meanR
         val neutralG = if (nCount > 0) nG / nCount else meanG
         val neutralB = if (nCount > 0) nB / nCount else meanB
+
+        val greenCoverage = greenCount / total
+        val warmCoverage = warmCount / total
+        val skinCoverage = skinCount / total
+        val shadowFraction = darkCount / total
+        val shadowWarmth = if (darkCount > 0) darkWarmSum / darkCount else 0f
+        val brightFraction = brightCount / total
 
         // Mean absolute neighbour gradient: cheap local-detail estimator.
         var gradSum = 0f
@@ -260,7 +305,13 @@ object AutoEnhance {
             neutralR = neutralR,
             neutralG = neutralG,
             neutralB = neutralB,
-            neutralCoverage = neutralCoverage
+            neutralCoverage = neutralCoverage,
+            greenCoverage = greenCoverage,
+            warmCoverage = warmCoverage,
+            skinCoverage = skinCoverage,
+            shadowWarmth = shadowWarmth,
+            shadowFraction = shadowFraction,
+            brightFraction = brightFraction
         )
     }
 
@@ -288,49 +339,134 @@ object AutoEnhance {
             )
         }
 
-        // ---- PRIMARY: a master tone curve built from the histogram ----------
-        val curve = solveToneCurve(stats)
-        // ---- SECONDARY: a tiny exposure nudge so the curve can reach mid-grey
+        // "Follow the photo": how much tonal repair is still needed at all.
+        // Already-good frames get ~0, so no curve / contrast / zone work can
+        // ever ruin a shot that was fine to begin with.
+        val deficit = 1f - ramp(stats.toneQuality, 0.72f, 0.92f)
+
+        // High-key frames (snow / white backdrop): stretching their mid-tones
+        // with an S-curve only pushes already-bright whites higher. Damp the S
+        // component there while keeping the highlight roll-off (recovery).
+        val highKeyGuard = 1f - ramp(stats.meanLuma, 0.70f, 0.86f) * 0.85f
+
+        // ===== ① PRIMARY: tone curve — 光感 / 色彩层次 / 死黑死白 =========
+        // Kept from the previous (user-approved) version, but its amplitude is
+        // now scaled by [deficit] so a well-toned frame gets a near-identity
+        // curve instead of an unnecessary re-grade. [sGain] additionally fades
+        // the S-stretch on high-key frames without touching toe / roll.
+        val curve = solveToneCurve(stats, 0.35f + 0.65f * deficit, highKeyGuard)
+
+        // ===== ④ SECONDARY exposure nudge — 二次调色让画面更均匀 ==========
         var exposure = solveExposure(stats, curve)
         val predicted = predictStats(stats.lumaHistogram, adjustmentLut(exposure, curve))
-        // Safety net: never introduce heavy clipping while brightening.
         if (predicted.highClip > 0.03f) exposure *= 0.6f
         if (predicted.lowClip > 0.05f) exposure *= 0.6f
-        // A touch of contrast only if the curve alone left the frame flat.
-        val contrast = when {
-            predicted.spread < 0.25f -> 55f
-            predicted.spread < 0.40f -> 34f
-            else -> 0f
-        }
 
-        // ---- Colour / detail, all modest -----------------------------------
+        // Contrast is a CONTINUOUS function of how flat the frame still is,
+        // gated by [deficit]. Bad flat frames get the full stretch; good ones 0.
+        // High-key frames (snow / white backdrop) are further damped: pulling
+        // contrast there just pushes whites toward clipping. Highlight pull-down
+        // below is kept, so this only limits the *stretch*, not the recovery.
+        val flat = ramp(0.42f - predicted.spread, 0f, 0.22f)
+        val contrast = (flat * 55f * deficit * highKeyGuard).coerceIn(0f, 55f)
+
+        // ===== ① 通透感: 压高光 + 提阴影 (跟着原片，偏曝光的重手) ========
+        // Both are continuous in the measured bright / dark mass. Hard caps
+        // keep them far below anything that could flatten or blow the frame,
+        // and [deficit] fades them out on already-good frames.
+        val toneTouch = 0.35f + 0.65f * deficit
+        val hiDeficit = ramp(stats.brightFraction, 0.06f, 0.34f) * 0.6f +
+            ramp(stats.highlightClip, 0.004f, 0.06f) * 0.4f
+        val highlights = -(hiDeficit * 30f * toneTouch).coerceIn(0f, 30f)
+        val shDeficit = ramp(stats.shadowFraction, 0.10f, 0.50f) * 0.6f +
+            ramp(stats.shadowClip, 0.01f, 0.09f) * 0.4f
+        // The curve toe already lifts crushed blacks; the slider only adds a
+        // gentle, complementary lift so the two never stack into a wash-out.
+        val shadows = (shDeficit * 22f * toneTouch).coerceIn(0f, 22f)
+
+        // ===== ① / ③ 质感: 纹理+ 保细节, 清晰度− 轻微柔焦 ================
+        val soft = ramp(0.024f - stats.detail, 0f, 0.018f)
+        val texture = (6f + soft * 12f).coerceIn(0f, 18f)     // 轻微加锐，保发丝/褶皱
+        val clarity = -(4f + soft * 8f).coerceIn(4f, 12f)     // 轻微柔焦，不糊细节
+        // 柔光收尾全部交给 texture+ / clarity−（保留细节 + 轻微柔焦）。
+        // dehaze 保持 0：负去朦胧会加雾发灰，正是配方要去掉的「闷沉沉」。
+        val dehaze = 0f
+
+        // ===== ① 色温: 冷偏 → 校到「略暖」, 暖调氛围一律保留 =============
+        // The recipe asks for "a slight warm lean". We implement that as the
+        // SAME thing as gentle cold-cast correction: nudge a cold frame toward
+        // warmth≈+0.02. Warm moods, snow, night and blue sky are preserved.
         val temperature = solveTemperature(stats)
         val tint = solveTint(stats)
         val vibrance = solveVibrance(stats)
-        val clarity = if (stats.detail < 0.012f) 18f else if (stats.detail < 0.020f) 10f else 4f
-        val texture = if (stats.detail < 0.012f) 12f else if (stats.detail < 0.020f) 6f else 0f
-        val hazy = stats.spread < 0.52f && stats.meanLuma > 0.50f && stats.meanSaturation < 0.20f
-        val dehaze = if (hazy) 16f else if (stats.spread < 0.42f) 8f else 0f
 
-        val next = current.copy(
-            exposure = current.exposure + exposure,
-            contrast = current.contrast + contrast,
-            temperature = current.temperature + temperature,
-            tint = current.tint + tint,
-            vibrance = current.vibrance + vibrance,
-            clarity = current.clarity + clarity,
-            texture = current.texture + texture,
-            dehaze = current.dehaze + dehaze,
-            toneCurve = if (curve.isLinear()) null else (current.toneCurve ?: curve)
+        // ===== ② 色彩定调: 按原片触发，绝不染色无关照片 ==================
+        val hsl = solveHsl(stats)
+        // ===== ② 阴影蓝调: 仅「户外绿背景 + 暗部实测偏暖/发闷」 ==========
+        // Gated by green coverage: a warm indoor portrait's dark tones are
+        // atmosphere, not muddiness, and must never be cooled.
+        val outdoor = ramp(stats.greenCoverage, 0.02f, 0.14f)
+        val coolNeed = ramp(stats.shadowWarmth, 0.004f, 0.09f) *
+            ramp(stats.shadowFraction, 0.12f, 0.45f) * outdoor
+        val shadowTint = (coolNeed * 40f).coerceIn(0f, 40f)
+
+        // ABSOLUTE parameters. One tap always yields the same result (idempotent)
+        // and never accumulates — the old "current + delta" could run away on a
+        // second tap. Structural edits (crop / blur / portrait / filter) are kept.
+        val next = EditAdjustments(
+            temperature = temperature,
+            tint = tint,
+            vibrance = vibrance,
+            exposure = exposure,
+            contrast = contrast,
+            highlights = highlights,
+            shadows = shadows,
+            texture = texture,
+            clarity = clarity,
+            dehaze = dehaze,
+            toneCurve = if (curve.isLinear()) null else curve,
+            shadowTint = shadowTint,
+            hsl = hsl,
+            crop = current.crop,
+            lensBlur = current.lensBlur,
+            portrait = current.portrait,
+            creativeFilter = current.creativeFilter,
+            filterStrength = current.filterStrength
         ).normalized()
 
         val changed = next != current
         return AutoEnhanceResult(
             adjustments = next,
             findings = findings,
-            summary = buildSummary(stats, curve, exposure, contrast, temperature, vibrance, changed, nearlyPerfect),
+            summary = buildSummary(stats, curve, next, changed, nearlyPerfect),
             changed = changed
         )
+    }
+
+    /** Linear 0..1 ramp — the backbone of "follow the photo, no fixed values". */
+    private fun ramp(value: Float, lo: Float, hi: Float): Float =
+        ((value - lo) / (hi - lo)).coerceIn(0f, 1f)
+
+    /**
+     * ② Colours are TRIGGERED by measured evidence:
+     *  - 深绿/灰绿背景 → 清透青蓝绿 (green band hue toward aqua, sat down a touch)
+     *  - 暖黄主体 → 柔和不刺眼 (yellow/orange sat down a touch)
+     * If a frame has neither (indoor portrait, snow, night), this returns Neutral
+     * and no colour styling whatsoever is applied.
+     */
+    private fun solveHsl(stats: ImageStats): HslAdjustments {
+        var out = HslAdjustments.Neutral
+        val green = ramp(stats.greenCoverage, 0.08f, 0.34f)
+        if (green > 0f) {
+            out = out.withBand(3, HslBand(hue = green * 16f, saturation = -green * 10f, luminance = green * 4f))
+                .withBand(4, HslBand(hue = green * 6f, saturation = -green * 5f))
+        }
+        val warm = ramp(stats.warmCoverage, 0.05f, 0.28f)
+        if (warm > 0f) {
+            out = out.withBand(2, HslBand(saturation = -warm * 8f, luminance = warm * 3f))
+                .withBand(1, HslBand(saturation = -warm * 5f))
+        }
+        return out
     }
 
     /** Chinese, user-facing list of problems actually detected in the pixels. */
@@ -402,12 +538,12 @@ object AutoEnhance {
      *    so pure white is preserved while blown detail is recovered.
      *  - [s]: a small S-shape that separates mid-tones for 色彩层次 / 光感.
      */
-    private fun solveToneCurve(stats: ImageStats): ToneCurve {
+    private fun solveToneCurve(stats: ImageStats, gain: Float, sGain: Float): ToneCurve {
         val shadowDeficit = max(0f, 0.10f - stats.p5)
         val highExcess = max(0f, stats.p95 - 0.92f)
-        val toe = (2.2f * shadowDeficit + 1.6f * stats.shadowClip).coerceIn(0f, 0.07f)
-        val roll = (2.0f * highExcess + 1.8f * stats.highlightClip).coerceIn(0f, 0.09f)
-        val s = if (stats.spread < 0.55f) (0.18f * (0.55f - stats.spread)).coerceIn(0f, 0.12f) else 0f
+        val toe = ((2.2f * shadowDeficit + 1.6f * stats.shadowClip).coerceIn(0f, 0.07f)) * gain
+        val roll = ((2.0f * highExcess + 1.8f * stats.highlightClip).coerceIn(0f, 0.09f)) * gain
+        val s = (if (stats.spread < 0.55f) (0.18f * (0.55f - stats.spread)).coerceIn(0f, 0.12f) else 0f) * gain * sGain
 
         if (toe < 0.004f && roll < 0.004f && s < 0.004f) return ToneCurve()
 
@@ -426,8 +562,10 @@ object AutoEnhance {
                 y -= roll * t * t
             }
             if (s > 0f) {
-                // +at quarter-tones, −at three-quarter-tones => gentle S.
-                y += (s * sin(2.0 * PI * x.toDouble())).toFloat()
+                // True S-curve: dark quarter-tones dip slightly, bright
+                // three-quarter-tones rise slightly => separates mid-tones
+                // and builds 色彩层次 / 立体感 (the old +sin sign flattened them).
+                y -= (s * sin(2.0 * PI * x.toDouble())).toFloat()
             }
             y = y.coerceIn(0f, 1f)
             if (y < prevY) y = prevY // keep the curve monotonically increasing
@@ -511,42 +649,52 @@ object AutoEnhance {
     }
 
     /**
-     * White balance is solved from the **neutral anchor** only: the average colour
-     * of near-neutral pixels, inverted through the renderer's channel gains
-     * R=1+0.12t+0.035u, G=1+0.004t-0.065u, B=1-0.12t+0.035u.
+     * "轻微往暖靠" implemented as gentle cold-cast correction toward a slightly
+     * warm target (warmth ≈ +0.02). Deliberately does NOT neutralise warm moods.
      *
-     * Crucially, if the scene has almost no neutral pixels (a pure blue sky, a
-     * colourful memory-colour frame), there is no trustworthy white reference, so
-     * we return 0 and leave the colour exactly as shot — grey-world would otherwise
-     * drag that blue sky toward orange, which is the colour distortion users hate.
-     * Correction is also capped at ±60 and damped on saturated frames.
+     * Multiple gates make sure we never tint atmosphere:
+     *  - warm frame (warmth > 0.02) → 0 (warm sun / indoor tungsten preserved)
+     *  - neutral anchor not blue-dominant → 0 (the cold is a blue SKY, a memory
+     *    colour, not a cast — this is what stopped the sky turning orange)
+     *  - high-key / very low-key → faded out (snow's cold white, night's cool
+     *    blue are moods, not casts)
+     *  - lots of skin → faded out (never let skin turn yellow)
+     * Capped at +20, so it stays a gentle lean rather than a ±60 hammer.
      */
-    private fun wbFactor(stats: ImageStats): Float =
-        0.7f * (1f - 0.4f * ((stats.meanSaturation - 0.30f) / 0.30f).coerceIn(0f, 1f))
-
     private fun solveTemperature(stats: ImageStats): Float {
-        if (stats.neutralCoverage < 0.06f) return 0f
+        // Hard gates: warm mood, high-key (snow / overexposed white) and very
+        // low-key (night) are atmosphere, never colour casts to "fix".
+        if (stats.warmth > 0.02f) return 0f
+        if (stats.meanLuma > 0.62f || stats.meanLuma < 0.22f) return 0f
+        if (stats.neutralCoverage < 0.006f) return 0f
         val r = stats.neutralR.coerceAtLeast(0.01f)
         val g = stats.neutralG.coerceAtLeast(0.01f)
         val b = stats.neutralB.coerceAtLeast(0.01f)
-        val kr = g / r
-        val kb = g / b
-        val t = (kr - kb) / 0.24f
-        return (t * 100f * wbFactor(stats)).coerceIn(-60f, 60f)
+        val t = (g / r - g / b) / 0.24f
+        if (t <= 0.02f) return 0f // anchor isn't blue → cold is memory colour
+        // Skin guard keeps at least half of the correction: with a hard +34 cap
+        // and the hard gates above, a slight warm lean can never turn skin
+        // yellow — but a warm foreground must not fully cancel a real cast fix.
+        val skinGuard = 1f - ramp(stats.skinCoverage, 0.04f, 0.22f) * 0.5f
+        // A small but clean grey card is a perfectly reliable anchor, so ~1%
+        // neutral pixels is already full confidence. This is a *technical*
+        // cold-cast correction, so it needs enough strength to actually help.
+        val conf = (stats.neutralCoverage / 0.012f).coerceIn(0f, 1f)
+        return (t * 100f * 0.85f * skinGuard * conf).coerceIn(0f, 34f)
     }
 
+    /** Tint is capped at ±6; green/foliage frames are excluded (that green is memory colour). */
     private fun solveTint(stats: ImageStats): Float {
-        if (stats.neutralCoverage < 0.06f) return 0f
+        if (stats.neutralCoverage < 0.12f || stats.greenCoverage > 0.30f) return 0f
         val r = stats.neutralR.coerceAtLeast(0.01f)
         val g = stats.neutralG.coerceAtLeast(0.01f)
         val b = stats.neutralB.coerceAtLeast(0.01f)
         val kr = g / r
         val kb = g / b
-        val kg = 1f
         val t = (kr - kb) / 0.24f
         // G - (R+B)/2 = 0.004t - 0.1u
-        val u = (0.004f * t - (kg - (kr + kb) * 0.5f)) / 0.1f
-        return (u * 100f * wbFactor(stats)).coerceIn(-60f, 60f)
+        val u = (0.004f * t - (1f - (kr + kb) * 0.5f)) / 0.1f
+        return (u * 100f * 0.10f).coerceIn(-6f, 6f)
     }
 
     private fun solveVibrance(stats: ImageStats): Float {
@@ -557,26 +705,26 @@ object AutoEnhance {
     private fun buildSummary(
         stats: ImageStats,
         curve: ToneCurve,
-        exposure: Float,
-        contrast: Float,
-        temperature: Float,
-        vibrance: Float,
+        a: EditAdjustments,
         changed: Boolean,
         nearlyPerfect: Boolean
     ): String {
-        if (!changed) return "画面已经很均衡，未做明显改动"
-        val usesCurve = !curve.isLinear()
+        if (!changed) return "画面已经很均衡，未做改动"
         val parts = buildList {
-            if (usesCurve) add("曲线优化光感与层次")
-            if (abs(exposure) > 0.05f) {
-                add(if (exposure > 0) "提亮 ${"%.1f".format(exposure)} EV" else "压暗 ${"%.1f".format(-exposure)} EV")
+            if (!curve.isLinear()) add("曲线理顺光感层次")
+            if (a.highlights < -3f) add("压回高光")
+            if (a.shadows > 3f) add("提亮暗部")
+            if (abs(a.exposure) > 0.05f) {
+                add(if (a.exposure > 0) "提亮 ${"%.1f".format(a.exposure)} EV" else "压暗 ${"%.1f".format(-a.exposure)} EV")
             }
-            if (contrast > 5f) add("增强层次")
-            else if (contrast < -5f) add("柔化反差")
-            if (abs(temperature) > 8f) add("校正白平衡")
-            if (vibrance > 5f) add("提升自然饱和度")
-            else if (vibrance < -5f) add("收敛过饱和")
-            if (stats.detail < 0.012f) add("增强细节")
+            if (a.temperature > 8f) add("轻微暖调")
+            else if (a.temperature < -8f) add("校正白平衡")
+            if (a.texture > 3f) add("保留细节")
+            if (a.clarity < -3f) add("轻微柔焦")
+            if (!a.hsl.isNeutral()) add("青蓝绿配柔黄")
+            if (a.shadowTint > 3f) add("暗部清爽")
+            if (a.vibrance > 5f) add("提升自然饱和度")
+            else if (a.vibrance < -5f) add("收敛过饱和")
         }
         return if (parts.isEmpty() && nearlyPerfect) {
             "仅做轻微质感增强"

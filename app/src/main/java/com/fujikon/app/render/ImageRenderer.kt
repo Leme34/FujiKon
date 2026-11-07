@@ -275,11 +275,13 @@ class ImageRenderer {
         val adjustmentClarity: Float,
         val textureRadius: Int,
         val hsl: FloatArray?,
+        val shadowTint: Float,
         val filter: FilterPlan?
     ) {
         val needsColor: Boolean
             get() = monochrome || abs(saturation - 1f) > 0.001f || hueMatrix != null ||
-                blender != null || gradingChroma != null || hsl != null || filter != null
+                blender != null || gradingChroma != null || hsl != null ||
+                shadowTint > 0.001f || filter != null
 
         val needsDetail: Boolean
             get() = abs(sharpenFine) > 0.01f || abs(sharpenClarity) > 0.01f ||
@@ -407,6 +409,9 @@ class ImageRenderer {
         val texture = adjustments.texture / EditAdjustments.TONE_RANGE
         val adjustmentClarity = adjustments.clarity / EditAdjustments.TONE_RANGE
         val hsl = buildUserHsl(adjustments)
+        // Split-tone blue for shadows only. Normalised to 0..1 here; the pixel
+        // loop further caps the actual channel shift at ~5% of full scale.
+        val shadowTint = (adjustments.shadowTint / EditAdjustments.TONE_RANGE).coerceIn(0f, 1f)
         val filter = buildFilterPlan(adjustments)
 
         val maxDimension = max(width, height)
@@ -445,6 +450,7 @@ class ImageRenderer {
             adjustmentClarity = adjustmentClarity,
             textureRadius = textureRadius,
             hsl = hsl,
+            shadowTint = shadowTint,
             filter = filter
         )
     }
@@ -656,6 +662,7 @@ class ImageRenderer {
         val adjustToneLut = plan.adjustToneLut
         val vibrance = plan.vibrance
         val userHsl = plan.hsl
+        val shadowTint = plan.shadowTint
         val filter = plan.filter
 
         for (y in from until to) {
@@ -810,6 +817,20 @@ class ImageRenderer {
                         r = (packed shr 16) and 0xFF
                         g = (packed shr 8) and 0xFF
                         b = packed and 0xFF
+                    }
+                }
+
+                // Split-tone: a whisper of cool blue in the shadows only. The
+                // weight vanishes by mid-tone, and the shift is capped at ~5%
+                // of full scale, so it reads as "fresh / airy" rather than a cast.
+                if (shadowTint > 0.001f) {
+                    val lumN = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
+                    val sw = 1f - smoothstep(0.05f, 0.45f, lumN)
+                    if (sw > 0.001f) {
+                        val shift = shadowTint * sw * 13f
+                        r = (r - shift * 0.45f).roundToInt().coerceIn(0, 255)
+                        g = (g + shift * 0.10f).roundToInt().coerceIn(0, 255)
+                        b = (b + shift * 0.55f).roundToInt().coerceIn(0, 255)
                     }
                 }
 

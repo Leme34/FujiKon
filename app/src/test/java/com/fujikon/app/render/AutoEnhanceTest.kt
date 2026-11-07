@@ -166,6 +166,79 @@ class AutoEnhanceTest {
         assertEquals(EditAdjustments.Neutral, result.adjustments)
     }
 
+    /**
+     * A synthetic "daily outdoor snapshot": bright sky + deep-green foliage +
+     * warm-yellow subject + muddy warm shadows. This is the reference scene the
+     * palette is tuned for, so the triggered colour styling must appear.
+     */
+    private fun outdoorBitmap(): Bitmap {
+        val w = 160
+        val h = 120
+        val px = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val nx = x / w.toFloat()
+                val ny = y / h.toFloat()
+                val (r, g, b) = when {
+                    ny < 0.33f -> Triple(0.90f, 0.92f, 0.88f)  // bright sky
+                    ny < 0.66f -> Triple(0.26f, 0.40f, 0.24f)  // deep green
+                    else -> Triple(0.82f, 0.66f, 0.30f)         // warm yellow subject
+                }
+                val shade = if (nx < 0.28f && ny > 0.35f) 0.62f else 1f // muddy warm shadow
+                val rr = (r * shade * 255).toInt().coerceIn(0, 255)
+                val gg = (g * shade * 255).toInt().coerceIn(0, 255)
+                val bb = (b * shade * 255).toInt().coerceIn(0, 255)
+                px[y * w + x] = (0xFF shl 24) or (rr shl 16) or (gg shl 8) or bb
+            }
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** Cold blue night frame: must NOT be tinted teal / warm / blue-shadow. */
+    private fun nightBitmap(): Bitmap {
+        val w = 160
+        val h = 120
+        val px = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val l = 0.12f + 0.06f * sin(x * 0.3f) * cos(y * 0.2f)
+                val r = (l * 0.70f * 255).toInt().coerceIn(0, 255)
+                val g = (l * 0.85f * 255).toInt().coerceIn(0, 255)
+                val b = (l * 1.25f * 255).toInt().coerceIn(0, 255)
+                px[y * w + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** Absolute parameters: one tap and a second tap must produce the SAME result. */
+    @Test
+    fun oneTapIsIdempotent() {
+        val stats = AutoEnhance.analyse(problemBitmap())!!
+        val first = AutoEnhance.suggest(stats).adjustments
+        val second = AutoEnhance.suggest(stats, first).adjustments
+        println("DIAG idempotent first=${first.toJson()}")
+        println("DIAG idempotent second=${second.toJson()}")
+        assertEquals("连续两次一键优化不得累加、不得漂移", first, second)
+    }
+
+    /** Palette is triggered by measured colour, never forced on unrelated frames. */
+    @Test
+    fun paletteIsTriggeredByThePhotoNotForced() {
+        val outdoor = AutoEnhance.suggest(AutoEnhance.analyse(outdoorBitmap())!!).adjustments
+        val night = AutoEnhance.suggest(AutoEnhance.analyse(nightBitmap())!!).adjustments
+        println("DIAG outdoor shadowTint=${outdoor.shadowTint} hsl=${outdoor.hsl.toJson()}")
+        println("DIAG night   shadowTint=${night.shadowTint} temperature=${night.temperature} hsl=${night.hsl.toJson()}")
+        // Outdoor green background → teal-green HSL is applied.
+        assertTrue("有绿背景时应触发青蓝绿配色", outdoor.hsl.band(3).hue > 1f)
+        assertFalse("有绿背景时 HSL 不应为全中性", outdoor.hsl.isNeutral())
+        // Night: no green evidence → no teal HSL, no blue shadow split-tone,
+        // and no warm white-balance lean (the cool blue mood is preserved).
+        assertTrue("夜景不应被推青蓝绿", night.hsl.band(3).hue == 0f)
+        assertEquals("夜景暗部不应被强加蓝调", 0f, night.shadowTint, 0.001f)
+        assertEquals("夜景不应被加暖", 0f, night.temperature, 0.001f)
+    }
+
     @Test
     fun localPromptIsSpecificToTheMeasuredDefects() {
         val stats = AutoEnhance.analyse(problemBitmap())!!

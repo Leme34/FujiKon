@@ -32,6 +32,13 @@ data class EditAdjustments(
      * as "no change".
      */
     val toneCurve: ToneCurve? = null,
+    /**
+     * Split-tone: a very small cool-blue tint applied **only to shadows**.
+     * 0..100, driven by how warm / muddy the measured dark tones are. Positive
+     * values never touch mid-tones or highlights, and the renderer caps the
+     * channel shift at ~5% so it can never become a visible colour cast.
+     */
+    val shadowTint: Float = 0f,
     /** Lightroom-style eight-band HSL colour mixer. */
     val hsl: HslAdjustments = HslAdjustments.Neutral,
     /** Non-destructive crop framing. */
@@ -59,6 +66,7 @@ data class EditAdjustments(
         clarity = clarity.coerceIn(-TONE_RANGE, TONE_RANGE),
         dehaze = dehaze.coerceIn(-TONE_RANGE, TONE_RANGE),
         toneCurve = toneCurve,
+        shadowTint = shadowTint.coerceIn(0f, TONE_RANGE),
         hsl = hsl.normalized(),
         crop = crop.normalized(),
         lensBlur = lensBlur.normalized(),
@@ -81,6 +89,7 @@ data class EditAdjustments(
             abs(clarity) <= tolerance &&
             abs(dehaze) <= tolerance &&
             (toneCurve == null || toneCurve.isLinear(tolerance)) &&
+            abs(shadowTint) <= tolerance &&
             hsl.isNeutral(tolerance) &&
             crop.isFull(tolerance) &&
             lensBlur.isOff(tolerance) &&
@@ -101,6 +110,7 @@ data class EditAdjustments(
         put("clarity", clarity.toDouble())
         put("dehaze", dehaze.toDouble())
         put("toneCurve", toneCurve?.toJson() ?: JSONObject.NULL)
+        put("shadowTint", shadowTint.toDouble())
         put("hsl", hsl.toJson())
         put("crop", crop.toJson())
         put("lensBlur", lensBlur.toJson())
@@ -131,6 +141,7 @@ data class EditAdjustments(
                 clarity = json.optDouble("clarity", 0.0).toFloat(),
                 dehaze = json.optDouble("dehaze", 0.0).toFloat(),
                 toneCurve = json.optJSONObject("toneCurve")?.let(ToneCurve::fromJson),
+                shadowTint = json.optDouble("shadowTint", 0.0).toFloat(),
                 hsl = HslAdjustments.fromJson(json.optJSONObject("hsl")),
                 crop = EditCrop.fromJson(json.optJSONObject("crop")),
                 lensBlur = LensBlur.fromJson(json.optJSONObject("lensBlur")),
