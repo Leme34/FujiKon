@@ -58,35 +58,37 @@ class RepositoryRobolectricTest {
     @Test
     fun upgradeDropsRetiredBuiltInSampleButKeepsUserImports() = runBlocking {
         repository.load()
-        // 伪造旧版索引：一条应用内置的退役示例 + 一条用户导入的同名预设
+        // 伪造旧版索引：两条内置条目（原样 / 已重命名）+ 两条用户导入（同名 / 同字节）
+        val retiredHash = "925f3ee0a142e3642df7c67e911e0d99169b11322af3c61801c9bf16db7efb16"
         val index = java.io.File(context.filesDir, "presets/index.json")
         val root = org.json.JSONObject(index.readText())
         val array = root.getJSONArray("presets")
         val template = array.getJSONObject(0)
-        array.put(
-            org.json.JSONObject(template.toString())
-                .put("id", "legacy-retired-match")
-                .put("name", "NC 400 MATCH")
-                .put("isSample", true)
-                .put("fileName", "")
-                .put("fileSize", 0)
-        )
-        array.put(
-            org.json.JSONObject(template.toString())
-                .put("id", "user-import-match")
-                .put("name", "NC 400 MATCH")
-                .put("isSample", false)
-                .put("fileName", "")
-                .put("fileSize", 0)
-        )
+        fun legacy(id: String, name: String, isSample: Boolean) {
+            array.put(
+                org.json.JSONObject(template.toString())
+                    .put("id", id)
+                    .put("name", name)
+                    .put("isSample", isSample)
+                    .put("contentHash", retiredHash)
+                    .put("fileName", "")
+                    .put("fileSize", 0)
+            )
+        }
+        legacy("legacy-retired-match", "NC 400 MATCH", true)
+        legacy("legacy-renamed-match", "我的胶片", true)
+        legacy("user-import-match", "NC 400 MATCH", false)
+        legacy("user-import-same-bytes", "导入副本", false)
         index.writeText(root.toString())
 
         val reopened = PresetRepository(context)
         reopened.load()
 
         assertTrue(reopened.presets.value.none { it.id == "legacy-retired-match" })
+        assertTrue("重命名过的内置条目也应被清理", reopened.presets.value.none { it.id == "legacy-renamed-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-match" })
-        assertEquals(7, reopened.presets.value.size)
+        assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-same-bytes" })
+        assertEquals(8, reopened.presets.value.size)
     }
 
     @Test

@@ -88,14 +88,21 @@ class PresetRepository(private val context: Context) {
 
     /**
      * Retires built-in samples that are no longer shipped in `assets/samples`.
-     * Only entries seeded by the app (`isSample`) are removed, so a preset the
-     * user imported under the same name is never touched. The migration is
-     * idempotent: it writes the index back only when it actually removed rows.
+     * Matching by name AND by content hash also catches entries the user
+     * renamed. Only entries seeded by the app (`isSample`) are removed, so a
+     * preset the user imported under the same name (or with identical bytes) is
+     * never touched. Idempotent: the index is written back only when rows were
+     * actually removed.
      */
     private fun dropRetiredSamplesLocked(list: List<Preset>): List<Preset> {
         val retiredNames = setOf("NC 400 MATCH")
-        val retiredIds = list.filter { it.isSample && it.name in retiredNames }
-            .mapTo(mutableSetOf()) { it.id }
+        val retiredHashes = setOf(
+            // sha256 of the retired assets/samples/nc400_match.ncp
+            "925f3ee0a142e3642df7c67e911e0d99169b11322af3c61801c9bf16db7efb16"
+        )
+        val retiredIds = list.filter {
+            it.isSample && (it.name in retiredNames || it.contentHash in retiredHashes)
+        }.mapTo(mutableSetOf()) { it.id }
         if (retiredIds.isEmpty()) return list
         list.filter { it.id in retiredIds }.forEach { preset ->
             if (preset.fileName.isNotBlank()) File(filesDir, preset.fileName).delete()
