@@ -892,6 +892,7 @@ class EditorViewModel(
                         aiState = AiEditState.Done("AI 修图完成，导出将直接使用这张成品图")
                     )
                 }
+                recordHistory("应用 AI 修图结果")
                 renderCurrent()
             } catch (e: CancellationException) {
                 throw e
@@ -913,16 +914,19 @@ class EditorViewModel(
         _state.update { it.copy(aiState = AiEditState.Idle) }
     }
 
-    /** Drops the AI result for the current photo and returns to local rendering. */
+    /**
+     * Hides the AI result for the current photo and returns to local rendering.
+     * The cached bytes are kept (not deleted) so that **redo** through the
+     * history stack can bring the AI layer back; the cache directory is cleaned
+     * up with the rest of the app cache.
+     */
     fun clearAiResult() {
         val id = _state.value.currentPhoto?.id ?: return
-        val uri = _state.value.aiResultUris[id] ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { uri.path?.let { File(it).delete() } }
-        }
+        if (_state.value.aiResultUris[id] == null) return
         _state.update {
             it.copy(aiResultUris = it.aiResultUris - id, aiState = AiEditState.Idle)
         }
+        recordHistory("隐藏 AI 修图结果")
         renderCurrent()
     }
 
@@ -1064,7 +1068,10 @@ class EditorViewModel(
             presetId = snapshot.presetId,
             toneCurve = snapshot.toneCurveOverride,
             adjustments = snapshot.adjustments,
-            channelCurves = snapshot.channelCurvesOverride
+            channelCurves = snapshot.channelCurvesOverride,
+            // The AI result is part of the edit state, so undo / redo restore
+            // it together with the local grade instead of replacing the editor.
+            aiResultUri = snapshot.aiResultUris[photo.id]?.toString()
         )
     }
 
@@ -1095,13 +1102,24 @@ class EditorViewModel(
 
         val presetStillExists = snapshot.presetId == Preset.NONE_ID ||
             _state.value.presets.any { it.id == snapshot.presetId }
+        // Re-attach the AI layer that belonged to this history step, but only
+        // when its cached file still exists (a purged cache degrades cleanly).
+        val restoredAi = snapshot.aiResultUri
+            ?.takeIf { snapshot.aiResultVisible && snapshot.aiResultOpacity > 0.001f }
+            ?.let { Uri.parse(it) }
+            ?.takeIf { it.path?.let { path -> File(path).exists() } == true }
         _state.update { current ->
             current.copy(
                 index = photoIndex,
                 presetId = if (presetStillExists) snapshot.presetId else current.presetId,
                 toneCurveOverride = snapshot.toneCurve,
                 channelCurvesOverride = snapshot.channelCurves,
-                adjustments = snapshot.adjustments
+                adjustments = snapshot.adjustments,
+                aiResultUris = if (restoredAi != null) {
+                    current.aiResultUris + (snapshot.photoId to restoredAi)
+                } else {
+                    current.aiResultUris - snapshot.photoId
+                }
             )
         }
         editHistory.jumpTo(target)

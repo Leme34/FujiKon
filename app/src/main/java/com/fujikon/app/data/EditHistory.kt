@@ -12,8 +12,33 @@ data class EditSnapshot(
     val toneCurve: ToneCurve?,
     val adjustments: EditAdjustments,
     /** Null means "use the selected preset's own per-channel curves". */
-    val channelCurves: ChannelToneCurves? = null
-)
+    val channelCurves: ChannelToneCurves? = null,
+    /**
+     * Optional Agnes result attached to this step. Keeping the AI image inside
+     * the snapshot (instead of replacing the whole editor state) means undo /
+     * redo / jumpTo restore both the local grade AND the AI layer together —
+     * the AI edit becomes a normal, reversible editing step.
+     */
+    val aiResultUri: String? = null,
+    /** 0..1 opacity of the AI layer over the locally rendered frame. */
+    val aiResultOpacity: Float = 1f,
+    /** False hides the AI layer without deleting its cached bytes. */
+    val aiResultVisible: Boolean = true
+) {
+    val hasAiResult: Boolean get() = aiResultUri != null && aiResultVisible && aiResultOpacity > 0.001f
+
+    fun withAiResult(uri: String?, opacity: Float = 1f, visible: Boolean = true): EditSnapshot = copy(
+        aiResultUri = uri,
+        aiResultOpacity = opacity.coerceIn(0f, 1f),
+        aiResultVisible = visible
+    )
+
+    fun withoutAiResult(): EditSnapshot = copy(
+        aiResultUri = null,
+        aiResultOpacity = 1f,
+        aiResultVisible = true
+    )
+}
 
 /**
  * Lightroom-style undo / redo stack for the preview editor.
@@ -45,6 +70,14 @@ class EditHistory(
     val current: Entry? get() = items.getOrNull(index)
     val canUndo: Boolean get() = index > 0
     val canRedo: Boolean get() = index >= 0 && index < items.lastIndex
+
+    /** The AI layer that belongs to the currently selected history step. */
+    val currentAiResult: String?
+        get() = current?.snapshot?.takeIf { it.hasAiResult }?.aiResultUri
+
+    /** Attach / replace / clear the AI layer as a new, undoable history step. */
+    fun recordAiResult(label: String, snapshot: EditSnapshot, now: Long = System.currentTimeMillis()): Entry =
+        record(label, snapshot, coalesceKey = "ai-result", now = now)
 
     fun reset(snapshot: EditSnapshot, label: String, now: Long = System.currentTimeMillis()) {
         items.clear()

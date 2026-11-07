@@ -105,6 +105,14 @@ private val AdjustmentGroups = listOf(
             AdjustmentSpec("清晰度", toneRange, 1f, { it.clarity }, { a, v -> a.copy(clarity = v) }),
             AdjustmentSpec("去朦胧", toneRange, 1f, { it.dehaze }, { a, v -> a.copy(dehaze = v) })
         )
+    ),
+    AdjustmentGroup(
+        title = "画质",
+        specs = listOf(
+            AdjustmentSpec("降噪", 0f..100f, 1f, { it.denoise }, { a, v -> a.copy(denoise = v) }),
+            AdjustmentSpec("颗粒", 0f..100f, 1f, { it.grain }, { a, v -> a.copy(grain = v) }),
+            AdjustmentSpec("暗角", toneRange, 1f, { it.vignette }, { a, v -> a.copy(vignette = v) })
+        )
     )
 )
 
@@ -145,7 +153,7 @@ fun AdjustmentsSheet(
     var curveDirty by remember { mutableStateOf(false) }
     var expandedGroups by remember {
         mutableStateOf(
-            AdjustmentGroups.map { it.title }.toSet() + setOf("人像", "HSL", "影调", "滤镜")
+            AdjustmentGroups.map { it.title }.toSet() + setOf("人像", "HSL", "影调", "滤镜", "点颜色", "局部")
         )
     }
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -425,6 +433,28 @@ fun AdjustmentsSheet(
                         curvePreviewPending = false
                         onClearToneCurve()
                     },
+                    enabled = !saving
+                )
+
+                PointColorSection(
+                    pointColor = draft.pointColor,
+                    expanded = "点颜色" in expandedGroups,
+                    onToggle = { toggleGroup("点颜色") },
+                    onChange = { pointColor, field ->
+                        updateDraft(field) { it.copy(pointColor = pointColor) }
+                    },
+                    onFinished = { field -> previewNow(field) },
+                    enabled = !saving
+                )
+
+                LocalAdjustmentSection(
+                    local = draft.local,
+                    expanded = "局部" in expandedGroups,
+                    onToggle = { toggleGroup("局部") },
+                    onChange = { localAdjustments, field ->
+                        updateDraft(field) { it.copy(local = localAdjustments) }
+                    },
+                    onFinished = { field -> previewNow(field) },
                     enabled = !saving
                 )
 

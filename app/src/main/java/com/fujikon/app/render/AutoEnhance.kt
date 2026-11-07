@@ -4,6 +4,10 @@ import android.graphics.Bitmap
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.HslAdjustments
 import com.fujikon.app.data.HslBand
+import com.fujikon.app.data.LocalAdjustments
+import com.fujikon.app.data.LocalLayer
+import com.fujikon.app.data.LocalMask
+import com.fujikon.app.data.LocalParams
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.data.ToneCurvePoint
 import kotlin.math.PI
@@ -99,7 +103,11 @@ data class AutoEnhanceResult(
     /** One-line summary of what the optimisation changed. */
     val summary: String,
     /** False when the photo is already good and nothing meaningful was done. */
-    val changed: Boolean
+    val changed: Boolean,
+    /** Zones touched by the zoned pass; empty for the plain global pass. */
+    val zones: List<String> = emptyList(),
+    /** Honest label of the segmentation provider used (may be heuristic). */
+    val providerLabel: String = ""
 )
 
 /**
@@ -431,7 +439,14 @@ object AutoEnhance {
             lensBlur = current.lensBlur,
             portrait = current.portrait,
             creativeFilter = current.creativeFilter,
-            filterStrength = current.filterStrength
+            filterStrength = current.filterStrength,
+            // Quality / zone layers are structural user edits: the global
+            // solver must never wipe them (same contract as crop / blur).
+            denoise = current.denoise,
+            grain = current.grain,
+            vignette = current.vignette,
+            pointColor = current.pointColor,
+            local = current.local
         ).normalized()
 
         val changed = next != current
@@ -731,5 +746,141 @@ object AutoEnhance {
         } else {
             parts.take(4).joinToString(" · ")
         }
+    }
+
+    // ------------------------------------------------------------- zoned pass
+
+    private const val AUTO_PREFIX = "auto:"
+
+    /**
+     * Zoned auto-enhance: the proven global curve solver stays primary, and a
+     * small number of *evidence-gated* local layers add zone-specific repair.
+     *
+     * Hard rules (same discipline as [suggest]):
+     *  - Good photos are short-circuited to exactly the base result — no zone
+     *    layers at all, so "好照片精确 Neutral" and idempotence still hold.
+     *  - Every zone layer is triggered only when the segmentation provider
+     *    actually finds that region AND the measured histogram shows the
+     *    corresponding defect. No fixed "always apply" amounts.
+     *  - All zone amounts are hard-capped and much weaker than the global pass.
+     *  - Auto layers use stable ids beginning with [AUTO_PREFIX]; each run
+     *    replaces the previous auto layers but keeps the user's own painted
+     *    layers, so repeated taps are byte-identical (idempotent).
+     *  - If no bitmap or no provider result is available it silently degrades
+     *    to the plain global solver.
+     *
+     * [provider] defaults to the offline heuristic; a model-based
+     * [SegmentationProvider] can be injected later without touching this code.
+     */
+    fun suggestZoned(
+        source: Bitmap?,
+        stats: ImageStats,
+        current: EditAdjustments = EditAdjustments.Neutral,
+        provider: SegmentationProvider = HeuristicSegmentationProvider
+    ): AutoEnhanceResult {
+        val base = suggest(stats, current)
+        if (!base.changed) return base
+        val masks = provider.segment(source, stats) ?: return base
+
+        val skyCoverage = masks.coverage(SemanticRegion.SKY)
+        val foliageCoverage = max(masks.coverage(SemanticRegion.FOLIAGE), stats.greenCoverage)
+        val subjectCentroid = masks.centroid(SemanticRegion.SUBJECT)
+        val skyBottom = (masks.centroid(SemanticRegion.SKY).second * 1.9f + 0.18f).coerceIn(0.25f, 0.80f)
+
+        val hiDeficit = ramp(stats.brightFraction, 0.06f, 0.34f) * 0.6f +
+            ramp(stats.highlightClip, 0.004f, 0.06f) * 0.4f
+        val shDeficit = ramp(stats.shadowFraction, 0.10f, 0.50f) * 0.6f +
+            ramp(stats.shadowClip, 0.01f, 0.09f) * 0.4f
+
+        val zones = ArrayList<String>(3)
+        val auto = ArrayList<LocalLayer>(3)
+
+        // ① Sky: recover clipped / heavy highlights only where sky exists.
+        if (skyCoverage > 0.05f && hiDeficit > 0.04f) {
+            val amount = (hiDeficit * 22f * ramp(skyCoverage, 0.05f, 0.28f)).coerceIn(0f, 22f)
+            if (amount > 0.5f) {
+                auto += LocalLayer(
+                    id = "${AUTO_PREFIX}sky",
+                    name = "天空 · 压高光",
+                    mask = LocalMask.LinearGradient(
+                        startX = 0.5f, startY = 0f, endX = 0.5f, endY = skyBottom,
+                        feather = 0.55f, invert = true
+                    ),
+                    params = LocalParams(
+                        highlights = -amount,
+                        saturation = -amount * 0.20f
+                    ),
+                    strength = 100f
+                )
+                zones += "天空（覆盖 ${(skyCoverage * 100).roundToInt()}%）压高光"
+            }
+        }
+
+        // ② Subject: lift shadows around the compositional centre only when
+        //    the frame actually has crushed / heavy dark areas.
+        if (shDeficit > 0.05f) {
+            val amount = (shDeficit * 16f).coerceIn(0f, 16f)
+            if (amount > 0.5f) {
+                auto += LocalLayer(
+                    id = "${AUTO_PREFIX}subject",
+                    name = "主体 · 提阴影",
+                    mask = LocalMask.ControlPoint(
+                        x = subjectCentroid.first.coerceIn(0.1f, 0.9f),
+                        y = subjectCentroid.second.coerceIn(0.1f, 0.9f),
+                        radius = 0.44f,
+                        feather = 0.78f
+                    ),
+                    params = LocalParams(
+                        shadows = amount,
+                        brightness = if (stats.meanLuma < 0.42f) amount * 0.22f else 0f,
+                        clarity = amount * 0.16f
+                    ),
+                    strength = 100f
+                )
+                zones += "主体区域提阴影"
+            }
+        }
+
+        // ③ Background: a gentle outside-radial desaturation ONLY when there
+        //    is real foliage evidence and the frame is over-saturated. Indoor
+        //    portraits, snow and night shots are never tinted.
+        if (foliageCoverage > 0.10f && stats.meanSaturation > 0.46f) {
+            val amount = (ramp(stats.meanSaturation, 0.46f, 0.72f) * 9f *
+                ramp(foliageCoverage, 0.10f, 0.30f)).coerceIn(0f, 9f)
+            if (amount > 0.5f) {
+                auto += LocalLayer(
+                    id = "${AUTO_PREFIX}background",
+                    name = "背景 · 收敛过饱和",
+                    mask = LocalMask.RadialGradient(
+                        x = subjectCentroid.first.coerceIn(0.15f, 0.85f),
+                        y = subjectCentroid.second.coerceIn(0.15f, 0.85f),
+                        radiusX = 0.42f, radiusY = 0.48f,
+                        feather = 0.72f, invert = true
+                    ),
+                    params = LocalParams(saturation = -amount),
+                    strength = 100f
+                )
+                zones += "绿色背景收敛过饱和"
+            }
+        }
+
+        if (auto.isEmpty()) return base
+
+        val userLayers = current.local.layers.filterNot { it.id.startsWith(AUTO_PREFIX) }
+        val nextLocal = LocalAdjustments(userLayers + auto).normalized()
+        val next = base.adjustments.copy(local = nextLocal)
+        val summary = if (base.summary.isBlank()) {
+            "分区优化：" + zones.joinToString("、")
+        } else {
+            base.summary + " · 分区：" + zones.joinToString("、")
+        }
+        return AutoEnhanceResult(
+            adjustments = next,
+            findings = base.findings,
+            summary = summary,
+            changed = next != current,
+            zones = zones,
+            providerLabel = provider.label
+        )
     }
 }

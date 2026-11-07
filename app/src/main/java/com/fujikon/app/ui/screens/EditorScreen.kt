@@ -525,6 +525,8 @@ fun EditorScreen(
                         bitmap = if (comparing) state.original ?: rendered else rendered,
                         currentAdjustments = state.adjustments,
                         onApplyAdjustments = { viewModel.setAdjustments(it) },
+                        presets = state.presets,
+                        onSelectPreset = { viewModel.selectPreset(it) },
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .fillMaxWidth(0.92f)

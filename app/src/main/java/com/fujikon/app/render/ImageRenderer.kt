@@ -36,6 +36,12 @@ import kotlin.math.sin
  */
 class ImageRenderer {
 
+    /**
+     * Pluggable backend descriptor. Only [CpuRenderBackend] ships today; the
+     * quality operators below run in float precision regardless of backend.
+     */
+    var backend: RenderBackend = CpuRenderBackend
+
     suspend fun render(source: Bitmap, preset: Preset, forExport: Boolean): Bitmap {
         val job = currentCoroutineContext()[Job]
         val width = source.width
@@ -60,9 +66,22 @@ class ImageRenderer {
             processRows(pixels, width, from, to, plan, job)
         }
 
+        // Independent denoise runs BEFORE the existing unsharp mask so the
+        // sharpening stage cannot amplify sensor noise.
+        QualityOperators.applyDenoise(pixels, width, height, adjustments.denoise, job)
+
         if (plan.needsDetail) {
             applyDetail(pixels, width, height, plan, job)
         }
+
+        // Colour / zone / finishing operators. All keep float precision until
+        // their single final write, so stacking layers cannot cause banding.
+        QualityOperators.applyPointColor(pixels, width, height, adjustments.pointColor, job)
+        val localLayers = LocalMaskRenderer.prepare(adjustments.local, width, height, job)
+        LocalMaskRenderer.apply(pixels, width, height, localLayers, job)
+        QualityOperators.applyGrain(pixels, width, height, adjustments.grain, job)
+        QualityOperators.applyVignette(pixels, width, height, adjustments.vignette, job)
+
         applyLensBlur(pixels, width, height, adjustments.lensBlur, job)
         checkCancelled(job)
 

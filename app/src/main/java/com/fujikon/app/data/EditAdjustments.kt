@@ -50,7 +50,17 @@ data class EditAdjustments(
     /** Film-inspired creative look id. Use [CreativeFilter.NONE.id] for no look. */
     val creativeFilter: String = CreativeFilter.NONE.id,
     /** 0..100 blend for [creativeFilter]. */
-    val filterStrength: Float = 100f
+    val filterStrength: Float = 100f,
+    /** Independent edge-preserving denoise, 0..100. Runs before sharpening. */
+    val denoise: Float = 0f,
+    /** Deterministic film grain, 0..100. Preview and export produce identical grain. */
+    val grain: Float = 0f,
+    /** Vignette, -100 (darken corners) .. 100 (brighten corners). */
+    val vignette: Float = 0f,
+    /** Lightroom-style Point Color: shift one selected colour only. */
+    val pointColor: PointColor = PointColor.Neutral,
+    /** Zone-scoped adjustments (control point / linear / radial / brush). */
+    val local: LocalAdjustments = LocalAdjustments.Neutral
 ) {
     fun normalized(): EditAdjustments = copy(
         temperature = temperature.coerceIn(-TONE_RANGE, TONE_RANGE),
@@ -72,7 +82,12 @@ data class EditAdjustments(
         lensBlur = lensBlur.normalized(),
         portrait = portrait.normalized(),
         creativeFilter = CreativeFilter.fromId(creativeFilter).id,
-        filterStrength = filterStrength.coerceIn(0f, 100f)
+        filterStrength = filterStrength.coerceIn(0f, 100f),
+        denoise = denoise.coerceIn(0f, TONE_RANGE),
+        grain = grain.coerceIn(0f, TONE_RANGE),
+        vignette = vignette.coerceIn(-TONE_RANGE, TONE_RANGE),
+        pointColor = pointColor.normalized(),
+        local = local.normalized()
     )
 
     fun isNeutral(tolerance: Float = 0.005f): Boolean =
@@ -94,7 +109,12 @@ data class EditAdjustments(
             crop.isFull(tolerance) &&
             lensBlur.isOff(tolerance) &&
             portrait.isOff(tolerance) &&
-            (creativeFilter == CreativeFilter.NONE.id || filterStrength <= tolerance)
+            (creativeFilter == CreativeFilter.NONE.id || filterStrength <= tolerance) &&
+            denoise <= tolerance &&
+            grain <= tolerance &&
+            abs(vignette) <= tolerance &&
+            pointColor.isNeutral(tolerance) &&
+            local.isNeutral()
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("temperature", temperature.toDouble())
@@ -117,6 +137,11 @@ data class EditAdjustments(
         put("portrait", portrait.toJson())
         put("creativeFilter", creativeFilter)
         put("filterStrength", filterStrength.toDouble())
+        put("denoise", denoise.toDouble())
+        put("grain", grain.toDouble())
+        put("vignette", vignette.toDouble())
+        put("pointColor", pointColor.toJson())
+        put("local", local.toJson())
     }
 
     companion object {
@@ -147,7 +172,12 @@ data class EditAdjustments(
                 lensBlur = LensBlur.fromJson(json.optJSONObject("lensBlur")),
                 portrait = PortraitRetouch.fromJson(json.optJSONObject("portrait")),
                 creativeFilter = json.optString("creativeFilter", CreativeFilter.NONE.id),
-                filterStrength = json.optDouble("filterStrength", 100.0).toFloat()
+                filterStrength = json.optDouble("filterStrength", 100.0).toFloat(),
+                denoise = json.optDouble("denoise", 0.0).toFloat(),
+                grain = json.optDouble("grain", 0.0).toFloat(),
+                vignette = json.optDouble("vignette", 0.0).toFloat(),
+                pointColor = PointColor.fromJson(json.optJSONObject("pointColor")),
+                local = LocalAdjustments.fromJson(json.optJSONObject("local"))
             ).normalized()
         }
     }

@@ -40,9 +40,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.Preset
 import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.AutoEnhanceResult
 import com.fujikon.app.render.ImageStats
+import com.fujikon.app.render.PresetRecommendation
+import com.fujikon.app.render.PresetRecommender
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.InkElevated
 import com.fujikon.app.ui.theme.Outline
@@ -64,6 +67,9 @@ fun HistogramCard(
     bitmap: Bitmap?,
     currentAdjustments: EditAdjustments,
     onApplyAdjustments: (EditAdjustments) -> Unit,
+    /** Presets available for the offline, explainable recommendation. */
+    presets: List<Preset> = emptyList(),
+    onSelectPreset: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     width: Dp = 190.dp
 ) {
@@ -72,13 +78,22 @@ fun HistogramCard(
     var data by remember { mutableStateOf<ImageStats?>(null) }
     var optimised by remember { mutableStateOf<AutoEnhanceResult?>(null) }
     var appliedSummary by remember { mutableStateOf<String?>(null) }
+    var recommendations by remember { mutableStateOf<List<PresetRecommendation>>(emptyList()) }
     LaunchedEffect(bitmap) { appliedSummary = null }
+    // Offline preset recommendation: reuses the very same ImageStats scan,
+    // no model, no network, no extra photo decode.
+    LaunchedEffect(bitmap, presets) {
+        if (presets.isEmpty()) { recommendations = emptyList(); return@LaunchedEffect }
+        recommendations = withContext(Dispatchers.Default) {
+            AutoEnhance.analyse(bitmap)?.let { PresetRecommender.rank(it, presets) } ?: emptyList()
+        }
+    }
     // Both the pixel scan and the closed-loop solver are CPU work; keep them
     // off the main thread so the chart never stalls slider dragging.
     LaunchedEffect(bitmap, currentAdjustments) {
         val pair = withContext(Dispatchers.Default) {
             val stats = AutoEnhance.analyse(bitmap)
-            stats?.let { it to AutoEnhance.suggest(it, currentAdjustments) }
+            stats?.let { it to AutoEnhance.suggestZoned(bitmap, it, currentAdjustments) }
         }
         if (pair != null) {
             data = pair.first
@@ -174,6 +189,39 @@ fun HistogramCard(
             maxLines = 2,
             modifier = Modifier.testTag("auto_enhance_hint")
         )
+
+        // Honest label: the zoned pass uses an offline heuristic by default,
+        // so it must never be presented as an on-device AI model.
+        optimised?.let { res ->
+            if (res.zones.isNotEmpty()) {
+                Text(
+                    text = "分区：" + res.zones.joinToString("、") +
+                        if (res.providerLabel.isNotEmpty()) "\n" + res.providerLabel else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    maxLines = 2,
+                    modifier = Modifier.testTag("auto_enhance_zones")
+                )
+            }
+        }
+
+        if (recommendations.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("推荐预设（本机匹配）", style = MaterialTheme.typography.labelSmall, color = Amber)
+                recommendations.forEach { rec ->
+                    Text(
+                        text = "· ${rec.presetName} — ${rec.reason}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextPrimary,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectPreset(rec.presetId) }
+                            .testTag("preset_recommendation")
+                    )
+                }
+            }
+        }
 
         Box(
             modifier = Modifier
