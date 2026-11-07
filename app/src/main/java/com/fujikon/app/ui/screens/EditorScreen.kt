@@ -523,6 +523,11 @@ fun EditorScreen(
                 if (preset != null && rendered != null) {
                     HistogramCard(
                         bitmap = if (comparing) state.original ?: rendered else rendered,
+                        // The closed loop must verify against the unedited
+                        // original and the actual preset, so its measured
+                        // result matches what preview / export will show.
+                        sourceBitmap = state.original ?: rendered,
+                        basePreset = preset,
                         currentAdjustments = state.adjustments,
                         onApplyAdjustments = { viewModel.setAdjustments(it) },
                         presets = state.presets,

@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +47,7 @@ import com.fujikon.app.data.Preset
 import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.AutoEnhanceResult
 import com.fujikon.app.render.ImageStats
+import com.fujikon.app.render.OptimizationReport
 import com.fujikon.app.render.PresetRecommendation
 import com.fujikon.app.render.PresetRecommender
 import com.fujikon.app.ui.theme.Amber
@@ -54,19 +56,32 @@ import com.fujikon.app.ui.theme.Outline
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** One-line, explainable summary of what the closed loop actually measured. */
+private fun reportLine(r: OptimizationReport): String {
+    val rounds = if (r.iterations == 0) {
+        "原片已达标 · 无需调整"
+    } else {
+        "闭环 ${r.iterations} 轮" + if (r.converged) "达标" else "取最优"
+    }
+    return "$rounds · 高光 ${"%.1f".format(r.highlightClip * 100)}% / " +
+        "暗部 ${"%.1f".format(r.shadowClip * 100)}%"
+}
 
 /**
  * Lightroom-style live histogram overlaid on the preview.
  *
  * The card uses the same translucent gradient as the adjustments panel and is
  * always visible while a preview is rendered. Below the chart it shows the
- * problems actually measured in the pixels and a one-tap "一键优化" button,
- * powered by [AutoEnhance]'s closed-loop tone/colour/detail solver.
+ * problems actually measured in the pixels and a one-tap "一键优化" button.
  *
- * The zone description and the offline preset picks are grouped into a
- * collapsible panel: a small chevron toggles their visibility, and all of their
- * text is white (with a soft shadow) so it stays legible over bright photos.
+ * The button is a TRUE one-tap closed loop: on tap it renders candidate
+ * parameters on the original (downscaled), measures the real pixels, and keeps
+ * refining until 不过曝 / 不死黑 is met — see [AutoEnhance.optimize]. The
+ * zone description, the convergence report and the offline preset picks form
+ * one collapsible white-on-photo panel with a chevron toggle.
  */
 @Composable
 fun HistogramCard(
@@ -76,28 +91,38 @@ fun HistogramCard(
     /** Presets available for the offline, explainable recommendation. */
     presets: List<Preset> = emptyList(),
     onSelectPreset: (String) -> Unit = {},
+    /** Unedited original: the closed loop must verify against this, not the
+     *  already-graded preview, or repeated taps would drift. */
+    sourceBitmap: Bitmap? = null,
+    /** Current preset (incl. its tone/channel curves) used as render base. */
+    basePreset: Preset? = null,
     modifier: Modifier = Modifier,
     width: Dp = 190.dp
 ) {
-    // Keep the previous distribution while the next preview is being analysed,
-    // so the chart does not blink on every slider move.
     var data by remember { mutableStateOf<ImageStats?>(null) }
     var optimised by remember { mutableStateOf<AutoEnhanceResult?>(null) }
     var appliedSummary by remember { mutableStateOf<String?>(null) }
     var recommendations by remember { mutableStateOf<List<PresetRecommendation>>(emptyList()) }
-    /** Whether the zone description + preset picks panel is expanded. */
+    var report by remember { mutableStateOf<OptimizationReport?>(null) }
+    var optimizing by remember { mutableStateOf(false) }
+    /** Whether the zone description + report + preset picks panel is expanded. */
     var detailsExpanded by remember { mutableStateOf(true) }
-    LaunchedEffect(bitmap) { appliedSummary = null }
-    // Offline preset recommendation: reuses the very same ImageStats scan,
-    // no model, no network, no extra photo decode.
+    val scope = rememberCoroutineScope()
+
+    // Reset only when the PHOTO changes, not on every preview re-render, so the
+    // "已优化 · 闭环 N 轮达标" confirmation stays visible after applying.
+    LaunchedEffect(sourceBitmap) {
+        appliedSummary = null
+        report = null
+    }
     LaunchedEffect(bitmap, presets) {
         if (presets.isEmpty()) { recommendations = emptyList(); return@LaunchedEffect }
         recommendations = withContext(Dispatchers.Default) {
             AutoEnhance.analyse(bitmap)?.let { PresetRecommender.rank(it, presets) } ?: emptyList()
         }
     }
-    // Both the pixel scan and the closed-loop solver are CPU work; keep them
-    // off the main thread so the chart never stalls slider dragging.
+    // Fast single-pass preview hint only. The expensive render→verify loop is
+    // deliberately deferred to the button tap so slider dragging never stalls.
     LaunchedEffect(bitmap, currentAdjustments) {
         val pair = withContext(Dispatchers.Default) {
             val stats = AutoEnhance.analyse(bitmap)
@@ -110,9 +135,8 @@ fun HistogramCard(
     }
 
     val shape = RoundedCornerShape(16.dp)
-    // The toggle only makes sense when there is something to show / hide.
-    val hasDetails = optimised?.zones?.isNotEmpty() == true || recommendations.isNotEmpty()
-    // White text over a translucent card needs a soft shadow on bright photos.
+    val hasDetails = optimised?.zones?.isNotEmpty() == true ||
+        recommendations.isNotEmpty() || report != null
     val whiteOnPhoto = MaterialTheme.typography.labelSmall.copy(
         shadow = Shadow(Color.Black.copy(alpha = 0.55f), blurRadius = 3f)
     )
@@ -131,7 +155,6 @@ fun HistogramCard(
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Title row removed per request: no labels above chart
         Canvas(
             Modifier
                 .fillMaxWidth()
@@ -188,8 +211,6 @@ fun HistogramCard(
 
         Text(
             text = appliedSummary?.let { "已优化：$it" } ?: optimised?.let { res ->
-                // Keep the hint consistent with what the button will actually
-                // do: a well-balanced frame is never "建议优化" and then no-op.
                 if (!res.changed || res.findings.isEmpty()) {
                     "曝光均衡，色调自然，无需优化"
                 } else {
@@ -204,9 +225,7 @@ fun HistogramCard(
             modifier = Modifier.testTag("auto_enhance_hint")
         )
 
-        // Collapsible "zone description + offline preset picks" panel. The
-        // chevron row stays visible whenever there is content, so the details
-        // can always be hidden and shown again with a single tap.
+        // Collapsible panel: convergence report + zone description + presets.
         if (hasDetails) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(
@@ -238,8 +257,15 @@ fun HistogramCard(
                 }
 
                 if (detailsExpanded) {
-                    // Honest label: the zoned pass uses an offline heuristic by
-                    // default, so it must never be presented as an AI model.
+                    report?.let { r ->
+                        Text(
+                            text = reportLine(r),
+                            style = whiteOnPhoto,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("auto_enhance_report")
+                        )
+                    }
                     optimised?.let { res ->
                         if (res.zones.isNotEmpty()) {
                             Text(
@@ -252,7 +278,6 @@ fun HistogramCard(
                             )
                         }
                     }
-
                     if (recommendations.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
@@ -286,11 +311,26 @@ fun HistogramCard(
                 .clip(RoundedCornerShape(14.dp))
                 .background(Amber.copy(alpha = 0.16f))
                 .border(1.dp, Amber.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
-                .clickable(enabled = optimised != null) {
-                    val result = optimised
-                    if (result != null) {
-                        appliedSummary = result.summary
-                        onApplyAdjustments(result.adjustments)
+                .clickable(enabled = optimised != null && !optimizing) {
+                    optimised ?: return@clickable
+                    scope.launch {
+                        optimizing = true
+                        try {
+                            // TRUE one-tap: render → measure → refine on the
+                            // ORIGINAL until 不过曝 / 不死黑 is met.
+                            val result = withContext(Dispatchers.Default) {
+                                AutoEnhance.optimize(
+                                    source = sourceBitmap ?: bitmap,
+                                    basePreset = basePreset ?: Preset.none(),
+                                    current = currentAdjustments
+                                )
+                            }
+                            appliedSummary = result.summary
+                            report = result.report
+                            onApplyAdjustments(result.adjustments)
+                        } finally {
+                            optimizing = false
+                        }
                     }
                 }
                 .testTag("auto_enhance_button"),
@@ -305,7 +345,7 @@ fun HistogramCard(
                 )
                 Spacer(Modifier.width(5.dp))
                 Text(
-                    "一键优化",
+                    if (optimizing) "优化中…" else "一键优化",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = Amber

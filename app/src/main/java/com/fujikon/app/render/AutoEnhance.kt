@@ -2,6 +2,8 @@ package com.fujikon.app.render
 
 import android.graphics.Bitmap
 import com.fujikon.app.data.EditAdjustments
+import com.fujikon.app.data.EditCrop
+import com.fujikon.app.data.Preset
 import com.fujikon.app.data.HslAdjustments
 import com.fujikon.app.data.HslBand
 import com.fujikon.app.data.LocalAdjustments
@@ -107,7 +109,47 @@ data class AutoEnhanceResult(
     /** Zones touched by the zoned pass; empty for the plain global pass. */
     val zones: List<String> = emptyList(),
     /** Honest label of the segmentation provider used (may be heuristic). */
-    val providerLabel: String = ""
+    val providerLabel: String = "",
+    /** Closed-loop verification report; null for the plain single-pass solvers. */
+    val report: OptimizationReport? = null
+)
+
+/**
+ * The hard quality standard a "true one-tap" optimisation must converge to.
+ *
+ * 不过曝 / 不死黑 are measured from **real rendered pixels** (luma < 0.02 and
+ * luma > 0.98), not estimated from a parameter object. These are deliberately
+ * strict endpoints: a frame with 2% blown whites or 3% crushed blacks is not
+ * accepted, so the loop keeps refining its tone parameters until it clears.
+ */
+object OptimizationStandard {
+    const val MAX_HIGHLIGHT_CLIP = 0.020f
+    const val MAX_SHADOW_CLIP = 0.030f
+    /** Deliberately permissive: an intentionally dark frame is fine as long as
+     *  its blacks are not crushed. The loop lifts it toward mid-grey as a soft
+     *  goal, without forcing an aggressive exposure that would ruin the mood. */
+    const val MIN_MEAN = 0.28f
+    const val MAX_MEAN = 0.70f
+    const val MAX_SATURATION = 0.72f
+    /** Soft target for 通透感 (tonal separation), not a hard rejection gate. */
+    const val TARGET_SPREAD = 0.52f
+    const val MAX_ITERATIONS = 6
+}
+
+/** What the closed loop actually did and measured on the final render. */
+data class OptimizationReport(
+    /** Number of real render→measure→refine rounds executed (0 = short-circuit). */
+    val iterations: Int,
+    /** True when the final render satisfies every hard endpoint of the standard. */
+    val converged: Boolean,
+    val highlightClip: Float,
+    val shadowClip: Float,
+    val meanLuma: Float,
+    val spread: Float,
+    /** 0 = perfect; lower is better. Used to keep the best round. */
+    val defect: Float,
+    /** Per-round defect values — proof the loop measured and refined, in order. */
+    val trail: List<Float> = emptyList()
 )
 
 /**
@@ -882,5 +924,224 @@ object AutoEnhance {
             zones = zones,
             providerLabel = provider.label
         )
+    }
+
+    // --------------------------------------------------- closed-loop optimiser
+
+    /** Real render verification runs on a tiny copy (≈37k pixels) so a full
+     *  loop costs well under a second even on a mid-range phone. */
+    private const val PROBE_SIDE = 192
+
+    /**
+     * TRUE one-tap optimisation: iterate until the standard is met.
+     *
+     * The proven single-pass [suggestZoned] still supplies the whole recipe —
+     * master curve, 压高光提阴影, 青蓝绿配柔黄 triggered by colour evidence,
+     * 细节/柔光, and evidence-gated zone layers. What this adds is a **closed
+     * feedback loop over real rendered pixels**:
+     *
+     *   candidate → render on the ORIGINAL (downscaled) → analyse() → measure
+     *   blown whites / crushed blacks → correct ONLY tone parameters → repeat
+     *
+     * until the render clears "不过曝 / 不死黑", or the round budget is spent
+     * (in which case the best measured candidate is returned, never a guess).
+     *
+     * Guarantees kept from the regressions:
+     *  - Good AND already-safe frames short-circuit to exactly Neutral, with
+     *    zero renders (好照片精确不动).
+     *  - Colour / texture / filter / zone layers are NEVER touched by [refine],
+     *    so the four-step look cannot be overwritten by convergence.
+     *  - Absolute parameters recomputed from the ORIGINAL: repeated taps are
+     *    byte-identical (no runaway accumulation).
+     */
+    suspend fun optimize(
+        source: Bitmap?,
+        basePreset: Preset = Preset.none(),
+        current: EditAdjustments = EditAdjustments.Neutral,
+        provider: SegmentationProvider = HeuristicSegmentationProvider,
+        renderer: ImageRenderer = ImageRenderer()
+    ): AutoEnhanceResult {
+        if (source == null || source.isRecycled || source.width <= 0 || source.height <= 0) {
+            return AutoEnhanceResult(current, emptyList(), "无预览，无法优化", false)
+        }
+        val stats = analyse(source)
+            ?: return AutoEnhanceResult(current, emptyList(), "无法分析画面", false)
+
+        val seed = suggestZoned(source, stats, current, provider)
+
+        // Already good AND already compliant: no rendering at all, exact Neutral.
+        if (!seed.changed && meetsStandard(stats)) {
+            return seed.copy(report = reportOf(0, true, stats))
+        }
+
+        val probe = probeBitmap(source)
+        var candidate = seed.adjustments
+        var best = candidate
+        var bestDefect = Float.POSITIVE_INFINITY
+        var bestMeasured: ImageStats? = null
+        var iterations = 0
+        var converged = false
+        val trail = ArrayList<Float>(OptimizationStandard.MAX_ITERATIONS)
+
+        for (i in 0 until OptimizationStandard.MAX_ITERATIONS) {
+            iterations = i + 1
+            val rendered = renderer.render(
+                probe,
+                // Crop is composition, not tone: clearing it keeps the probe
+                // independent of rotation. The user's crop is preserved in the
+                // returned adjustments below.
+                basePreset.copy(adjustments = candidate.copy(crop = EditCrop.Full)),
+                forExport = false
+            )
+            val measured = analyse(rendered) ?: break
+            val d = defect(measured)
+            trail.add(d)
+
+            // Compliance wins over the soft score: never return a round that
+            // merely scored better while still clipping an endpoint.
+            if (meetsStandard(measured)) {
+                best = candidate
+                bestMeasured = measured
+                converged = true
+                break
+            }
+
+            val previousDefect = bestDefect
+            if (d < bestDefect) {
+                bestDefect = d
+                best = candidate
+                bestMeasured = measured
+            }
+            // A markedly worse round means we overshot; keep the best measured.
+            if (i >= 2 && d > previousDefect + 0.10f) break
+            if (i == OptimizationStandard.MAX_ITERATIONS - 1) break
+            candidate = refine(candidate, measured, i)
+        }
+
+        val report = reportOf(iterations, converged, bestMeasured, trail)
+        val loopTag = if (converged) "闭环${iterations}轮达标" else "闭环${iterations}轮取最优"
+        val summary = if (seed.summary.isBlank()) loopTag else seed.summary + " · " + loopTag
+        return AutoEnhanceResult(
+            adjustments = best,
+            findings = seed.findings,
+            summary = summary,
+            changed = best != current,
+            zones = seed.zones,
+            providerLabel = seed.providerLabel,
+            report = report
+        )
+    }
+
+    private fun probeBitmap(source: Bitmap): Bitmap {
+        val longest = max(source.width, source.height)
+        // Never upscale: enlarging a small frame would interpolate clipped
+        // pixels away and make the verification disagree with the real render.
+        if (longest <= PROBE_SIDE) return source
+        val scale = PROBE_SIDE.toFloat() / longest
+        return Bitmap.createScaledBitmap(
+            source,
+            (source.width * scale).toInt().coerceAtLeast(1),
+            (source.height * scale).toInt().coerceAtLeast(1),
+            true
+        )
+    }
+
+    /** Hard standard: 不过曝 / 不死黑, sane exposure and no colour blow-out. */
+    private fun meetsStandard(m: ImageStats): Boolean =
+        m.highlightClip <= OptimizationStandard.MAX_HIGHLIGHT_CLIP &&
+            m.shadowClip <= OptimizationStandard.MAX_SHADOW_CLIP &&
+            m.meanLuma >= OptimizationStandard.MIN_MEAN &&
+            m.meanLuma <= OptimizationStandard.MAX_MEAN &&
+            m.meanSaturation <= OptimizationStandard.MAX_SATURATION
+
+    /**
+     * Scalar defect for picking the best round. It counts ONLY hard-standard
+     * violations, so a compliant round scores exactly 0 and the report stays
+     * self-consistent. 通透感 (spread) is a soft goal handled by [refine]'s
+     * contrast nudge, never a rejection reason.
+     */
+    private fun defect(m: ImageStats): Float {
+        val hi = max(0f, m.highlightClip - OptimizationStandard.MAX_HIGHLIGHT_CLIP) / 0.05f
+        val lo = max(0f, m.shadowClip - OptimizationStandard.MAX_SHADOW_CLIP) / 0.06f
+        val mean = (max(0f, OptimizationStandard.MIN_MEAN - m.meanLuma) +
+            max(0f, m.meanLuma - OptimizationStandard.MAX_MEAN)) / 0.18f
+        val sat = max(0f, m.meanSaturation - OptimizationStandard.MAX_SATURATION) / 0.20f
+        return hi * 3f + lo * 2.5f + mean * 1.5f + sat * 0.5f
+    }
+
+    private fun reportOf(
+        iterations: Int,
+        converged: Boolean,
+        m: ImageStats?,
+        trail: List<Float> = emptyList()
+    ): OptimizationReport = OptimizationReport(
+        iterations = iterations,
+        converged = converged,
+        highlightClip = m?.highlightClip ?: 0f,
+        shadowClip = m?.shadowClip ?: 0f,
+        meanLuma = m?.meanLuma ?: 0f,
+        spread = m?.spread ?: 0f,
+        defect = m?.let { defect(it) } ?: 0f,
+        trail = trail
+    )
+
+    /**
+     * One corrective step. ONLY tone parameters move — colour (HSL,
+     * temperature, shadowTint), texture/clarity, filters and zone layers stay
+     * exactly as the recipe produced them. Step sizes decay each round so the
+     * loop converges instead of oscillating around the endpoint thresholds.
+     */
+    private fun refine(candidate: EditAdjustments, m: ImageStats, round: Int): EditAdjustments {
+        val decay = 1f / (1f + round * 0.7f)
+        var exposure = candidate.exposure
+        var contrast = candidate.contrast
+        var highlights = candidate.highlights
+        var shadows = candidate.shadows
+        var whites = candidate.whites
+        var blacks = candidate.blacks
+
+        val hiOver = m.highlightClip - OptimizationStandard.MAX_HIGHLIGHT_CLIP
+        val loOver = m.shadowClip - OptimizationStandard.MAX_SHADOW_CLIP
+
+        when {
+            hiOver > 0.002f && loOver > 0.002f -> {
+                // Both ends clipped: the tonal stretch is too aggressive.
+                val step = (min(hiOver, loOver) * 260f).coerceIn(2f, 14f) * decay
+                contrast = (contrast - step).coerceIn(-30f, 100f)
+                whites = (whites - step * 0.5f).coerceIn(-60f, 0f)
+                blacks = (blacks + step * 0.5f).coerceIn(0f, 60f)
+            }
+            hiOver > 0.002f -> {
+                val step = (hiOver * 300f).coerceIn(2f, 16f) * decay
+                whites = (whites - step).coerceIn(-60f, 0f)
+                highlights = (highlights - step * 0.6f).coerceIn(-80f, 0f)
+                exposure = (exposure - step * 0.012f).coerceIn(-2f, 2f)
+            }
+            loOver > 0.002f -> {
+                val step = (loOver * 240f).coerceIn(2f, 14f) * decay
+                blacks = (blacks + step).coerceIn(0f, 60f)
+                shadows = (shadows + step * 0.6f).coerceIn(0f, 80f)
+                exposure = (exposure + step * 0.010f).coerceIn(-2f, 2f)
+            }
+            else -> {
+                // Endpoints safe: fine-tune brightness and airy 通透感.
+                val meanErr = 0.47f - m.meanLuma
+                if (abs(meanErr) > 0.025f) {
+                    exposure = (exposure + meanErr * 1.1f * decay).coerceIn(-2f, 2f)
+                }
+                if (m.spread < OptimizationStandard.TARGET_SPREAD) {
+                    val step = (OptimizationStandard.TARGET_SPREAD - m.spread) * 34f * decay
+                    contrast = (contrast + step).coerceIn(0f, 45f)
+                }
+            }
+        }
+        return candidate.copy(
+            exposure = exposure,
+            contrast = contrast,
+            highlights = highlights,
+            shadows = shadows,
+            whites = whites,
+            blacks = blacks
+        ).normalized()
     }
 }
