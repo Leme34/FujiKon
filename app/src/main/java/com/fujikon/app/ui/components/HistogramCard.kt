@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -61,6 +63,10 @@ import kotlinx.coroutines.withContext
  * always visible while a preview is rendered. Below the chart it shows the
  * problems actually measured in the pixels and a one-tap "一键优化" button,
  * powered by [AutoEnhance]'s closed-loop tone/colour/detail solver.
+ *
+ * The zone description and the offline preset picks are grouped into a
+ * collapsible panel: a small chevron toggles their visibility, and all of their
+ * text is white (with a soft shadow) so it stays legible over bright photos.
  */
 @Composable
 fun HistogramCard(
@@ -79,6 +85,8 @@ fun HistogramCard(
     var optimised by remember { mutableStateOf<AutoEnhanceResult?>(null) }
     var appliedSummary by remember { mutableStateOf<String?>(null) }
     var recommendations by remember { mutableStateOf<List<PresetRecommendation>>(emptyList()) }
+    /** Whether the zone description + preset picks panel is expanded. */
+    var detailsExpanded by remember { mutableStateOf(true) }
     LaunchedEffect(bitmap) { appliedSummary = null }
     // Offline preset recommendation: reuses the very same ImageStats scan,
     // no model, no network, no extra photo decode.
@@ -102,6 +110,12 @@ fun HistogramCard(
     }
 
     val shape = RoundedCornerShape(16.dp)
+    // The toggle only makes sense when there is something to show / hide.
+    val hasDetails = optimised?.zones?.isNotEmpty() == true || recommendations.isNotEmpty()
+    // White text over a translucent card needs a soft shadow on bright photos.
+    val whiteOnPhoto = MaterialTheme.typography.labelSmall.copy(
+        shadow = Shadow(Color.Black.copy(alpha = 0.55f), blurRadius = 3f)
+    )
     Column(
         modifier = modifier
             .width(width)
@@ -190,35 +204,77 @@ fun HistogramCard(
             modifier = Modifier.testTag("auto_enhance_hint")
         )
 
-        // Honest label: the zoned pass uses an offline heuristic by default,
-        // so it must never be presented as an on-device AI model.
-        optimised?.let { res ->
-            if (res.zones.isNotEmpty()) {
-                Text(
-                    text = "分区：" + res.zones.joinToString("、") +
-                        if (res.providerLabel.isNotEmpty()) "\n" + res.providerLabel else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                    maxLines = 2,
-                    modifier = Modifier.testTag("auto_enhance_zones")
-                )
-            }
-        }
-
-        if (recommendations.isNotEmpty()) {
+        // Collapsible "zone description + offline preset picks" panel. The
+        // chevron row stays visible whenever there is content, so the details
+        // can always be hidden and shown again with a single tap.
+        if (hasDetails) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("推荐预设（本机匹配）", style = MaterialTheme.typography.labelSmall, color = Amber)
-                recommendations.forEach { rec ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { detailsExpanded = !detailsExpanded }
+                        .padding(vertical = 2.dp)
+                        .testTag("auto_enhance_details_toggle"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
                     Text(
-                        text = "· ${rec.presetName} — ${rec.reason}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextPrimary,
-                        maxLines = 1,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelectPreset(rec.presetId) }
-                            .testTag("preset_recommendation")
+                        text = "分区与推荐",
+                        style = whiteOnPhoto,
+                        color = Color.White,
+                        modifier = Modifier.testTag("auto_enhance_details_label")
                     )
+                    Icon(
+                        imageVector = if (detailsExpanded) {
+                            Icons.Filled.ExpandLess
+                        } else {
+                            Icons.Filled.ExpandMore
+                        },
+                        contentDescription = if (detailsExpanded) "隐藏分区与推荐" else "显示分区与推荐",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                if (detailsExpanded) {
+                    // Honest label: the zoned pass uses an offline heuristic by
+                    // default, so it must never be presented as an AI model.
+                    optimised?.let { res ->
+                        if (res.zones.isNotEmpty()) {
+                            Text(
+                                text = "分区：" + res.zones.joinToString("、") +
+                                    if (res.providerLabel.isNotEmpty()) "\n" + res.providerLabel else "",
+                                style = whiteOnPhoto,
+                                color = Color.White,
+                                maxLines = 2,
+                                modifier = Modifier.testTag("auto_enhance_zones")
+                            )
+                        }
+                    }
+
+                    if (recommendations.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "推荐预设（本机匹配）",
+                                style = whiteOnPhoto,
+                                color = Color.White,
+                                modifier = Modifier.testTag("preset_recommendation_header")
+                            )
+                            recommendations.forEach { rec ->
+                                Text(
+                                    text = "· ${rec.presetName} — ${rec.reason}",
+                                    style = whiteOnPhoto,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSelectPreset(rec.presetId) }
+                                        .testTag("preset_recommendation")
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
