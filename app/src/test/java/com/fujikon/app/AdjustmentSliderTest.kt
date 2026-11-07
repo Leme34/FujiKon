@@ -2,6 +2,7 @@ package com.fujikon.app
 
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -16,6 +17,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.ui.components.AdjustmentSlider
+import com.fujikon.app.ui.components.stepValue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -43,7 +45,7 @@ class AdjustmentSliderTest {
                 step = 0.1f,
                 onValueChange = { value = it },
                 onValueChangeFinished = { },
-                modifier = Modifier.size(240.dp, 48.dp).testTag("exposure")
+                modifier = Modifier.size(300.dp, 72.dp).testTag("exposure")
             )
         }
 
@@ -59,6 +61,37 @@ class AdjustmentSliderTest {
     }
 
     @Test
+    fun draggingCommitsExactlyOnceOnRelease() {
+        var value by mutableStateOf(0f)
+        var changes = 0
+        var commits = 0
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "曝光度",
+                value = value,
+                valueRange = -5f..5f,
+                step = 0.1f,
+                onValueChange = { value = it; changes++ },
+                onValueChangeFinished = { commits++ },
+                modifier = Modifier.size(300.dp, 72.dp).testTag("release")
+            )
+        }
+
+        rule.onNodeWithTag("release").performTouchInput {
+            down(center)
+            moveTo(center + Offset(30f, 0f))
+            moveTo(center + Offset(60f, 0f))
+            moveTo(center + Offset(90f, 0f))
+            up()
+        }
+        rule.waitForIdle()
+
+        assertTrue("a drag should publish several intermediate values", changes >= 2)
+        assertEquals("the render/commit must happen once, on release", 1, commits)
+    }
+
+    @Test
     fun verticalDragDoesNotChangeValue() {
         var value by mutableStateOf(0f)
 
@@ -69,7 +102,7 @@ class AdjustmentSliderTest {
                 valueRange = -100f..100f,
                 onValueChange = { value = it },
                 onValueChangeFinished = { },
-                modifier = Modifier.size(240.dp, 48.dp).testTag("vertical")
+                modifier = Modifier.size(300.dp, 72.dp).testTag("vertical")
             )
         }
 
@@ -95,7 +128,7 @@ class AdjustmentSliderTest {
                 valueRange = -100f..100f,
                 onValueChange = { value = it },
                 onValueChangeFinished = { },
-                modifier = Modifier.size(240.dp, 48.dp).testTag("diagonal")
+                modifier = Modifier.size(300.dp, 72.dp).testTag("diagonal")
             )
         }
 
@@ -111,7 +144,7 @@ class AdjustmentSliderTest {
     }
 
     @Test
-    fun singleTapDoesNotChangeValue() {
+    fun singleTapOnTrackDoesNotChangeValue() {
         var value by mutableStateOf(0f)
 
         rule.setContent {
@@ -121,17 +154,17 @@ class AdjustmentSliderTest {
                 valueRange = -100f..100f,
                 onValueChange = { value = it },
                 onValueChangeFinished = { },
-                modifier = Modifier.size(240.dp, 48.dp).testTag("tap")
+                modifier = Modifier.size(300.dp, 72.dp).testTag("tap")
             )
         }
 
         rule.onNodeWithTag("tap").performTouchInput {
-            down(center + Offset(90f, 0f))
+            down(center)
             up()
         }
         rule.waitForIdle()
 
-        assertEquals("a stray tap must not edit the slider", 0f, value, 0.001f)
+        assertEquals("a stray tap on the track must not edit the slider", 0f, value, 0.001f)
     }
 
     @Test
@@ -150,7 +183,7 @@ class AdjustmentSliderTest {
                     resets++
                     value = 0f
                 },
-                modifier = Modifier.size(240.dp, 48.dp).testTag("contrast")
+                modifier = Modifier.size(300.dp, 72.dp).testTag("contrast")
             )
         }
 
@@ -159,5 +192,90 @@ class AdjustmentSliderTest {
 
         assertEquals(1, resets)
         assertEquals(0f, value, 0.001f)
+    }
+
+    @Test
+    fun plusButtonNudgesValueForward() {
+        var value by mutableStateOf(0f)
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "曝光度",
+                value = value,
+                valueRange = -5f..5f,
+                step = 0.1f,
+                onValueChange = { value = it },
+                onValueChangeFinished = { },
+                modifier = Modifier.size(300.dp, 72.dp)
+            )
+        }
+
+        rule.onNodeWithTag("adjust_step_plus_曝光度").performTouchInput {
+            down(center)
+            up()
+        }
+        rule.waitForIdle()
+
+        assertTrue("the + button must raise the value", value > 0f)
+    }
+
+    @Test
+    fun minusButtonNudgesValueBackward() {
+        var value by mutableStateOf(0f)
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "高光",
+                value = value,
+                valueRange = -100f..100f,
+                onValueChange = { value = it },
+                onValueChangeFinished = { },
+                modifier = Modifier.size(300.dp, 72.dp)
+            )
+        }
+
+        rule.onNodeWithTag("adjust_step_minus_高光").performTouchInput {
+            down(center)
+            up()
+        }
+        rule.waitForIdle()
+
+        assertTrue("the - button must lower the value", value < 0f)
+    }
+
+    @Test
+    fun plusButtonNeverExceedsRangeEnd() {
+        var value by mutableStateOf(5f)
+        var commits by mutableIntStateOf(0)
+
+        rule.setContent {
+            AdjustmentSlider(
+                label = "曝光度",
+                value = value,
+                valueRange = -5f..5f,
+                step = 0.1f,
+                onValueChange = { value = it },
+                onValueChangeFinished = { commits++ },
+                modifier = Modifier.size(300.dp, 72.dp)
+            )
+        }
+
+        rule.onNodeWithTag("adjust_step_plus_曝光度").performTouchInput {
+            down(center)
+            up()
+        }
+        rule.waitForIdle()
+
+        assertEquals("a nudge at the upper bound must clamp", 5f, value, 0.0001f)
+    }
+
+    @Test
+    fun stepValueAdvancesOneStepAndClamps() {
+        assertEquals(0.1f, stepValue(0f, 1, -5f..5f, 0.1f), 0.0001f)
+        assertEquals(-0.1f, stepValue(0f, -1, -5f..5f, 0.1f), 0.0001f)
+        assertEquals(5f, stepValue(5f, 1, -5f..5f, 0.1f), 0.0001f)
+        assertEquals(-5f, stepValue(-5f, -1, -5f..5f, 0.1f), 0.0001f)
+        // 0..100 style sliders must not go below zero.
+        assertEquals(0f, stepValue(0f, -1, 0f..100f, 1f), 0.0001f)
     }
 }

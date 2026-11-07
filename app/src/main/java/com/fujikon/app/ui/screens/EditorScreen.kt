@@ -738,7 +738,8 @@ fun EditorScreen(
                     }
                 }
             },
-            onDismiss = { if (!savingAdjustments) showAdjustments = false }
+            onDismiss = { if (!savingAdjustments) showAdjustments = false },
+            sourceBitmap = state.original ?: state.rendered
         )
     }
 

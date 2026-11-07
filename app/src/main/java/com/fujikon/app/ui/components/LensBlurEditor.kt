@@ -1,7 +1,6 @@
 package com.fujikon.app.ui.components
 
 import android.graphics.Bitmap
-import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -28,7 +27,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -74,19 +72,15 @@ fun LensBlurEditorOverlay(
 ) {
     val scope = rememberCoroutineScope()
     var draft by remember { mutableStateOf(initial.normalized()) }
-    var lastPreviewAt by remember { mutableLongStateOf(0L) }
 
     /**
-     * Throttles live previews so dragging a slider or the focus point does not
-     * queue a render for every pixel of movement.
+     * Slider and focus drags only update the local draft. A render is emitted
+     * once when the interaction finishes (force = true), matching the main
+     * adjustments sheet and avoiding frame-by-frame stutter.
      */
     fun publish(next: LensBlur, force: Boolean = false) {
         draft = next
-        val now = SystemClock.elapsedRealtime()
-        if (force || now - lastPreviewAt >= PREVIEW_INTERVAL_MS) {
-            lastPreviewAt = now
-            onPreview(next)
-        }
+        if (force) onPreview(next)
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
@@ -339,4 +333,3 @@ private fun fitFrame(
     )
 }
 
-private const val PREVIEW_INTERVAL_MS = 120L

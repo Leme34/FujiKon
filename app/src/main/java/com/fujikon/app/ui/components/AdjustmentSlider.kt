@@ -1,14 +1,19 @@
 package com.fujikon.app.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -23,8 +29,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -37,14 +43,18 @@ import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Outline
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
  * A compact Lightroom-style slider with a centre-zero track.
  *
- * Dragging publishes changes continuously. Double-tapping anywhere on the
- * slider calls [onReset], which the editor uses to return that control to 0.
+ * Dragging only updates the value; the host sheet decides when to render (it
+ * now renders once on release, not on every move). Double-tapping anywhere on
+ * the track calls [onReset]. The `-` / `+` buttons on either side nudge the
+ * value by exactly one [step]; a tap nudges once, a long press repeats the
+ * nudge at an accelerating rate until the finger is lifted.
  */
 @Composable
 fun AdjustmentSlider(
@@ -91,143 +101,283 @@ fun AdjustmentSlider(
                 modifier = Modifier.weight(1f)
             )
         }
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(28.dp)
-                .semantics(mergeDescendants = true) {
-                    contentDescription = label
-                    stateDescription = formattedValue
-                    progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange)
-                    setProgress { target ->
-                        currentOnChange(snap(target, valueRange, safeStep))
-                        currentOnFinished()
-                        true
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StepAdjustButton(
+                label = label,
+                sign = -1,
+                rangeStart = valueRange.start,
+                rangeEnd = valueRange.endInclusive,
+                safeStep = safeStep,
+                enabled = enabled,
+                currentValue = { currentValue },
+                onChange = { currentOnChange(it) },
+                onFinished = { currentOnFinished() }
+            )
+            Canvas(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = label
+                        stateDescription = formattedValue
+                        progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange)
+                        setProgress { target ->
+                            currentOnChange(snap(target, valueRange, safeStep))
+                            currentOnFinished()
+                            true
+                        }
                     }
-                }
-                .pointerInput(enabled, valueRange, safeStep) {
-                    if (!enabled) return@pointerInput
-                    var lastTapTime = 0L
-                    var lastTapX = 0f
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val width = size.width
-                        val downX = down.position.x
-                        var dragging = false
-                        var verticalGesture = false
-                        var lastX = downX
-                        var upChange: PointerInputChange? = null
+                    .pointerInput(enabled, valueRange, safeStep) {
+                        if (!enabled) return@pointerInput
+                        var lastTapTime = 0L
+                        var lastTapX = 0f
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val width = size.width
+                            val downX = down.position.x
+                            var dragging = false
+                            var verticalGesture = false
+                            var lastX = downX
+                            var upChange: PointerInputChange? = null
 
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id }
-                            if (change == null) break
-                            if (change.changedToUpIgnoreConsumed()) {
-                                upChange = change
-                                break
-                            }
-                            if (!dragging && !verticalGesture) {
-                                // Only claim the gesture once it is clearly
-                                // horizontal. A diagonal swipe (common when
-                                // scrolling the sheet) must never edit a
-                                // slider, so horizontal movement has to
-                                // dominate by a wide margin.
-                                val dx = abs(change.position.x - downX)
-                                val dy = abs(change.position.y - down.position.y)
-                                if (dx > viewConfiguration.touchSlop && dx > dy * 2f) {
-                                    dragging = true
-                                } else if (dy > viewConfiguration.touchSlop) {
-                                    verticalGesture = true
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null) break
+                                if (change.changedToUpIgnoreConsumed()) {
+                                    upChange = change
+                                    break
+                                }
+                                if (!dragging && !verticalGesture) {
+                                    // Only claim the gesture once it is clearly
+                                    // horizontal. A diagonal swipe (common when
+                                    // scrolling the sheet) must never edit a
+                                    // slider, so horizontal movement has to
+                                    // dominate by a wide margin.
+                                    val dx = abs(change.position.x - downX)
+                                    val dy = abs(change.position.y - down.position.y)
+                                    if (dx > viewConfiguration.touchSlop && dx > dy * 2f) {
+                                        dragging = true
+                                    } else if (dy > viewConfiguration.touchSlop) {
+                                        verticalGesture = true
+                                    }
+                                }
+                                if (dragging) {
+                                    change.consume()
+                                    lastX = change.position.x
+                                    currentOnChange(
+                                        valueAt(lastX, width, valueRange, safeStep)
+                                    )
                                 }
                             }
+
+                            if (upChange == null) {
+                                lastTapTime = 0L
+                                return@awaitEachGesture
+                            }
                             if (dragging) {
-                                change.consume()
-                                lastX = change.position.x
-                                currentOnChange(
-                                    valueAt(lastX, width, valueRange, safeStep)
-                                )
+                                currentOnChange(valueAt(lastX, width, valueRange, safeStep))
+                                currentOnFinished()
+                                lastTapTime = 0L
+                                return@awaitEachGesture
+                            }
+                            if (verticalGesture) {
+                                lastTapTime = 0L
+                                return@awaitEachGesture
+                            }
+
+                            val tapTime = upChange.uptimeMillis
+                            val isDoubleTap = lastTapTime != 0L &&
+                                tapTime - lastTapTime in 0..viewConfiguration.doubleTapTimeoutMillis &&
+                                abs(downX - lastTapX) <= tapThresholdPx
+                            if (isDoubleTap) {
+                                currentOnReset()
+                                lastTapTime = 0L
+                            } else {
+                                // A plain tap — or a touch that turned out to be
+                                // part of a scroll — must not move the value; only
+                                // a deliberate horizontal drag (or a double tap)
+                                // may edit a slider.
+                                lastTapTime = tapTime
+                                lastTapX = downX
                             }
                         }
-
-                        if (upChange == null) {
-                            lastTapTime = 0L
-                            return@awaitEachGesture
-                        }
-                        if (dragging) {
-                            currentOnChange(valueAt(lastX, width, valueRange, safeStep))
-                            currentOnFinished()
-                            lastTapTime = 0L
-                            return@awaitEachGesture
-                        }
-                        if (verticalGesture) {
-                            lastTapTime = 0L
-                            return@awaitEachGesture
-                        }
-
-                        val tapTime = upChange.uptimeMillis
-                        val isDoubleTap = lastTapTime != 0L &&
-                            tapTime - lastTapTime in 0..viewConfiguration.doubleTapTimeoutMillis &&
-                            abs(downX - lastTapX) <= tapThresholdPx
-                        if (isDoubleTap) {
-                            currentOnReset()
-                            lastTapTime = 0L
-                        } else {
-                            // A plain tap — or a touch that turned out to be
-                            // part of a scroll — must not move the value; only
-                            // a deliberate horizontal drag (or a double tap)
-                            // may edit a slider.
-                            lastTapTime = tapTime
-                            lastTapX = downX
-                        }
                     }
-                }
-        ) {
-            val trackStart = 8.dp.toPx()
-            val trackEnd = size.width - 8.dp.toPx()
-            val trackLength = (trackEnd - trackStart).coerceAtLeast(1f)
-            val fraction = ((currentValue - valueRange.start) /
-                (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
-            val valueX = trackStart + trackLength * fraction
-            val zeroX = if (fillFromStart) trackStart else trackStart + trackLength * 0.5f
-            val centerY = size.height * 0.5f
+            ) {
+                val trackStart = 8.dp.toPx()
+                val trackEnd = size.width - 8.dp.toPx()
+                val trackLength = (trackEnd - trackStart).coerceAtLeast(1f)
+                val fraction = ((currentValue - valueRange.start) /
+                    (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+                val valueX = trackStart + trackLength * fraction
+                val zeroX = if (fillFromStart) trackStart else trackStart + trackLength * 0.5f
+                val centerY = size.height * 0.5f
 
-            drawLine(
-                color = Outline.copy(alpha = 0.9f),
-                start = Offset(trackStart, centerY),
-                end = Offset(trackEnd, centerY),
-                strokeWidth = 2.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            if (!fillFromStart) {
                 drawLine(
-                    color = Color.White.copy(alpha = 0.26f),
-                    start = Offset(zeroX, centerY - 5.dp.toPx()),
-                    end = Offset(zeroX, centerY + 5.dp.toPx()),
-                    strokeWidth = 1.dp.toPx(),
+                    color = Outline.copy(alpha = 0.9f),
+                    start = Offset(trackStart, centerY),
+                    end = Offset(trackEnd, centerY),
+                    strokeWidth = 2.dp.toPx(),
                     cap = StrokeCap.Round
                 )
-            }
-            if (modified) {
-                drawLine(
-                    color = Amber.copy(alpha = 0.82f),
-                    start = Offset(zeroX, centerY),
-                    end = Offset(valueX, centerY),
-                    strokeWidth = 3.dp.toPx(),
-                    cap = StrokeCap.Round
+                if (!fillFromStart) {
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.26f),
+                        start = Offset(zeroX, centerY - 5.dp.toPx()),
+                        end = Offset(zeroX, centerY + 5.dp.toPx()),
+                        strokeWidth = 1.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                }
+                if (modified) {
+                    drawLine(
+                        color = Amber.copy(alpha = 0.82f),
+                        start = Offset(zeroX, centerY),
+                        end = Offset(valueX, centerY),
+                        strokeWidth = 3.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                }
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.38f),
+                    radius = 9.dp.toPx(),
+                    center = Offset(valueX, centerY)
+                )
+                drawCircle(
+                    color = if (modified) Amber else Color.White.copy(alpha = 0.88f),
+                    radius = 6.dp.toPx(),
+                    center = Offset(valueX, centerY)
                 )
             }
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.38f),
-                radius = 9.dp.toPx(),
-                center = Offset(valueX, centerY)
-            )
-            drawCircle(
-                color = if (modified) Amber else Color.White.copy(alpha = 0.88f),
-                radius = 6.dp.toPx(),
-                center = Offset(valueX, centerY)
+            StepAdjustButton(
+                label = label,
+                sign = 1,
+                rangeStart = valueRange.start,
+                rangeEnd = valueRange.endInclusive,
+                safeStep = safeStep,
+                enabled = enabled,
+                currentValue = { currentValue },
+                onChange = { currentOnChange(it) },
+                onFinished = { currentOnFinished() }
             )
         }
     }
+}
+
+/**
+ * The `-` / `+` nudge button beside each slider.
+ *
+ * A short tap advances exactly one step and commits once. Holding the button
+ * first advances one step, then repeats at an accelerating cadence; only one
+ * commit is emitted when the finger is finally lifted, so a long press still
+ * costs a single render.
+ */
+@Composable
+private fun StepAdjustButton(
+    label: String,
+    sign: Int,
+    rangeStart: Float,
+    rangeEnd: Float,
+    safeStep: Float,
+    enabled: Boolean,
+    currentValue: () -> Float,
+    onChange: (Float) -> Unit,
+    onFinished: () -> Unit
+) {
+    val latestValue by rememberUpdatedState(currentValue)
+    val latestOnChange by rememberUpdatedState(onChange)
+    val latestOnFinished by rememberUpdatedState(onFinished)
+    val tag = "adjust_step_${if (sign < 0) "minus" else "plus"}_$label"
+    val shape = RoundedCornerShape(9.dp)
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(width = 32.dp, height = 36.dp)
+            .clip(shape)
+            .background(Color.White.copy(alpha = if (enabled) 0.10f else 0.04f))
+            .border(1.dp, Color.White.copy(alpha = 0.16f), shape)
+            .testTag(tag)
+            .semantics {
+                contentDescription = "$label ${if (sign < 0) "减小" else "增大"}一个步长"
+            }
+            .pointerInput(sign, rangeStart, rangeEnd, safeStep, enabled) {
+                if (!enabled) return@pointerInput
+                val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+
+                    // A local accumulator keeps the cadence stable while the
+                    // host state recomposes underneath the running gesture.
+                    var local = snap(latestValue(), rangeStart..rangeEnd, safeStep)
+                    var moved = false
+                    fun advance(): Boolean {
+                        val next = stepValue(local, sign, rangeStart..rangeEnd, safeStep)
+                        if (abs(next - local) < safeStep * 0.01f) return false
+                        local = next
+                        moved = true
+                        latestOnChange(next)
+                        return true
+                    }
+
+                    val releasedEarly = withTimeoutOrNull(longPressTimeout) {
+                        var up = false
+                        while (!up) {
+                            val event = awaitPointerEvent()
+                            // Consume moves so the surrounding scrollable sheet
+                            // cannot steal the gesture while the button is held.
+                            event.changes.forEach { if (it.pressed) it.consume() }
+                            up = event.changes.none { it.pressed }
+                        }
+                        true
+                    } == true
+
+                    if (releasedEarly) {
+                        advance()
+                        if (moved) latestOnFinished()
+                    } else {
+                        // Long press: one immediate step, then repeat until up.
+                        if (advance()) {
+                            var interval = 110L
+                            while (true) {
+                                val event = withTimeoutOrNull(interval) { awaitPointerEvent() }
+                                if (event == null) {
+                                    if (!advance()) break
+                                    interval = (interval - 14L).coerceAtLeast(38L)
+                                } else {
+                                    event.changes.forEach { if (it.pressed) it.consume() }
+                                    if (event.changes.none { it.pressed }) break
+                                }
+                            }
+                        }
+                        if (moved) latestOnFinished()
+                    }
+                }
+            }
+    ) {
+        Text(
+            text = if (sign < 0) "−" else "+",
+            style = MaterialTheme.typography.titleMedium,
+            color = if (enabled) TextPrimary else TextSecondary.copy(alpha = 0.5f),
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+/**
+ * One nudge of a `-` / `+` button: advance a single [step] in [sign] direction
+ * and clamp to [range]. Kept as a pure function so the nudge contract is unit
+ * testable without driving a Compose gesture.
+ */
+fun stepValue(
+    current: Float,
+    sign: Int,
+    range: ClosedFloatingPointRange<Float>,
+    step: Float
+): Float {
+    val safe = step.coerceAtLeast(0.001f)
+    return snap(current + sign * safe, range, safe)
 }
 
 fun formatSliderValue(value: Float, step: Float = 1f): String {

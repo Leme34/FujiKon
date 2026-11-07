@@ -1,6 +1,6 @@
 package com.fujikon.app.ui.components
 
-import android.os.SystemClock
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
@@ -34,12 +34,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,8 +56,6 @@ import com.fujikon.app.ui.theme.InkElevated
 import com.fujikon.app.ui.theme.Outline
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
-
-private const val AdjustmentPreviewIntervalMs = 90L
 
 private data class AdjustmentSpec(
     val label: String,
@@ -119,8 +114,9 @@ private val AdjustmentGroups = listOf(
 /**
  * Lightroom-style global adjustment sheet.
  *
- * Changes are rendered live at a throttled rate while a slider is moving. The
- * sheet stays highly translucent so the photo remains visible underneath.
+ * Slider drags only mutate a local draft; the photo is re-rendered exactly
+ * once when the gesture is released. The sheet stays highly translucent so the
+ * photo remains visible underneath.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -138,7 +134,9 @@ fun AdjustmentsSheet(
     /** "全部归零" also drops the red / green / blue curves from the curve sheet. */
     onClearAllCurves: () -> Unit,
     onSave: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** Unedited source used by the point-colour picker and local-mask canvas. */
+    sourceBitmap: Bitmap? = null
 ) {
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true,
@@ -148,94 +146,49 @@ fun AdjustmentsSheet(
         confirmValueChange = { it != SheetValue.Hidden }
     )
     val sheetHeight = (LocalConfiguration.current.screenHeightDp * 0.56f).dp
-    var draft by remember { mutableStateOf(initialAdjustments.normalized()) }
-    var curveDraft by remember { mutableStateOf(initialToneCurve.normalizedPoints) }
+    // Explicit MutableState handles: the release callback must read the very
+    // latest draft even when no recomposition has happened since the last drag
+    // event of a gesture.
+    val draftState = remember { mutableStateOf(initialAdjustments.normalized()) }
+    var draft by draftState
+    val curveState = remember { mutableStateOf(initialToneCurve.normalizedPoints) }
+    var curveDraft by curveState
     var curveDirty by remember { mutableStateOf(false) }
     var expandedGroups by remember {
         mutableStateOf(
-            AdjustmentGroups.map { it.title }.toSet() + setOf("人像", "HSL", "影调", "滤镜", "点颜色", "局部")
+            // Advanced colour/mask sections start collapsed so the sheet stays
+            // navigable; their headers state what they do.
+            AdjustmentGroups.map { it.title }.toSet() + setOf("人像", "HSL", "影调", "滤镜")
         )
     }
     var showSaveDialog by remember { mutableStateOf(false) }
     var draftName by remember { mutableStateOf("") }
-    var lastPreviewAt by remember { mutableLongStateOf(0L) }
-    var livePreviewPending by remember { mutableStateOf(false) }
-    var pendingField by remember { mutableStateOf<String?>(null) }
-    var lastCurvePreviewAt by remember { mutableLongStateOf(0L) }
-    var curvePreviewPending by remember { mutableStateOf(false) }
-    var curvePendingField by remember { mutableStateOf("影调") }
-    val latestDraft by rememberUpdatedState(draft)
-    val latestCurveDraft by rememberUpdatedState(curveDraft)
-    val latestRendering by rememberUpdatedState(rendering)
-    val latestPendingField by rememberUpdatedState(pendingField)
 
-    fun previewNow(field: String? = pendingField) {
-        livePreviewPending = false
-        lastPreviewAt = SystemClock.elapsedRealtime()
-        onPreview(draft, field)
+    /**
+     * Dragging a slider only mutates the local draft. The expensive full-frame
+     * render is emitted exactly once, when the gesture finishes (or a nudge
+     * button is released), which removes the frame-by-frame stutter.
+     */
+    fun previewNow(field: String? = null) {
+        onPreview(draftState.value, field)
     }
 
-    fun previewDuringDrag(field: String?) {
-        pendingField = field
-        if (latestRendering) {
-            livePreviewPending = true
-            return
-        }
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastPreviewAt < AdjustmentPreviewIntervalMs) return
-        lastPreviewAt = now
-        onPreview(draft, field)
-    }
-
-    fun previewCurveNow(field: String = "影调") {
+    fun previewCurveNow() {
         curveDirty = true
-        curvePreviewPending = false
-        curvePendingField = field
-        lastCurvePreviewAt = SystemClock.elapsedRealtime()
-        onToneCurvePreview(ToneCurve(curveDraft))
-    }
-
-    fun previewCurveDuringDrag(field: String = "影调") {
-        curveDirty = true
-        curvePendingField = field
-        if (latestRendering) {
-            curvePreviewPending = true
-            return
-        }
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastCurvePreviewAt < AdjustmentPreviewIntervalMs) return
-        lastCurvePreviewAt = now
-        onToneCurvePreview(ToneCurve(curveDraft))
+        onToneCurvePreview(ToneCurve(curveState.value))
     }
 
     fun commitAndDismiss() {
         if (curveDirty) {
-            onToneCurvePreview(ToneCurve(curveDraft))
+            onToneCurvePreview(ToneCurve(curveState.value))
         }
-        onPreview(draft, null)
+        onPreview(draftState.value, null)
         onDismiss()
-    }
-
-    // Publish the latest values after a render finishes so a fast drag never
-    // leaves the photo showing a stale intermediate value.
-    LaunchedEffect(rendering) {
-        if (!rendering) {
-            if (livePreviewPending) {
-                livePreviewPending = false
-                lastPreviewAt = SystemClock.elapsedRealtime()
-                onPreview(latestDraft, latestPendingField)
-            }
-            if (curvePreviewPending) {
-                curvePreviewPending = false
-                lastCurvePreviewAt = SystemClock.elapsedRealtime()
-                onToneCurvePreview(ToneCurve(latestCurveDraft))
-            }
-        }
     }
 
     fun updateDraft(field: String?, update: (EditAdjustments) -> EditAdjustments) {
         draft = update(draft).normalized()
-        previewDuringDrag(field)
+        // Intentionally no preview: the host renders once in onValueChangeFinished.
     }
 
     fun toggleGroup(title: String) {
@@ -286,7 +239,7 @@ fun AdjustmentsSheet(
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        "固定半屏 · 人像 / HSL / 影调 / 滤镜 · 双击滑块归零",
+                        "松手后渲染 · ± 微调（长按连调）· 双击滑块归零",
                         style = MaterialTheme.typography.bodySmall.copy(
                             shadow = Shadow(Color.Black.copy(alpha = 0.72f), blurRadius = 4f)
                         ),
@@ -330,7 +283,6 @@ fun AdjustmentsSheet(
                         draft = EditAdjustments.Neutral
                         curveDraft = presetToneCurve.normalizedPoints
                         curveDirty = false
-                        curvePreviewPending = false
                         onClearAllCurves()
                         previewNow(null)
                     },
@@ -425,12 +377,13 @@ fun AdjustmentsSheet(
                         curveDraft = points
                         curveDirty = true
                     },
-                    onDrag = { previewCurveDuringDrag("影调") },
-                    onFinished = { previewCurveNow("影调") },
+                    // Curve points redraw locally while dragging; the photo is
+                    // rendered once on release, matching the sliders.
+                    onDrag = { },
+                    onFinished = { previewCurveNow() },
                     onReset = {
                         curveDraft = presetToneCurve.normalizedPoints
                         curveDirty = false
-                        curvePreviewPending = false
                         onClearToneCurve()
                     },
                     enabled = !saving
@@ -444,7 +397,8 @@ fun AdjustmentsSheet(
                         updateDraft(field) { it.copy(pointColor = pointColor) }
                     },
                     onFinished = { field -> previewNow(field) },
-                    enabled = !saving
+                    enabled = !saving,
+                    sourceBitmap = sourceBitmap
                 )
 
                 LocalAdjustmentSection(
@@ -455,7 +409,8 @@ fun AdjustmentsSheet(
                         updateDraft(field) { it.copy(local = localAdjustments) }
                     },
                     onFinished = { field -> previewNow(field) },
-                    enabled = !saving
+                    enabled = !saving,
+                    sourceBitmap = sourceBitmap
                 )
 
                 CreativeFilterSection(
@@ -546,9 +501,9 @@ fun AdjustmentsSheet(
                             // slider and curve values even if a throttled
                             // preview is pending.
                             if (curveDirty) {
-                                onToneCurvePreview(ToneCurve(curveDraft))
+                                onToneCurvePreview(ToneCurve(curveState.value))
                             }
-                            onPreview(draft, null)
+                            onPreview(draftState.value, null)
                             onSave(name)
                         }
                     },
