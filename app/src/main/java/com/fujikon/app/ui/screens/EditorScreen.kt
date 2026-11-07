@@ -187,7 +187,11 @@ fun EditorScreen(
         viewModel.dismissAiState()
     }
 
+    // 根容器：调节面板改为非模态浮层，与预览图处在同一棵 Compose 树，
+    // 这样取色层能直接盖在预览区上，同时彻底移除下滑关闭手势。
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
         containerColor = Ink,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
@@ -739,7 +743,8 @@ fun EditorScreen(
                 }
             },
             onDismiss = { if (!savingAdjustments) showAdjustments = false },
-            sourceBitmap = state.original ?: state.rendered
+            sourceBitmap = state.original ?: state.rendered,
+            previewBitmap = state.rendered ?: state.original
         )
     }
 
@@ -972,6 +977,7 @@ fun EditorScreen(
         else -> Unit
     }
 
+    } // close overlay root
 }
 
 

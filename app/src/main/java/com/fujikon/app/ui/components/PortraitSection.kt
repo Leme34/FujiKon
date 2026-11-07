@@ -38,14 +38,18 @@ internal fun PortraitSection(
     onToggle: () -> Unit,
     onChange: (PortraitRetouch, String) -> Unit,
     onFinished: (String) -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    /** Embedded in a tab page: no collapsible header, always expanded. */
+    embedded: Boolean = false
 ) {
-    AdjustmentSectionHeader(
-        title = "人像",
-        expanded = expanded,
-        onToggle = onToggle
-    )
-    if (!expanded) return
+    if (!embedded) {
+        AdjustmentSectionHeader(
+            title = "人像",
+            expanded = expanded,
+            onToggle = onToggle
+        )
+    }
+    if (!expanded && !embedded) return
 
     Column(
         Modifier

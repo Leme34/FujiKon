@@ -1,7 +1,6 @@
 package com.fujikon.app.ui.components
 
 import android.graphics.Bitmap
-import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -107,17 +106,6 @@ fun hueLabel(hue: Float): String {
     }
 }
 
-private fun hueSwatch(hue: Float): Color {
-    val argb = AndroidColor.HSVToColor(
-        floatArrayOf((hue % 360f + 360f) % 360f, 0.82f, 0.92f)
-    )
-    return Color(
-        red = AndroidColor.red(argb) / 255f,
-        green = AndroidColor.green(argb) / 255f,
-        blue = AndroidColor.blue(argb) / 255f
-    )
-}
-
 private fun bitmapRatio(bitmap: Bitmap?): Float {
     if (bitmap == null || bitmap.height <= 0) return 1.5f
     return (bitmap.width.toFloat() / bitmap.height).coerceIn(0.7f, 2.2f)
@@ -150,211 +138,6 @@ private fun Modifier.qualityCard(): Modifier = this
     .background(CardHigh.copy(alpha = 0.16f), qualityCard)
     .border(1.dp, Color.White.copy(alpha = 0.07f), qualityCard)
     .padding(horizontal = 12.dp, vertical = 4.dp)
-
-/**
- * Point Color: tap a colour on the photo, then shift only that colour.
- *
- * The photo itself is the picker, so users never have to guess a hue angle.
- */
-@Composable
-fun PointColorSection(
-    pointColor: PointColor,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    onChange: (PointColor, String) -> Unit,
-    onFinished: (String) -> Unit,
-    enabled: Boolean,
-    sourceBitmap: Bitmap? = null
-) {
-    QualityHeader("点颜色 · 只改一种颜色", expanded, onToggle)
-    if (!expanded) return
-
-    // Long-running pointer handlers must always see the newest draft value.
-    val pointColorState = rememberUpdatedState(pointColor)
-    val onChangeState = rememberUpdatedState(onChange)
-    val onFinishedState = rememberUpdatedState(onFinished)
-    var picked by remember { mutableStateOf<Offset?>(null) }
-    val inactive = pointColor.isNeutral()
-
-    Column(Modifier.qualityCard()) {
-        SectionHelp(
-            "用途：只改变画面里某一种颜色，其它颜色不动。例如把天空调更蓝、把衣服换个色，" +
-                "而不影响肤色和背景。\n" +
-                "① 直接点下方照片里的目标颜色取色　② 用「选取范围」控制影响多少相近色\n" +
-                "③ 调整「色相偏移 / 饱和度 / 明度」，松手后渲染一次即可看到效果"
-        )
-
-        if (usable(sourceBitmap)) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(bitmapRatio(sourceBitmap))
-                    .heightIn(max = 180.dp)
-                    .clip(qualityCard)
-                    .border(1.dp, Amber.copy(alpha = 0.55f), qualityCard)
-                    .testTag("point_color_picker")
-                    .pointerInput(sourceBitmap) {
-                        detectTapGestures { offset ->
-                            val bitmap = sourceBitmap ?: return@detectTapGestures
-                            if (bitmap.isRecycled) return@detectTapGestures
-                            val nx = (offset.x / size.width).coerceIn(0f, 1f)
-                            val ny = (offset.y / size.height).coerceIn(0f, 1f)
-                            val px = (nx * (bitmap.width - 1)).roundToInt()
-                                .coerceIn(0, bitmap.width - 1)
-                            val py = (ny * (bitmap.height - 1)).roundToInt()
-                                .coerceIn(0, bitmap.height - 1)
-                            val hue = hueFromArgb(bitmap.getPixel(px, py))
-                            picked = Offset(nx, ny)
-                            onChangeState.value(pointColorState.value.copy(targetHue = hue), "点颜色")
-                            onFinishedState.value("点颜色")
-                        }
-                    }
-            ) {
-                Image(
-                    bitmap = sourceBitmap!!.asImageBitmap(),
-                    contentDescription = "点按照片选取要修改的颜色",
-                    contentScale = ContentScale.FillBounds,
-                    modifier = Modifier.fillMaxSize()
-                )
-                Canvas(Modifier.fillMaxSize()) {
-                    picked?.let { p ->
-                        val c = Offset(p.x * size.width, p.y * size.height)
-                        drawCircle(Color.Black.copy(alpha = 0.55f), 12.dp.toPx(), c)
-                        drawCircle(Amber, 9.dp.toPx(), c)
-                        drawCircle(Color.White, 3.dp.toPx(), c)
-                    }
-                }
-            }
-            Text(
-                "↑ 点照片任意位置取色（可反复点，重新选色）",
-                style = MaterialTheme.typography.labelSmall,
-                color = Amber,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-            )
-        } else {
-            Text(
-                "照片加载中：可先用下方「目标色相」滑动条手动选色",
-                style = MaterialTheme.typography.labelSmall,
-                color = TextSecondary,
-                modifier = Modifier.padding(4.dp)
-            )
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-            Box(
-                Modifier
-                    .size(22.dp)
-                    .clip(CircleShape)
-                    .background(hueSwatch(pointColor.targetHue))
-                    .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "已选：${hueLabel(pointColor.targetHue)} · ${pointColor.targetHue.roundToInt()}°",
-                color = TextPrimary,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.weight(1f)
-            )
-            if (!inactive) {
-                TextButton(
-                    onClick = {
-                        onChangeState.value(
-                            pointColorState.value.copy(hueShift = 0f, saturation = 0f, luminance = 0f),
-                            "点颜色"
-                        )
-                        onFinishedState.value("点颜色")
-                    },
-                    enabled = enabled,
-                    modifier = Modifier.testTag("point_color_reset")
-                ) { Text("复原件", color = TextSecondary) }
-            }
-        }
-
-        if (inactive) {
-            Text(
-                "已选色，但还没改它：请调整下方三个偏移值，或点「一键试用」",
-                style = MaterialTheme.typography.labelSmall,
-                color = Amber,
-                modifier = Modifier.padding(horizontal = 4.dp)
-            )
-            TextButton(
-                onClick = {
-                    onChangeState.value(
-                        pointColorState.value.copy(saturation = 32f, luminance = 14f),
-                        "点颜色"
-                    )
-                    onFinishedState.value("点颜色")
-                },
-                enabled = enabled,
-                modifier = Modifier.testTag("point_color_try")
-            ) { Text("一键试用：增艳 + 提亮选中色", color = Amber) }
-        } else {
-            Text(
-                "已生效 · 只影响画面中「${hueLabel(pointColor.targetHue)}」附近的像素",
-                style = MaterialTheme.typography.labelSmall,
-                color = TextSecondary,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-            )
-        }
-
-        AdjustmentSlider(
-            label = "目标色相",
-            value = pointColor.targetHue,
-            valueRange = 0f..360f,
-            step = 1f,
-            formattedValue = "${pointColor.targetHue.roundToInt()}°",
-            onValueChange = { onChange(pointColorState.value.copy(targetHue = it), "点颜色") },
-            onValueChangeFinished = { onFinished("点颜色") },
-            onReset = {
-                onChange(pointColorState.value.copy(targetHue = 210f), "点颜色")
-                onFinished("点颜色")
-            },
-            enabled = enabled
-        )
-        AdjustmentSlider(
-            label = "选取范围",
-            value = pointColor.hueRange,
-            valueRange = 5f..90f,
-            step = 1f,
-            formattedValue = "±${pointColor.hueRange.roundToInt()}°",
-            onValueChange = { onChange(pointColor.copy(hueRange = it), "点颜色") },
-            onValueChangeFinished = { onFinished("点颜色") },
-            onReset = { onChange(pointColor.copy(hueRange = 30f), "点颜色"); onFinished("点颜色") },
-            enabled = enabled
-        )
-        AdjustmentSlider(
-            label = "色相偏移",
-            value = pointColor.hueShift,
-            valueRange = -100f..100f,
-            step = 1f,
-            onValueChange = { onChange(pointColor.copy(hueShift = it), "点颜色") },
-            onValueChangeFinished = { onFinished("点颜色") },
-            onReset = { onChange(pointColor.copy(hueShift = 0f), "点颜色"); onFinished("点颜色") },
-            enabled = enabled
-        )
-        AdjustmentSlider(
-            label = "饱和度",
-            value = pointColor.saturation,
-            valueRange = -100f..100f,
-            step = 1f,
-            onValueChange = { onChange(pointColor.copy(saturation = it), "点颜色") },
-            onValueChangeFinished = { onFinished("点颜色") },
-            onReset = { onChange(pointColor.copy(saturation = 0f), "点颜色"); onFinished("点颜色") },
-            enabled = enabled
-        )
-        AdjustmentSlider(
-            label = "明度",
-            value = pointColor.luminance,
-            valueRange = -100f..100f,
-            step = 1f,
-            onValueChange = { onChange(pointColor.copy(luminance = it), "点颜色") },
-            onValueChangeFinished = { onFinished("点颜色") },
-            onReset = { onChange(pointColor.copy(luminance = 0f), "点颜色"); onFinished("点颜色") },
-            enabled = enabled
-        )
-    }
-    Spacer(Modifier.height(2.dp))
-}
 
 private enum class MaskKind(val label: String) {
     POINT("控制点"), LINEAR("线性"), RADIAL("径向"), BRUSH("画笔")
@@ -399,10 +182,12 @@ fun LocalAdjustmentSection(
     onChange: (LocalAdjustments, String) -> Unit,
     onFinished: (String) -> Unit,
     enabled: Boolean,
-    sourceBitmap: Bitmap? = null
+    sourceBitmap: Bitmap? = null,
+    /** Embedded in a tab page: no collapsible header, always expanded. */
+    embedded: Boolean = false
 ) {
-    QualityHeader("局部 · 只改画面一块", expanded, onToggle)
-    if (!expanded) return
+    if (!embedded) QualityHeader("局部 · 只改画面一块", expanded, onToggle)
+    if (!expanded && !embedded) return
 
     var selected by remember { mutableStateOf(0) }
     val layers = local.layers

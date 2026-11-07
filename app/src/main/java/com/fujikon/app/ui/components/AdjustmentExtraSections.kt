@@ -187,11 +187,13 @@ internal fun CreativeFilterSection(
     onSelect: (CreativeFilter) -> Unit,
     onStrengthChange: (Float) -> Unit,
     onStrengthFinished: () -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    /** Embedded in a tab page: no collapsible header, always expanded. */
+    embedded: Boolean = false
 ) {
     val selected = CreativeFilter.fromId(selectedId)
-    AdjustmentSectionHeader("滤镜", expanded, onToggle)
-    if (!expanded) return
+    if (!embedded) AdjustmentSectionHeader("滤镜", expanded, onToggle)
+    if (!expanded && !embedded) return
 
     Column(
         Modifier
@@ -306,11 +308,13 @@ internal fun ToneSection(
     onDrag: () -> Unit,
     onFinished: () -> Unit,
     onReset: () -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    /** Embedded in a tab page: no collapsible header, always expanded. */
+    embedded: Boolean = false
 ) {
     var selectedIndex by remember { mutableStateOf<Int?>(null) }
-    AdjustmentSectionHeader("影调", expanded, onToggle)
-    if (!expanded) return
+    if (!embedded) AdjustmentSectionHeader("影调", expanded, onToggle)
+    if (!expanded && !embedded) return
 
     Column(
         Modifier
