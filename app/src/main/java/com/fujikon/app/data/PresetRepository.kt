@@ -73,6 +73,10 @@ class PresetRepository(private val context: Context) {
                     if (!indexFile.exists()) {
                         list = seedSamplesLocked()
                         writeIndex(list)
+                    } else {
+                        // An existing install keeps its own index, so a sample
+                        // removed from assets would otherwise survive upgrades.
+                        list = dropRetiredSamplesLocked(list)
                     }
                     publish(list)
                     loaded = true
@@ -80,6 +84,25 @@ class PresetRepository(private val context: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * Retires built-in samples that are no longer shipped in `assets/samples`.
+     * Only entries seeded by the app (`isSample`) are removed, so a preset the
+     * user imported under the same name is never touched. The migration is
+     * idempotent: it writes the index back only when it actually removed rows.
+     */
+    private fun dropRetiredSamplesLocked(list: List<Preset>): List<Preset> {
+        val retiredNames = setOf("NC 400 MATCH")
+        val retiredIds = list.filter { it.isSample && it.name in retiredNames }
+            .mapTo(mutableSetOf()) { it.id }
+        if (retiredIds.isEmpty()) return list
+        list.filter { it.id in retiredIds }.forEach { preset ->
+            if (preset.fileName.isNotBlank()) File(filesDir, preset.fileName).delete()
+        }
+        val kept = list.filterNot { it.id in retiredIds }
+        writeIndex(kept)
+        return kept
     }
 
     fun find(id: String?): Preset? = _presets.value.firstOrNull { it.id == id }

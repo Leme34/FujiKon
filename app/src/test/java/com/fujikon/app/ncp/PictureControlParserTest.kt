@@ -105,8 +105,8 @@ class PictureControlParserTest {
 
     @Test
     fun plainNcpIsNotNp3() {
-        val control = PictureControlParser.parse(resource("nc400_match.ncp"), "nc400_match.ncp")
+        val control = PictureControlParser.parse(resource("nc400.ncp"), "nc400.ncp")
         assertFalse(control.format == PictureControlFormat.NP3)
-        assertEquals("NC 400 MATCH", control.name)
+        assertEquals("NC 400", control.name)
     }
 }

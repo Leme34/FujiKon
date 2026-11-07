@@ -47,11 +47,46 @@ class RepositoryRobolectricTest {
         repository.load()
 
         assertTrue(repository.ready.value)
-        assertEquals(7, repository.presets.value.size)
+        assertEquals(6, repository.presets.value.size)
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
-        assertTrue(repository.presets.value.any { it.name == "NC 400 MATCH" })
+        assertTrue(repository.presets.value.any { it.name == "NC 400" })
+        assertFalse(repository.presets.value.any { it.name == "NC 400 MATCH" })
         assertTrue(repository.presets.value.any { it.format == "NP3" })
         assertTrue(repository.presets.value.all { it.isSample })
+    }
+
+    @Test
+    fun upgradeDropsRetiredBuiltInSampleButKeepsUserImports() = runBlocking {
+        repository.load()
+        // 伪造旧版索引：一条应用内置的退役示例 + 一条用户导入的同名预设
+        val index = java.io.File(context.filesDir, "presets/index.json")
+        val root = org.json.JSONObject(index.readText())
+        val array = root.getJSONArray("presets")
+        val template = array.getJSONObject(0)
+        array.put(
+            org.json.JSONObject(template.toString())
+                .put("id", "legacy-retired-match")
+                .put("name", "NC 400 MATCH")
+                .put("isSample", true)
+                .put("fileName", "")
+                .put("fileSize", 0)
+        )
+        array.put(
+            org.json.JSONObject(template.toString())
+                .put("id", "user-import-match")
+                .put("name", "NC 400 MATCH")
+                .put("isSample", false)
+                .put("fileName", "")
+                .put("fileSize", 0)
+        )
+        index.writeText(root.toString())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+
+        assertTrue(reopened.presets.value.none { it.id == "legacy-retired-match" })
+        assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-match" })
+        assertEquals(7, reopened.presets.value.size)
     }
 
     @Test
@@ -135,13 +170,13 @@ class RepositoryRobolectricTest {
         reopened.load()
 
         assertEquals(firstIds, reopened.presets.value.map { it.id }.sorted())
-        assertEquals(7, reopened.presets.value.size)
+        assertEquals(6, reopened.presets.value.size)
     }
 
     @Test
     fun importsDownloadedBinariesInOneBatchAndDeduplicates() = runBlocking {
         repository.load()
-        val original = javaClass.classLoader!!.getResourceAsStream("nc400_match.ncp")!!.readBytes()
+        val original = javaClass.classLoader!!.getResourceAsStream("nc400.ncp")!!.readBytes()
         val bytes = original.copyOf().apply {
             val name = "Remote Test".toByteArray(Charsets.US_ASCII)
             for (index in 0 until 20) {
@@ -175,7 +210,7 @@ class RepositoryRobolectricTest {
         val imported = (first as PresetRepository.BinaryImportResult.Imported).preset
         assertEquals("Remote Test", imported.name)
         assertEquals("B&W/PICCON16.NCP", imported.sourceName)
-        assertEquals(8, repository.presets.value.size)
+        assertEquals(7, repository.presets.value.size)
         assertTrue(repository.fileFor(imported).exists())
 
         assertTrue(results["second"] is PresetRepository.BinaryImportResult.Duplicate)

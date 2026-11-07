@@ -477,7 +477,7 @@ private fun EmptyHome(
         }
         Spacer(Modifier.height(24.dp))
         Text(
-            "已内置 Agfa Optima、NC 400、Negative Cyan 等 5 个示例、" +
+            "已内置 Agfa Optima、NC 400、Negative Cyan 等 4 个示例、" +
                 "云创滤镜 Vitality Film by Peng Mango（芒果小明），" +
                 "以及社区拟合的「Peng Mango 生命力风格（社区近似，非官方）」",
             style = MaterialTheme.typography.labelSmall,
