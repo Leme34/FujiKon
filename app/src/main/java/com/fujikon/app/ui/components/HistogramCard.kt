@@ -66,7 +66,9 @@ private fun reportLine(r: OptimizationReport): String {
     } else {
         "闭环 ${r.iterations} 轮" + if (r.converged) "达标" else "取最优"
     }
-    return "$rounds · 高光 ${"%.1f".format(r.highlightClip * 100)}% / " +
+    // Report the colourless dead-white fraction, not the old "highlight" one:
+    // a bright but colourful sky is a feature, not a defect to be eliminated.
+    return "$rounds · 死白 ${"%.1f".format(r.blownWhiteClip * 100)}% / " +
         "暗部 ${"%.1f".format(r.shadowClip * 100)}%"
 }
 

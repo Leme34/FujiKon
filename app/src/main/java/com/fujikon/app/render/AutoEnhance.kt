@@ -81,7 +81,15 @@ class ImageStats internal constructor(
     /** Fraction of dark pixels (luma < 0.40) — gates the shadow blue split-tone. */
     val shadowFraction: Float = 0f,
     /** Fraction of bright pixels (luma > 0.72) — drives how firmly highlights are pulled down. */
-    val brightFraction: Float = 0f
+    val brightFraction: Float = 0f,
+    /**
+     * Fraction of TRUE blown whites: near-white (luma > 0.965) AND effectively
+     * colourless (chroma < 0.09), i.e. detail-less clipped pixels. Bright but
+     * colourful pixels (warm sun, blue-tinted cloud, a white dress with tone)
+     * are deliberately NOT counted — 不过曝 means "no dead white", not "no
+     * bright highlights". Keeping them is what preserves 光感 / 色彩 / 层次.
+     */
+    val blownWhiteClip: Float = 0f
 ) {
     val spread: Float get() = p95 - p5
     val dynamicRange: Float get() = p99 - p1
@@ -117,13 +125,23 @@ data class AutoEnhanceResult(
 /**
  * The hard quality standard a "true one-tap" optimisation must converge to.
  *
- * 不过曝 / 不死黑 are measured from **real rendered pixels** (luma < 0.02 and
- * luma > 0.98), not estimated from a parameter object. These are deliberately
- * strict endpoints: a frame with 2% blown whites or 3% crushed blacks is not
- * accepted, so the loop keeps refining its tone parameters until it clears.
+ * 不过曝 / 不死黑 are measured from **real rendered pixels**, not estimated
+ * from a parameter object. Crucially, 不过曝 means "no DEAD WHITE" (colourless,
+ * detail-less clipped pixels), NOT "no bright pixels": a sunlit frame is
+ * supposed to have luminous, colourful highlights. Chasing a near-zero
+ * highlight-clip fraction (the 1.6.11 behaviour) forced the loop to hammer
+ * highlights/whites/exposure until the frame turned grey, flat and lifeless.
+ *
+ * So besides the endpoint ceilings there are **retention floors measured
+ * against the ORIGINAL**: the optimised render may not lose more than a small
+ * fraction of the original's highlight brightness, colour or tonal spread.
+ * That is what keeps 光感 / 色彩 / 层次 while still recovering blown detail.
  */
 object OptimizationStandard {
-    const val MAX_HIGHLIGHT_CLIP = 0.020f
+    /** True blown whites (near-white AND colourless) must stay rare. */
+    const val MAX_BLOWN_WHITE = 0.035f
+    /** Bright pixels are allowed — 10% of near-white luma is a sunlit sky, not a fault. */
+    const val MAX_HIGHLIGHT_CLIP = 0.10f
     const val MAX_SHADOW_CLIP = 0.030f
     /** Deliberately permissive: an intentionally dark frame is fine as long as
      *  its blacks are not crushed. The loop lifts it toward mid-grey as a soft
@@ -133,6 +151,26 @@ object OptimizationStandard {
     const val MAX_SATURATION = 0.72f
     /** Soft target for 通透感 (tonal separation), not a hard rejection gate. */
     const val TARGET_SPREAD = 0.52f
+    // ---- "Do not over-press" retention floors, relative to the ORIGINAL ----
+    /** p95 of the render must stay within 90% of the original's bright end. */
+    const val MIN_BRIGHT_RETENTION = 0.90f
+    /** Mean saturation must stay within 82% of the original. */
+    const val MIN_SAT_RETENTION = 0.82f
+    /** Tonal spread (p95-p5) must stay within 88% — the anti-"dead flat" guard. */
+    const val MIN_SPREAD_RETENTION = 0.88f
+    /** Overall brightness must stay within 86% — the anti-"dull/gloomy" guard. */
+    const val MIN_MEAN_RETENTION = 0.86f
+    // ---- Caps on the retention floors (de-contamination) -------------------
+    // A blown frame's p95 / spread are inflated by dead white and a neutral
+    // low-key frame's saturation is naturally tiny. Requiring a plain 90% of
+    // those would forbid the very repair we want, or fail a perfectly good
+    // grey card. So each floor is min(original * retention, cap).
+    const val BRIGHT_FLOOR_CAP = 0.80f
+    const val SPREAD_FLOOR_CAP = 0.46f
+    const val SAT_FLOOR_CAP = 0.20f
+    /** Caps on the closed loop's corrective sliders (tone only, never colour). */
+    const val MIN_WHITES = -26f
+    const val MIN_HIGHLIGHTS = -28f
     const val MAX_ITERATIONS = 6
 }
 
@@ -144,6 +182,8 @@ data class OptimizationReport(
     val converged: Boolean,
     val highlightClip: Float,
     val shadowClip: Float,
+    /** Fraction of colourless, detail-less dead whites in the final render. */
+    val blownWhiteClip: Float = 0f,
     val meanLuma: Float,
     val spread: Float,
     /** 0 = perfect; lower is better. Used to keep the best round. */
@@ -222,6 +262,7 @@ object AutoEnhance {
         var darkCount = 0
         var darkWarmSum = 0f
         var brightCount = 0
+        var blownWhite = 0
 
         for (i in pixels.indices) {
             val px = pixels[i]
@@ -252,6 +293,10 @@ object AutoEnhance {
             // scene's actual illumination. Colourful / very dark / very bright
             // pixels are excluded — they are memory colours, not a grey card.
             val chroma = mx - mn
+            // Dead white = clipped AND colourless. A bright warm highlight or a
+            // blue-tinted cloud still has chroma, hence still has colour and
+            // detail; it must NOT be treated as over-exposure.
+            if (l > 0.965f && chroma < 0.09f) blownWhite++
             if (chroma < 0.18f && l > 0.15f && l < 0.90f) {
                 nR += rf
                 nG += gf
@@ -361,7 +406,8 @@ object AutoEnhance {
             skinCoverage = skinCoverage,
             shadowWarmth = shadowWarmth,
             shadowFraction = shadowFraction,
-            brightFraction = brightFraction
+            brightFraction = brightFraction,
+            blownWhiteClip = blownWhite / total
         )
     }
 
@@ -425,9 +471,13 @@ object AutoEnhance {
         // keep them far below anything that could flatten or blow the frame,
         // and [deficit] fades them out on already-good frames.
         val toneTouch = 0.35f + 0.65f * deficit
-        val hiDeficit = ramp(stats.brightFraction, 0.06f, 0.34f) * 0.6f +
-            ramp(stats.highlightClip, 0.004f, 0.06f) * 0.4f
-        val highlights = -(hiDeficit * 30f * toneTouch).coerceIn(0f, 30f)
+        // Only colourless dead whites justify a firm highlight pull. Bright but
+        // colourful pixels ARE the photo's light and must be preserved; the
+        // 1.6.11 "chase every bright pixel" behaviour flattened the upper half.
+        val hiDeficit = ramp(stats.brightFraction, 0.10f, 0.40f) * 0.25f +
+            ramp(stats.highlightClip, 0.02f, 0.12f) * 0.20f +
+            ramp(stats.blownWhiteClip, 0.004f, 0.05f) * 0.55f
+        val highlights = -(hiDeficit * 16f * toneTouch).coerceIn(0f, 16f)
         val shDeficit = ramp(stats.shadowFraction, 0.10f, 0.50f) * 0.6f +
             ramp(stats.shadowClip, 0.01f, 0.09f) * 0.4f
         // The curve toe already lifts crushed blacks; the slider only adds a
@@ -599,7 +649,12 @@ object AutoEnhance {
         val shadowDeficit = max(0f, 0.10f - stats.p5)
         val highExcess = max(0f, stats.p95 - 0.92f)
         val toe = ((2.2f * shadowDeficit + 1.6f * stats.shadowClip).coerceIn(0f, 0.07f)) * gain
-        val roll = ((2.0f * highExcess + 1.8f * stats.highlightClip).coerceIn(0f, 0.09f)) * gain
+        // Curve roll-off is the PRIMARY dead-white recovery: it compresses only
+        // the top of the tone scale (quadratic from x=0.5), so bright midtones
+        // keep their light and separation. React to colourless dead white, not
+        // to every bright pixel.
+        val roll = ((2.0f * highExcess + 1.0f * stats.highlightClip +
+            2.4f * stats.blownWhiteClip).coerceIn(0f, 0.085f)) * gain
         val s = (if (stats.spread < 0.55f) (0.18f * (0.55f - stats.spread)).coerceIn(0f, 0.12f) else 0f) * gain * sGain
 
         if (toe < 0.004f && roll < 0.004f && s < 0.004f) return ToneCurve()
@@ -829,32 +884,35 @@ object AutoEnhance {
         val subjectCentroid = masks.centroid(SemanticRegion.SUBJECT)
         val skyBottom = (masks.centroid(SemanticRegion.SKY).second * 1.9f + 0.18f).coerceIn(0.25f, 0.80f)
 
-        val hiDeficit = ramp(stats.brightFraction, 0.06f, 0.34f) * 0.6f +
-            ramp(stats.highlightClip, 0.004f, 0.06f) * 0.4f
+        // Only colourless dead whites justify a firm highlight pull. Bright but
+        // colourful pixels ARE the photo's light and must be preserved; the
+        // 1.6.11 "chase every bright pixel" behaviour flattened the upper half.
+        val hiDeficit = ramp(stats.brightFraction, 0.10f, 0.40f) * 0.25f +
+            ramp(stats.highlightClip, 0.02f, 0.12f) * 0.20f +
+            ramp(stats.blownWhiteClip, 0.004f, 0.05f) * 0.55f
         val shDeficit = ramp(stats.shadowFraction, 0.10f, 0.50f) * 0.6f +
             ramp(stats.shadowClip, 0.01f, 0.09f) * 0.4f
 
         val zones = ArrayList<String>(3)
         val auto = ArrayList<LocalLayer>(3)
 
-        // ① Sky: recover clipped / heavy highlights only where sky exists.
-        if (skyCoverage > 0.05f && hiDeficit > 0.04f) {
-            val amount = (hiDeficit * 22f * ramp(skyCoverage, 0.05f, 0.28f)).coerceIn(0f, 22f)
+        // ① Sky: recover only colourless dead whites where sky actually exists.
+        //    Never desaturate the sky here — that was a direct cause of the
+        //    "lost colour" complaint. A bright, colourful sky keeps its chroma.
+        if (skyCoverage > 0.05f && stats.blownWhiteClip > 0.004f && hiDeficit > 0.04f) {
+            val amount = (hiDeficit * 11f * ramp(skyCoverage, 0.05f, 0.28f)).coerceIn(0f, 11f)
             if (amount > 0.5f) {
                 auto += LocalLayer(
                     id = "${AUTO_PREFIX}sky",
-                    name = "天空 · 压高光",
+                    name = "天空 · 收敛死白",
                     mask = LocalMask.LinearGradient(
                         startX = 0.5f, startY = 0f, endX = 0.5f, endY = skyBottom,
                         feather = 0.55f, invert = true
                     ),
-                    params = LocalParams(
-                        highlights = -amount,
-                        saturation = -amount * 0.20f
-                    ),
+                    params = LocalParams(highlights = -amount),
                     strength = 100f
                 )
-                zones += "天空（覆盖 ${(skyCoverage * 100).roundToInt()}%）压高光"
+                zones += "天空（覆盖 ${(skyCoverage * 100).roundToInt()}%）收敛死白"
             }
         }
 
@@ -970,8 +1028,10 @@ object AutoEnhance {
         val seed = suggestZoned(source, stats, current, provider)
 
         // Already good AND already compliant: no rendering at all, exact Neutral.
-        if (!seed.changed && meetsStandard(stats)) {
-            return seed.copy(report = reportOf(0, true, stats))
+        // The original is its own reference, so every retention floor is met
+        // by definition and only the endpoint ceilings are evaluated.
+        if (!seed.changed && meetsStandard(stats, stats)) {
+            return seed.copy(report = reportOf(0, true, stats, stats))
         }
 
         val probe = probeBitmap(source)
@@ -994,12 +1054,13 @@ object AutoEnhance {
                 forExport = false
             )
             val measured = analyse(rendered) ?: break
-            val d = defect(measured)
+            val d = defect(measured, stats)
             trail.add(d)
 
             // Compliance wins over the soft score: never return a round that
-            // merely scored better while still clipping an endpoint.
-            if (meetsStandard(measured)) {
+            // merely scored better while still clipping an endpoint or while
+            // having crushed the original's light / colour / separation away.
+            if (meetsStandard(measured, stats)) {
                 best = candidate
                 bestMeasured = measured
                 converged = true
@@ -1018,7 +1079,7 @@ object AutoEnhance {
             candidate = refine(candidate, measured, i)
         }
 
-        val report = reportOf(iterations, converged, bestMeasured, trail)
+        val report = reportOf(iterations, converged, bestMeasured, stats, trail)
         val loopTag = if (converged) "闭环${iterations}轮达标" else "闭环${iterations}轮取最优"
         val summary = if (seed.summary.isBlank()) loopTag else seed.summary + " · " + loopTag
         return AutoEnhanceResult(
@@ -1046,42 +1107,107 @@ object AutoEnhance {
         )
     }
 
-    /** Hard standard: 不过曝 / 不死黑, sane exposure and no colour blow-out. */
-    private fun meetsStandard(m: ImageStats): Boolean =
-        m.highlightClip <= OptimizationStandard.MAX_HIGHLIGHT_CLIP &&
+    /**
+     * Hard standard, evaluated against BOTH the absolute endpoints and the
+     * ORIGINAL frame. 不过曝 now means "no colourless dead whites", not "no
+     * bright pixels"; the retention floors stop the loop from pressing the
+     * highlights down until the picture loses its light, colour and depth.
+     */
+    private fun meetsStandard(m: ImageStats, ref: ImageStats): Boolean {
+        val meanFloor = max(
+            OptimizationStandard.MIN_MEAN,
+            ref.meanLuma * OptimizationStandard.MIN_MEAN_RETENTION
+        )
+        // A genuinely bright original is allowed to STAY bright; only a frame
+        // that became even brighter than the source is rejected here.
+        val meanCeil = max(OptimizationStandard.MAX_MEAN, ref.meanLuma * 1.02f)
+        // Retention floors are capped so dead white / natural low saturation
+        // in the ORIGINAL cannot turn a correct repair into a "failure".
+        val brightFloor = min(
+            ref.p95 * OptimizationStandard.MIN_BRIGHT_RETENTION,
+            OptimizationStandard.BRIGHT_FLOOR_CAP
+        )
+        val spreadFloor = min(
+            ref.spread * OptimizationStandard.MIN_SPREAD_RETENTION,
+            OptimizationStandard.SPREAD_FLOOR_CAP
+        )
+        val satFloor = if (ref.meanLuma > 0.35f) {
+            min(
+                ref.meanSaturation * OptimizationStandard.MIN_SAT_RETENTION,
+                OptimizationStandard.SAT_FLOOR_CAP
+            )
+        } else 0f // lifting a dark frame legitimately lowers HSV saturation
+        return m.blownWhiteClip <= OptimizationStandard.MAX_BLOWN_WHITE &&
+            m.highlightClip <= OptimizationStandard.MAX_HIGHLIGHT_CLIP &&
             m.shadowClip <= OptimizationStandard.MAX_SHADOW_CLIP &&
-            m.meanLuma >= OptimizationStandard.MIN_MEAN &&
-            m.meanLuma <= OptimizationStandard.MAX_MEAN &&
+            m.meanLuma >= meanFloor &&
+            m.meanLuma <= meanCeil &&
+            // 光感 / 色彩 / 层次 must survive the repair.
+            m.p95 >= brightFloor &&
+            m.spread >= spreadFloor &&
+            m.meanSaturation >= satFloor &&
             m.meanSaturation <= OptimizationStandard.MAX_SATURATION
+    }
 
     /**
-     * Scalar defect for picking the best round. It counts ONLY hard-standard
-     * violations, so a compliant round scores exactly 0 and the report stays
-     * self-consistent. 通透感 (spread) is a soft goal handled by [refine]'s
-     * contrast nudge, never a rejection reason.
+     * Scalar defect for picking the best round. Besides endpoint violations it
+     * penalises **over-pressing**: losing the original's highlight brightness,
+     * colour or tonal separation. A compliant round that keeps the original's
+     * light scores 0; a grey, flat, desaturated round scores badly even when it
+     * has zero clipped pixels.
      */
-    private fun defect(m: ImageStats): Float {
-        val hi = max(0f, m.highlightClip - OptimizationStandard.MAX_HIGHLIGHT_CLIP) / 0.05f
+    private fun defect(m: ImageStats, ref: ImageStats): Float {
+        val blown = max(0f, m.blownWhiteClip - OptimizationStandard.MAX_BLOWN_WHITE) / 0.05f
+        val hi = max(0f, m.highlightClip - OptimizationStandard.MAX_HIGHLIGHT_CLIP) / 0.12f
         val lo = max(0f, m.shadowClip - OptimizationStandard.MAX_SHADOW_CLIP) / 0.06f
-        val mean = (max(0f, OptimizationStandard.MIN_MEAN - m.meanLuma) +
-            max(0f, m.meanLuma - OptimizationStandard.MAX_MEAN)) / 0.18f
+        val meanFloor = max(
+            OptimizationStandard.MIN_MEAN,
+            ref.meanLuma * OptimizationStandard.MIN_MEAN_RETENTION
+        )
+        val meanCeil = max(OptimizationStandard.MAX_MEAN, ref.meanLuma * 1.02f)
+        val mean = (max(0f, meanFloor - m.meanLuma) +
+            max(0f, m.meanLuma - meanCeil)) / 0.18f
         val sat = max(0f, m.meanSaturation - OptimizationStandard.MAX_SATURATION) / 0.20f
-        return hi * 3f + lo * 2.5f + mean * 1.5f + sat * 0.5f
+        // ---- over-press penalties, using the SAME de-contaminated floors ----
+        // as meetsStandard, so a compliant, lively render scores exactly 0 and
+        // the report stays self-consistent with the convergence flag.
+        val brightFloor = min(
+            ref.p95 * OptimizationStandard.MIN_BRIGHT_RETENTION,
+            OptimizationStandard.BRIGHT_FLOOR_CAP
+        )
+        val spreadFloor = min(
+            ref.spread * OptimizationStandard.MIN_SPREAD_RETENTION,
+            OptimizationStandard.SPREAD_FLOOR_CAP
+        )
+        val satFloor = if (ref.meanLuma > 0.35f) {
+            min(
+                ref.meanSaturation * OptimizationStandard.MIN_SAT_RETENTION,
+                OptimizationStandard.SAT_FLOOR_CAP
+            )
+        } else 0f
+        val flatBright = max(0f, brightFloor - m.p95) / 0.08f
+        val flat = max(0f, spreadFloor - m.spread) / 0.16f
+        val desat = max(0f, satFloor - m.meanSaturation) / 0.12f
+        val dim = max(0f, ref.meanLuma * OptimizationStandard.MIN_MEAN_RETENTION - m.meanLuma) / 0.10f
+        return blown * 3f + lo * 2.5f + hi * 0.6f + mean * 1.2f + sat * 0.5f +
+            flatBright * 2.5f + flat * 1.5f + desat * 2f + dim * 2f
     }
 
     private fun reportOf(
         iterations: Int,
         converged: Boolean,
         m: ImageStats?,
+        ref: ImageStats,
         trail: List<Float> = emptyList()
     ): OptimizationReport = OptimizationReport(
         iterations = iterations,
         converged = converged,
         highlightClip = m?.highlightClip ?: 0f,
         shadowClip = m?.shadowClip ?: 0f,
+        blownWhiteClip = m?.blownWhiteClip ?: 0f,
         meanLuma = m?.meanLuma ?: 0f,
         spread = m?.spread ?: 0f,
-        defect = m?.let { defect(it) } ?: 0f,
+        defect = m?.let { defect(it, ref) } ?: 0f,
         trail = trail
     )
 
@@ -1090,6 +1216,12 @@ object AutoEnhance {
      * temperature, shadowTint), texture/clarity, filters and zone layers stay
      * exactly as the recipe produced them. Step sizes decay each round so the
      * loop converges instead of oscillating around the endpoint thresholds.
+     *
+     * The highlight branch now reacts to colourless DEAD WHITE, not to every
+     * bright pixel, and prefers the narrow white-point control (x > 0.70) over
+     * the broad highlights slider (x > 0.48, which flattens the whole upper
+     * half). It never lowers overall exposure — that was the main source of the
+     * dull, lifeless look — and lifts shadows slightly to keep the frame airy.
      */
     private fun refine(candidate: EditAdjustments, m: ImageStats, round: Int): EditAdjustments {
         val decay = 1f / (1f + round * 0.7f)
@@ -1100,22 +1232,35 @@ object AutoEnhance {
         var whites = candidate.whites
         var blacks = candidate.blacks
 
-        val hiOver = m.highlightClip - OptimizationStandard.MAX_HIGHLIGHT_CLIP
+        // Only colourless dead whites drive highlight compression. A residual
+        // signal from extreme bright-luma clipping keeps pathological frames in
+        // check, but at one quarter strength so luminous colour survives.
+        val blownOver = max(0f, m.blownWhiteClip - OptimizationStandard.MAX_BLOWN_WHITE)
+        val clipOver = max(0f, m.highlightClip - OptimizationStandard.MAX_HIGHLIGHT_CLIP) * 0.25f
+        val hiOver = max(blownOver, clipOver)
         val loOver = m.shadowClip - OptimizationStandard.MAX_SHADOW_CLIP
 
         when {
             hiOver > 0.002f && loOver > 0.002f -> {
                 // Both ends clipped: the tonal stretch is too aggressive.
-                val step = (min(hiOver, loOver) * 260f).coerceIn(2f, 14f) * decay
+                val step = (min(hiOver, loOver) * 220f).coerceIn(1.5f, 10f) * decay
                 contrast = (contrast - step).coerceIn(-30f, 100f)
-                whites = (whites - step * 0.5f).coerceIn(-60f, 0f)
+                whites = (whites - step * 0.4f).coerceIn(OptimizationStandard.MIN_WHITES, 0f)
                 blacks = (blacks + step * 0.5f).coerceIn(0f, 60f)
             }
             hiOver > 0.002f -> {
-                val step = (hiOver * 300f).coerceIn(2f, 16f) * decay
-                whites = (whites - step).coerceIn(-60f, 0f)
-                highlights = (highlights - step * 0.6f).coerceIn(-80f, 0f)
-                exposure = (exposure - step * 0.012f).coerceIn(-2f, 2f)
+                val step = (hiOver * 220f).coerceIn(1.5f, 10f) * decay
+                // Narrow white-point control first: it only touches the very top.
+                whites = (whites - step).coerceIn(OptimizationStandard.MIN_WHITES, 0f)
+                // Only when dead white still persists do we touch the broad
+                // highlights slider, and even then gently.
+                if (m.blownWhiteClip > OptimizationStandard.MAX_BLOWN_WHITE + 0.008f) {
+                    highlights = (highlights - step * 0.28f)
+                        .coerceIn(OptimizationStandard.MIN_HIGHLIGHTS, 0f)
+                }
+                // Keep the frame airy instead of letting it go dull. Overall
+                // exposure is deliberately NOT lowered here.
+                shadows = (shadows + step * 0.12f).coerceIn(0f, 30f)
             }
             loOver > 0.002f -> {
                 val step = (loOver * 240f).coerceIn(2f, 14f) * decay
@@ -1124,14 +1269,19 @@ object AutoEnhance {
                 exposure = (exposure + step * 0.010f).coerceIn(-2f, 2f)
             }
             else -> {
-                // Endpoints safe: fine-tune brightness and airy 通透感.
-                val meanErr = 0.47f - m.meanLuma
-                if (abs(meanErr) > 0.025f) {
-                    exposure = (exposure + meanErr * 1.1f * decay).coerceIn(-2f, 2f)
+                // Endpoints safe. ONLY lift a frame that is still genuinely
+                // dark; NEVER darken a bright one toward a fixed 0.47 — that
+                // was the 1.6.11 "dull / lifeless" regression. A luminous
+                // frame keeps its original brightness, colour and light.
+                if (m.meanLuma < 0.34f) {
+                    val lift = (0.44f - m.meanLuma) * 1.15f * decay
+                    exposure = (exposure + lift).coerceIn(-2f, 2f)
                 }
+                // A small contrast nudge restores separation on flat frames
+                // without pushing the highlight level up into clipping.
                 if (m.spread < OptimizationStandard.TARGET_SPREAD) {
-                    val step = (OptimizationStandard.TARGET_SPREAD - m.spread) * 34f * decay
-                    contrast = (contrast + step).coerceIn(0f, 45f)
+                    val step = (OptimizationStandard.TARGET_SPREAD - m.spread) * 22f * decay
+                    contrast = (contrast + step).coerceIn(0f, 32f)
                 }
             }
         }
