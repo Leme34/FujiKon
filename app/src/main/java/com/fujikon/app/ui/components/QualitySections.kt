@@ -5,8 +5,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateRotation
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,6 +56,8 @@ import com.fujikon.app.ui.theme.CardHigh
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.sqrt
 
 private val qualityCard = RoundedCornerShape(14.dp)
 
@@ -183,11 +189,118 @@ private fun rectFor(viewW: Float, viewH: Float, bitmap: Bitmap?): ImageRect =
     if (usable(bitmap)) fitImageRect(viewW, viewH, bitmap!!.width, bitmap!!.height)
     else fitImageRect(viewW, viewH, 1, 1)
 
-/** Move a mask's anchor to a normalised point. Pure so it is unit-testable. */
+private fun safeAspect(aspect: Float): Float =
+    aspect.takeIf { it.isFinite() && it > 0.0001f } ?: 1f
+
+/** On-screen direction of a linear gradient, in degrees (0..360). */
+internal fun linearAngleDeg(mask: LocalMask.LinearGradient, aspect: Float): Float {
+    val a = safeAspect(aspect)
+    val dx = (mask.endX - mask.startX) * a
+    val dy = mask.endY - mask.startY
+    return (Math.toDegrees(atan2(dy, dx).toDouble()).toFloat() + 360f) % 360f
+}
+
+/** On-screen length of a linear gradient (physical, height-normalised). */
+internal fun linearSpan(mask: LocalMask.LinearGradient, aspect: Float): Float {
+    val a = safeAspect(aspect)
+    val dx = (mask.endX - mask.startX) * a
+    val dy = mask.endY - mask.startY
+    return sqrt(dx * dx + dy * dy)
+}
+
+private fun linearCentre(m: LocalMask.LinearGradient): Pair<Float, Float> =
+    (m.startX + m.endX) * 0.5f to (m.startY + m.endY) * 0.5f
+
+private fun clampLinear(m: LocalMask.LinearGradient): LocalMask.LinearGradient = m.copy(
+    startX = m.startX.coerceIn(-0.5f, 1.5f),
+    startY = m.startY.coerceIn(-0.5f, 1.5f),
+    endX = m.endX.coerceIn(-0.5f, 1.5f),
+    endY = m.endY.coerceIn(-0.5f, 1.5f)
+)
+
+/** Rebuild a linear gradient from its centre, angle (degrees) and physical span. */
+private fun buildLinear(
+    base: LocalMask.LinearGradient,
+    cx: Float,
+    cy: Float,
+    angleDeg: Float,
+    span: Float,
+    aspect: Float
+): LocalMask.LinearGradient {
+    val a = safeAspect(aspect)
+    val r = Math.toRadians(angleDeg.toDouble())
+    val hx = Math.cos(r).toFloat() * span * 0.5f / a
+    val hy = Math.sin(r).toFloat() * span * 0.5f
+    return clampLinear(
+        base.copy(
+            startX = cx - hx, startY = cy - hy,
+            endX = cx + hx, endY = cy + hy
+        )
+    )
+}
+
+/** Set a linear gradient's on-screen angle while keeping centre and span. */
+internal fun setLinearAngle(
+    mask: LocalMask.LinearGradient, angleDeg: Float, aspect: Float
+): LocalMask.LinearGradient {
+    val (cx, cy) = linearCentre(mask)
+    return buildLinear(mask, cx, cy, angleDeg, linearSpan(mask, aspect), aspect)
+}
+
+/** Set a linear gradient's on-screen span while keeping centre and angle. */
+internal fun setLinearSpan(
+    mask: LocalMask.LinearGradient, span: Float, aspect: Float
+): LocalMask.LinearGradient {
+    val (cx, cy) = linearCentre(mask)
+    return buildLinear(mask, cx, cy, linearAngleDeg(mask, aspect), span, aspect)
+}
+
+/**
+ * Apply a cumulative pinch scale and rotation (degrees) to a BASE mask.
+ * Called every gesture frame from the immutable snapshot taken on gesture
+ * start, so repeated zoom deltas never accumulate rounding error. Rotation
+ * only affects the linear gradient (a disc/ellipse has no meaningful angle).
+ */
+internal fun transformMask(
+    base: LocalMask, scale: Float, rotationDeg: Float, aspect: Float = 1f
+): LocalMask = when (base) {
+    is LocalMask.ControlPoint -> base.copy(
+        radius = (base.radius * scale).coerceIn(0.05f, 0.9f)
+    )
+    is LocalMask.RadialGradient -> base.copy(
+        radiusX = (base.radiusX * scale).coerceIn(0.05f, 0.9f),
+        radiusY = (base.radiusY * scale).coerceIn(0.05f, 0.9f)
+    )
+    is LocalMask.Brush -> base.copy(
+        radius = (base.radius * scale).coerceIn(0.01f, 0.25f)
+    )
+    is LocalMask.LinearGradient -> {
+        val (cx, cy) = linearCentre(base)
+        val angle = linearAngleDeg(base, aspect) + rotationDeg
+        val span = (linearSpan(base, aspect) * scale).coerceIn(0.05f, 2.5f)
+        buildLinear(base, cx, cy, angle, span, aspect)
+    }
+}
+
+/**
+ * Move a mask's anchor to a normalised point. For a linear gradient the
+ * direction and span are PRESERVED (only the centre moves), so a rotated
+ * gradient is not silently reset to vertical by a tap or a drag.
+ */
 internal fun placeMask(mask: LocalMask, nx: Float, ny: Float): LocalMask = when (mask) {
     is LocalMask.ControlPoint -> mask.copy(x = nx, y = ny)
     is LocalMask.RadialGradient -> mask.copy(x = nx, y = ny)
-    is LocalMask.LinearGradient -> mask.copy(startX = nx, startY = 0f, endX = nx, endY = 1f)
+    is LocalMask.LinearGradient -> {
+        val (cx, cy) = linearCentre(mask)
+        val dx = nx - cx
+        val dy = ny - cy
+        clampLinear(
+            mask.copy(
+                startX = mask.startX + dx, startY = mask.startY + dy,
+                endX = mask.endX + dx, endY = mask.endY + dy
+            )
+        )
+    }
     is LocalMask.Brush -> mask
 }
 
@@ -229,12 +342,18 @@ private fun DrawScope.drawMaskOutline(
             drawCircle(Amber.copy(alpha = 0.16f), r, c)
             drawCircle(Amber, r, c, style = Stroke(2.dp.toPx()))
             drawCircle(Amber, 5.dp.toPx(), c)
+            // Grab handle: pinch (or drag the ring) to resize the region.
+            drawCircle(Color.White, 6.dp.toPx(), Offset(c.x + r, c.y))
         }
         is LocalMask.RadialGradient -> {
             val topLeft = Offset(px(mask.x) - mask.radiusX * w, py(mask.y) - mask.radiusY * h)
             val oval = Size(mask.radiusX * 2f * w, mask.radiusY * 2f * h)
             drawOval(Amber.copy(alpha = 0.16f), topLeft, oval)
             drawOval(Amber, topLeft, oval, style = Stroke(2.dp.toPx()))
+            drawCircle(
+                Color.White, 6.dp.toPx(),
+                Offset(px(mask.x) + mask.radiusX * w, py(mask.y))
+            )
         }
         is LocalMask.LinearGradient -> {
             drawLine(
@@ -245,6 +364,8 @@ private fun DrawScope.drawMaskOutline(
             )
             val mid = py((mask.startY + mask.endY) / 2f)
             drawLine(Color.White.copy(alpha = 0.5f), Offset(l, mid), Offset(l + w, mid))
+            drawCircle(Color.White, 6.dp.toPx(), Offset(px(mask.startX), py(mask.startY)))
+            drawCircle(Color.White, 6.dp.toPx(), Offset(px(mask.endX), py(mask.endY)))
         }
         is LocalMask.Brush -> {
             mask.strokes.forEach { stroke ->
@@ -276,9 +397,11 @@ private fun DrawScope.drawMaskOutline(
  * Parameters-only drawer for the standalone full-screen [MaskEditorOverlay].
  *
  * Everything that positions or shapes a mask (shape picking, layer add /
- * remove / switch, tap-to-place and brush painting) lives on the full-screen
- * photo, not here. Keeping this drawer to sliders avoids a second tiny copy
- * of the photo and lets the user collapse it to maximise the preview area.
+ * remove / switch, tap-to-place, drag-to-move, two-finger pinch/rotate and
+ * brush painting) lives on the full-screen photo, not here. This drawer holds
+ * the COMPLETE numeric parameter set — shape geometry plus scoped light /
+ * colour / detail params and layer strength — and can be collapsed to
+ * enlarge the preview.
  */
 @Composable
 fun LocalAdjustmentSection(
@@ -287,7 +410,9 @@ fun LocalAdjustmentSection(
     onSelectLayer: (Int) -> Unit,
     onChange: (LocalAdjustments, String) -> Unit,
     onFinished: (String) -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    /** Display width / height, so linear-gradient angles match the screen. */
+    aspect: Float = 1f
 ) {
     val layers = local.layers
     val index = selectedLayer.coerceIn(0, (layers.size - 1).coerceAtLeast(0))
@@ -353,6 +478,12 @@ fun LocalAdjustmentSection(
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
             )
 
+            Text(
+                "形状参数 · 也可在照片上双指捏合缩放 / 旋转",
+                style = MaterialTheme.typography.labelSmall,
+                color = Amber,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
             // Shape parameters only — placement happens on the preview overlay.
             when (val m = mask) {
                 is LocalMask.ControlPoint -> {
@@ -386,13 +517,29 @@ fun LocalAdjustmentSection(
                         onReset = { update({ it.copy(mask = m.copy(radiusY = 0.4f)) }); commit() },
                         enabled = enabled
                     )
+                    AdjustmentSlider(
+                        label = "羽化", value = m.feather, valueRange = 0.05f..0.98f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(feather = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(feather = 0.6f)) }); commit() },
+                        enabled = enabled
+                    )
                 }
                 is LocalMask.LinearGradient -> {
+                    val angle = linearAngleDeg(m, aspect)
+                    val span = linearSpan(m, aspect)
                     AdjustmentSlider(
-                        label = "渐变终点", value = m.endY, valueRange = 0.1f..1f, step = 0.01f,
-                        onValueChange = { v -> update({ it.copy(mask = m.copy(endY = v)) }) },
+                        label = "旋转角度", value = angle, valueRange = 0f..360f, step = 1f,
+                        onValueChange = { v -> update({ it.copy(mask = setLinearAngle(m, v, aspect)) }) },
                         onValueChangeFinished = { commit() },
-                        onReset = { update({ it.copy(mask = m.copy(endY = 1f)) }); commit() },
+                        onReset = { update({ it.copy(mask = setLinearAngle(m, 90f, aspect)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "渐变范围", value = span, valueRange = 0.1f..2f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = setLinearSpan(m, v, aspect)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = setLinearSpan(m, 1f, aspect)) }); commit() },
                         enabled = enabled
                     )
                     AdjustmentSlider(
@@ -409,6 +556,13 @@ fun LocalAdjustmentSection(
                         onValueChange = { v -> update({ it.copy(mask = m.copy(radius = v)) }) },
                         onValueChangeFinished = { commit() },
                         onReset = { update({ it.copy(mask = m.copy(radius = 0.06f)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "羽化", value = m.feather, valueRange = 0.05f..0.98f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(feather = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(feather = 0.5f)) }); commit() },
                         enabled = enabled
                     )
                 }
@@ -468,6 +622,12 @@ fun LocalAdjustmentSection(
                 ) { Text("清除", color = TextSecondary) }
             }
 
+            Text(
+                "效果参数（只作用于选区内）",
+                style = MaterialTheme.typography.labelSmall,
+                color = Amber,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
             val p = layer.params
             fun params(block: (LocalParams) -> LocalParams) = update({ it.copy(params = block(it.params)) })
             AdjustmentSlider(
@@ -526,8 +686,9 @@ fun LocalAdjustmentSection(
 /**
  * The photo + mask interaction surface, shared by the standalone full-screen
  * [MaskEditorOverlay]. The user works directly on the (large) preview image —
- * tap to place, drag to move, finger-paint for the brush — with shape / layer
- * controls in a compact toolbar below the photo.
+ * tap to place, single-finger drag to move, finger-paint for the brush, and
+ * two-finger pinch to scale the region / rotate a linear gradient — with
+ * shape / layer controls in a compact toolbar below the photo.
  *
  * The caller decides how much space this fills: in the full-screen editor it
  * is weighted to occupy essentially the whole screen. Photo area and toolbar
@@ -594,46 +755,92 @@ fun LocalMaskOverlay(
                 .fillMaxSize()
                 .testTag("mask_preview_canvas")
                 .pointerInput(Unit) {
-                    if (!enabledState.value) return@pointerInput
-                    detectTapGestures { offset ->
+                    // One unified gesture loop avoids two competing detectors
+                    // fighting over the same pointers. One finger: tap to
+                    // place, drag to move / paint. Two fingers: pinch to scale
+                    // the region and rotate a linear gradient. The photo is
+                    // re-rendered once, when the gesture finishes.
+                    awaitEachGesture {
+                        if (!enabledState.value) return@awaitEachGesture
+                        val down = awaitFirstDown(requireUnconsumed = false)
                         val rect = rectFor(
                             size.width.toFloat(), size.height.toFloat(), bitmapState.value
                         )
-                        val p = rect.normalized(offset.x, offset.y) ?: return@detectTapGestures
-                        update({ l -> l.copy(mask = placeMask(l.mask, p.first, p.second)) })
-                        commit()
-                    }
-                }
-                .pointerInput(Unit) {
-                    if (!enabledState.value) return@pointerInput
-                    var isBrush = false
-                    detectDragGestures(
-                        onDragStart = {
-                            isBrush = layersState.value
-                                .getOrNull(indexState.value)?.mask is LocalMask.Brush
-                            liveBrush = emptyList()
-                        },
-                        onDragEnd = {
-                            val pts = liveBrush
-                            if (isBrush && pts.size >= 2) {
-                                val flat = ArrayList<Float>(pts.size * 2)
-                                pts.forEach { flat += it.x; flat += it.y }
-                                update({ l -> l.copy(mask = appendBrushStroke(l.mask, flat)) })
+                        val aspect = if (rect.height > 0f) rect.width / rect.height else 1f
+                        val baseMask = layersState.value
+                            .getOrNull(indexState.value)?.mask
+                        val brushMode = baseMask is LocalMask.Brush
+
+                        var totalScale = 1f
+                        var totalRotation = 0f
+                        var moved = false
+                        var multiPointer = false
+                        val brushPoints = ArrayList<Offset>()
+                        liveBrush = emptyList()
+
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.count { it.pressed }
+                            val zoom = event.calculateZoom()
+                            val rotation = event.calculateRotation()
+                            val centroid = event.calculateCentroid(useCurrent = true)
+
+                            when {
+                                pressed >= 2 -> {
+                                    multiPointer = true
+                                    moved = true
+                                    totalScale = (totalScale * zoom).coerceIn(0.15f, 8f)
+                                    totalRotation += rotation
+                                    if (baseMask != null) {
+                                        val transformed = transformMask(
+                                            baseMask, totalScale, totalRotation, aspect
+                                        )
+                                        update({ l -> l.copy(mask = transformed) })
+                                    }
+                                    event.changes.forEach { if (it.pressed) it.consume() }
+                                }
+                                pressed == 1 && !multiPointer -> {
+                                    val pan = event.calculatePan()
+                                    if (pan.getDistance() > 3f) moved = true
+                                    if (moved) {
+                                        val nx = ((centroid.x - rect.left) / rect.width)
+                                            .coerceIn(0f, 1f)
+                                        val ny = ((centroid.y - rect.top) / rect.height)
+                                            .coerceIn(0f, 1f)
+                                        if (brushMode) {
+                                            brushPoints += Offset(nx, ny)
+                                            liveBrush = brushPoints.toList()
+                                        } else {
+                                            update({ l ->
+                                                l.copy(mask = placeMask(l.mask, nx, ny))
+                                            })
+                                        }
+                                        event.changes.first { it.pressed }.consume()
+                                    }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        when {
+                            !moved && !multiPointer -> {
+                                val p = rect.normalized(down.position.x, down.position.y)
+                                if (p != null) {
+                                    update({ l ->
+                                        l.copy(mask = placeMask(l.mask, p.first, p.second))
+                                    })
+                                    commit()
+                                }
+                            }
+                            brushMode && brushPoints.size >= 2 -> {
+                                val flat = ArrayList<Float>(brushPoints.size * 2)
+                                brushPoints.forEach { flat += it.x; flat += it.y }
+                                update({ l ->
+                                    l.copy(mask = appendBrushStroke(l.mask, flat))
+                                })
                                 commit()
                                 liveBrush = emptyList()
                             }
-                        }
-                    ) { change, _ ->
-                        change.consume()
-                        val rect = rectFor(
-                            size.width.toFloat(), size.height.toFloat(), bitmapState.value
-                        )
-                        val nx = ((change.position.x - rect.left) / rect.width).coerceIn(0f, 1f)
-                        val ny = ((change.position.y - rect.top) / rect.height).coerceIn(0f, 1f)
-                        if (isBrush) {
-                            liveBrush = liveBrush + Offset(nx, ny)
-                        } else {
-                            update({ l -> l.copy(mask = placeMask(l.mask, nx, ny)) })
+                            else -> commit()
                         }
                     }
                 }
@@ -652,7 +859,7 @@ fun LocalMaskOverlay(
                 .testTag("mask_toolbar")
         ) {
             Text(
-                "在照片上点按定位 · 拖动移动 · 画笔可直接涂抹（橙色为受影响区域）",
+                "点按定位 · 单指拖动移动/涂抹 · 双指捏合缩放区域 · 双指旋转线性角度（橙色为受影响区域）",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White
             )

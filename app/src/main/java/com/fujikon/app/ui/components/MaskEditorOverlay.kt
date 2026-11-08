@@ -1,17 +1,20 @@
 package com.fujikon.app.ui.components
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -23,17 +26,17 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -47,19 +50,24 @@ import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 
 /**
- * Standalone FULL-SCREEN mask editor.
+ * Standalone FULL-SCREEN mask editor rendered INSIDE the main Compose tree
+ * (not a separate Dialog window — a Dialog window would physically cover the
+ * editor's top action bar and make it impossible to click through to it).
  *
- * Previously masking lived inside the adjustments panel as a tab plus a
- * cramped half-screen overlay above it (44% of the screen, minus status bar,
- * top action bar and the toolbar). That left far too little room to position
- * a mask accurately. This page is a first-class editor on the same level as
- * crop / lens-blur: it fills the whole screen, so the photo gets essentially
- * all the space except a slim title bar, the mask toolbar and an optional,
- * collapsible parameters drawer (collapsed by default).
+ * The root is a bare transparent Box with NO scrim and NO pointer input on
+ * its top strip. That strip (status bar + the 64dp TopAppBar) is deliberately
+ * left empty, so the REAL top action bar above the preview — preset switch,
+ * undo, redo, history — stays visible and directly clickable while masking.
+ * No action buttons are duplicated inside this page.
  *
- * All mask placement / shaping / layer / brush operations happen directly on
- * the photo via [LocalMaskOverlay]; the drawer only holds numeric parameters
- * via [LocalAdjustmentSection].
+ * The photo gets essentially all the remaining space via [LocalMaskOverlay];
+ * numeric parameters live in a drawer that is EXPANDED by default (so they
+ * are never "missing") and can be collapsed to enlarge the preview.
+ *
+ * [initialAdjustments] is the LIVE external state. A local draft keeps slider
+ * drags and mask gestures from re-rendering on every frame, but follows the
+ * external state whenever a global action (undo / redo / preset / history)
+ * changes it — keeping this page in sync with the top action bar.
  */
 @Composable
 fun MaskEditorOverlay(
@@ -71,16 +79,25 @@ fun MaskEditorOverlay(
     onApply: (EditAdjustments) -> Unit,
     onCancel: () -> Unit
 ) {
-    // A local draft so slider drags / mask gestures never re-render on every
-    // frame: the host renders once per committed change (same contract as the
-    // adjustments panel).
     val draftState = remember { mutableStateOf(initialAdjustments.normalized()) }
     var draft by draftState
+    val draftRef = rememberUpdatedState(draft)
+    LaunchedEffect(initialAdjustments) {
+        val external = initialAdjustments.normalized()
+        if (external != draftRef.value) draft = external
+    }
+
     var selectedLayer by remember { mutableStateOf(0) }
-    var paramsExpanded by remember { mutableStateOf(false) }
+    // Parameters are a first-class part of the editor: visible by default so
+    // they can no longer be "missing", and collapsible to free the preview.
+    var paramsExpanded by remember { mutableStateOf(true) }
 
     val screenHeight = LocalConfiguration.current.screenHeightDp
-    val paramsHeight = (screenHeight * 0.38f).dp
+    val paramsHeight = (screenHeight * 0.26f).dp
+    val aspect = remember(previewBitmap, sourceBitmap) {
+        val b = previewBitmap ?: sourceBitmap
+        if (b != null && !b.isRecycled && b.height > 0) b.width.toFloat() / b.height else 1f
+    }
 
     val layers = draft.local.layers
     val index = selectedLayer.coerceIn(0, (layers.size - 1).coerceAtLeast(0))
@@ -93,19 +110,31 @@ fun MaskEditorOverlay(
         onPreview(draftState.value, field)
     }
 
-    // Back / outside-tap is handled by the host Dialog's onDismissRequest,
-    // exactly like the crop and lens-blur full-screen editors.
+    // In-tree full-screen page: the back key leaves it (and rolls back),
+    // since there is no Dialog window to supply onDismissRequest anymore.
+    BackHandler(onBack = onCancel)
 
-    Surface(
-        modifier = Modifier.fillMaxSize().testTag("mask_editor_root"),
-        color = Ink
+    Box(
+        Modifier
+            .fillMaxSize()
+            .testTag("mask_editor_root")
     ) {
-        Column(Modifier.fillMaxSize()) {
-            // Slim title bar: cancel / title + hint / done.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(top = 64.dp)
+                .background(Ink)
+                .navigationBarsPadding()
+                .testTag("mask_editor_content")
+        ) {
+            // Slim title bar: cancel / title + hint / done. The GLOBAL action
+            // bar (preset / undo / redo / history) is the real TopAppBar
+            // visible in the transparent strip directly above this row.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
@@ -121,7 +150,7 @@ fun MaskEditorOverlay(
                         color = TextPrimary
                     )
                     Text(
-                        "全屏编辑 · 在照片上点按定位 / 拖动 / 画笔涂抹 · 底部切换形状与图层",
+                        "在照片上操作选区 · 下方调节参数",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
                     )
@@ -143,9 +172,6 @@ fun MaskEditorOverlay(
                 }
             }
 
-            // The photo + mask interaction + shape/layer toolbar fill all the
-            // remaining vertical space. Collapsing the drawer below makes this
-            // as large as the screen allows.
             LocalMaskOverlay(
                 local = draft.local,
                 selectedLayer = index,
@@ -160,14 +186,12 @@ fun MaskEditorOverlay(
                     .testTag("mask_editor_preview_host")
             )
 
-            // Collapsible numeric-parameters drawer. Collapsed by default so
-            // the preview stays big; one tap reveals the sliders.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(InkElevated)
                     .clickable { paramsExpanded = !paramsExpanded }
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
                     .testTag("mask_params_toggle"),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -205,13 +229,20 @@ fun MaskEditorOverlay(
                         .padding(horizontal = 12.dp)
                         .testTag("mask_params_panel")
                 ) {
+                    Text(
+                        "参数调节 · 数值作用于选中的蒙版图层",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Amber,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    )
                     LocalAdjustmentSection(
                         local = draft.local,
                         selectedLayer = index,
                         onSelectLayer = { selectedLayer = it },
                         onChange = { next, field -> onChangeLocal(next, field) },
                         onFinished = { field -> commit(field) },
-                        enabled = true
+                        enabled = true,
+                        aspect = aspect
                     )
                 }
             }

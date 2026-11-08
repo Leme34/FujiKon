@@ -10,8 +10,13 @@ import com.fujikon.app.ui.components.fitImageRect
 import com.fujikon.app.ui.components.hueFromArgb
 import com.fujikon.app.ui.components.hueLabel
 import com.fujikon.app.ui.components.lightnessFromArgb
+import com.fujikon.app.ui.components.linearAngleDeg
+import com.fujikon.app.ui.components.linearSpan
 import com.fujikon.app.ui.components.placeMask
 import com.fujikon.app.ui.components.saturationFromArgb
+import com.fujikon.app.ui.components.setLinearAngle
+import com.fujikon.app.ui.components.setLinearSpan
+import com.fujikon.app.ui.components.transformMask
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -117,5 +122,56 @@ class QualitySectionsTest {
         assertEquals(24, (m as LocalMask.Brush).strokes.size)
         val point = LocalMask.ControlPoint()
         assertTrue(appendBrushStroke(point, listOf(0.1f, 0.1f, 0.2f, 0.2f)) === point)
+    }
+
+    @Test
+    fun transformMaskPinchScalesPointRadialAndBrush() {
+        val p = transformMask(LocalMask.ControlPoint(radius = 0.3f), 1.5f, 0f) as LocalMask.ControlPoint
+        assertEquals(0.45f, p.radius, 0.001f)
+        val r = transformMask(
+            LocalMask.RadialGradient(radiusX = 0.2f, radiusY = 0.4f), 2f, 0f
+        ) as LocalMask.RadialGradient
+        assertEquals(0.4f, r.radiusX, 0.001f)
+        assertEquals(0.8f, r.radiusY, 0.001f)
+        val b = transformMask(LocalMask.Brush(radius = 0.04f), 0.5f, 0f) as LocalMask.Brush
+        assertEquals(0.02f, b.radius, 0.001f)
+        // A huge pinch must not blow past sane bounds.
+        val cp = transformMask(LocalMask.ControlPoint(radius = 0.8f), 10f, 0f) as LocalMask.ControlPoint
+        assertEquals(0.9f, cp.radius, 0.001f)
+    }
+
+    @Test
+    fun transformMaskRotatesLinearAndScalesItsSpan() {
+        val base = LocalMask.LinearGradient() // vertical: angle 90, span 1
+        assertEquals(90f, linearAngleDeg(base, 1f), 0.5f)
+        assertEquals(1f, linearSpan(base, 1f), 0.001f)
+        val rotated = transformMask(base, 1f, 90f, 1f) as LocalMask.LinearGradient
+        assertEquals(180f, linearAngleDeg(rotated, 1f), 0.5f)
+        assertEquals(1f, linearSpan(rotated, 1f), 0.001f)
+        val scaled = transformMask(base, 1.6f, 0f, 1f) as LocalMask.LinearGradient
+        assertEquals(1.6f, linearSpan(scaled, 1f), 0.001f)
+        assertEquals(90f, linearAngleDeg(scaled, 1f), 0.5f)
+    }
+
+    @Test
+    fun setLinearAngleAndSpanKeepCentreAndEachOther() {
+        val base = LocalMask.LinearGradient()
+        val angled = setLinearAngle(base, 0f, 1f)
+        assertEquals(0f, linearAngleDeg(angled, 1f), 0.5f)
+        assertEquals(1f, linearSpan(angled, 1f), 0.001f)
+        assertEquals(0.5f, (angled.startX + angled.endX) * 0.5f, 0.001f)
+        val wide = setLinearSpan(angled, 1.4f, 1f)
+        assertEquals(0f, linearAngleDeg(wide, 1f), 0.5f)
+        assertEquals(1.4f, linearSpan(wide, 1f), 0.001f)
+    }
+
+    @Test
+    fun placingARotatedLinearKeepsItsAngleAndSpan() {
+        val rotated = setLinearAngle(LocalMask.LinearGradient(), 30f, 1f)
+        val moved = placeMask(rotated, 0.3f, 0.7f) as LocalMask.LinearGradient
+        assertEquals("移动/点按不应把旋转过的渐变重置为垂直", 30f, linearAngleDeg(moved, 1f), 0.5f)
+        assertEquals(linearSpan(rotated, 1f), linearSpan(moved, 1f), 0.001f)
+        assertEquals(0.3f, (moved.startX + moved.endX) * 0.5f, 0.001f)
+        assertEquals(0.7f, (moved.startY + moved.endY) * 0.5f, 0.001f)
     }
 }

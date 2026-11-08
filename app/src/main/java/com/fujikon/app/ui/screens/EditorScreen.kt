@@ -685,6 +685,33 @@ fun EditorScreen(
         }
     }
 
+    // Masking is a standalone FULL-SCREEN page rendered INSIDE the main tree,
+    // NOT a separate Dialog window: a Dialog window would physically cover
+    // the editor's TopAppBar and there would be no way to click through to
+    // the preset / undo / redo / history actions while masking. Its own top
+    // strip is a bare transparent, scrim-free area, so the real action bar
+    // stays visible and clickable. Drawn BEFORE the picker / history sheets
+    // so those still stack on top when opened from that action bar.
+    if (showMaskEditor && preset != null) {
+        MaskEditorOverlay(
+            initialAdjustments = state.adjustments,
+            sourceBitmap = state.original ?: state.rendered,
+            previewBitmap = state.rendered ?: state.original,
+            rendering = state.loading,
+            onPreview = { adjustments, field ->
+                viewModel.setAdjustments(adjustments, field)
+            },
+            onApply = { adjustments ->
+                viewModel.setAdjustments(adjustments)
+                showMaskEditor = false
+            },
+            onCancel = {
+                viewModel.setAdjustments(maskEditorInitial)
+                showMaskEditor = false
+            }
+        )
+    }
+
     if (showPicker) {
         PresetPickerSheet(
             presets = state.presets,
@@ -949,41 +976,6 @@ fun EditorScreen(
                     viewModel.setCrop(crop)
                 },
                 onCancel = { showCrop = false }
-            )
-        }
-    }
-
-    // Masking is a standalone FULL-SCREEN editor (like crop / blur), not a
-    // cramped half-screen overlay inside the adjustments panel. A dedicated
-    // Dialog window gives the photo the entire screen; a cancel rolls the
-    // staged previews back to the state captured when the editor opened.
-    if (showMaskEditor && preset != null) {
-        Dialog(
-            onDismissRequest = {
-                viewModel.setAdjustments(maskEditorInitial)
-                showMaskEditor = false
-            },
-            properties = DialogProperties(
-                usePlatformDefaultWidth = false,
-                decorFitsSystemWindows = true
-            )
-        ) {
-            MaskEditorOverlay(
-                initialAdjustments = maskEditorInitial,
-                sourceBitmap = state.original ?: state.rendered,
-                previewBitmap = state.rendered ?: state.original,
-                rendering = state.loading,
-                onPreview = { adjustments, field ->
-                    viewModel.setAdjustments(adjustments, field)
-                },
-                onApply = { adjustments ->
-                    viewModel.setAdjustments(adjustments)
-                    showMaskEditor = false
-                },
-                onCancel = {
-                    viewModel.setAdjustments(maskEditorInitial)
-                    showMaskEditor = false
-                }
             )
         }
     }
