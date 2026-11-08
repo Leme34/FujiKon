@@ -72,35 +72,47 @@ object LocalMaskRenderer {
                 val dy = mask.endY - mask.startY
                 val len2 = (dx * dx + dy * dy).coerceAtLeast(1e-6f)
                 val feather = mask.feather.coerceIn(0.02f, 1f)
+                // Gate: pixels projected BEFORE the start or BEYOND the end are
+                // outside the selection. The old code CLAMPED t to 0..1, so both
+                // outer half-planes inherited the endpoint value: every pixel
+                // past the end stayed at full strength (and, when inverted, the
+                // whole area before the start was full too). The mask therefore
+                // leaked far outside its two endpoints. Keeping the raw
+                // (unclamped) projection and gating it confines the effect to
+                // the strip actually spanned by the endpoints.
+                val edge = (feather * 0.15f + 0.01f).coerceIn(0.01f, 0.12f)
                 for (y in 0 until h) {
                     val ny = y.toFloat() / (h - 1)
                     for (x in 0 until w) {
                         val nx = x.toFloat() / (w - 1)
-                        val t = (((nx - mask.startX) * dx + (ny - mask.startY) * dy) / len2)
-                            .coerceIn(0f, 1f)
-                        var weight = smoothstep(0f, feather, t)
-                        // Ensure the far end reaches full strength.
-                        weight = max(weight, smoothstep(1f - feather, 1f, t))
-                        values[y * w + x] = if (mask.invert) 1f - weight else weight
+                        val t = ((nx - mask.startX) * dx + (ny - mask.startY) * dy) / len2
+                        // Keep the original soft ramp (feather widens the start
+                        // transition, then it saturates): only the gate changes,
+                        // so existing auto-zone/linear recipes keep their look.
+                        val ramp = smoothstep(0f, feather, t)
+                        val gate = smoothstep(-edge, 0f, t) * (1f - smoothstep(1f, 1f + edge, t))
+                        // invert flips the direction INSIDE the band only; the
+                        // gate keeps everything outside the endpoints at 0.
+                        values[y * w + x] = (if (mask.invert) 1f - ramp else ramp) * gate
                     }
                 }
             }
             is LocalMask.RadialGradient -> {
-                val rx = mask.radiusX.coerceIn(0.01f, 1.5f)
-                val ry = mask.radiusY.coerceIn(0.01f, 1.5f)
                 val inner = 1f - mask.feather.coerceIn(0.05f, 0.98f)
                 for (y in 0 until h) {
                     val ny = y.toFloat() / (h - 1)
                     for (x in 0 until w) {
                         val nx = x.toFloat() / (w - 1)
-                        val d = hypot((nx - mask.x) / rx, (ny - mask.y) / ry)
+                        // Rotation-aware distance: the ellipse can now be spun
+                        // with its handle; raster and outline share the maths.
+                        val d = mask.rotatedDistance(nx, ny, aspect)
                         val inside = 1f - smoothstep(inner, 1f, d)
                         values[y * w + x] = if (mask.invert) 1f - inside else inside
                     }
                 }
             }
             is LocalMask.Brush -> {
-                rasteriseBrush(values, w, h, mask)
+                rasteriseBrush(values, w, h, mask, aspect)
                 if (mask.invert) {
                     for (i in values.indices) values[i] = 1f - values[i]
                 }
@@ -109,19 +121,28 @@ object LocalMaskRenderer {
         return MaskGrid(w, h, values)
     }
 
-    private fun rasteriseBrush(values: FloatArray, w: Int, h: Int, mask: LocalMask.Brush) {
+    private fun rasteriseBrush(
+        values: FloatArray, w: Int, h: Int, mask: LocalMask.Brush, aspect: Float
+    ) {
         val radiusPx = (mask.radius.coerceIn(0.005f, 0.5f) * max(w, h)).coerceAtLeast(1.2f)
         val feather = mask.feather.coerceIn(0.05f, 1f)
+        // Raw stroke points are LOCAL; apply the brush's rotation + offset so
+        // a dragged / spun selection renders exactly where its outline shows.
+        fun map(x: Float, y: Float) = mask.mapPoint(x, y, aspect)
         for (stroke in mask.strokes) {
             val pts = stroke.points
             var i = 0
             while (i + 1 < pts.size) {
-                stampSegment(values, w, h, pts[i], pts[i + 1], pts.getOrElse(i + 2) { pts[i] },
-                    pts.getOrElse(i + 3) { pts[i + 1] }, radiusPx, feather, stroke.strength)
+                val a = map(pts[i], pts[i + 1])
+                val b = map(pts.getOrElse(i + 2) { pts[i] }, pts.getOrElse(i + 3) { pts[i + 1] })
+                stampSegment(values, w, h, a.first, a.second, b.first, b.second,
+                    radiusPx, feather, stroke.strength)
                 i += 2
             }
             if (pts.size == 2) {
-                stampSegment(values, w, h, pts[0], pts[1], pts[0], pts[1], radiusPx, feather, stroke.strength)
+                val a = map(pts[0], pts[1])
+                stampSegment(values, w, h, a.first, a.second, a.first, a.second,
+                    radiusPx, feather, stroke.strength)
             }
         }
         // A light box blur gives painted edges a soft, feathered falloff.

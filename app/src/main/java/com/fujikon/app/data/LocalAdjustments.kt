@@ -3,6 +3,14 @@ package com.fujikon.app.data
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
+
+private const val DEG2RAD = 0.017453292f
+
+private fun safeAspect(aspect: Float): Float =
+    if (aspect.isFinite() && aspect > 0.0001f) aspect else 1f
 
 /**
  * A compact, zone-scoped subset of the global adjustments.
@@ -126,16 +134,91 @@ sealed class LocalMask {
         val radiusX: Float = 0.4f,
         val radiusY: Float = 0.4f,
         val feather: Float = 0.6f,
-        val invert: Boolean = false
-    ) : LocalMask()
+        val invert: Boolean = false,
+        /** Screen-space rotation of the ellipse in degrees, around its centre. */
+        val rotationDeg: Float = 0f
+    ) : LocalMask() {
+        /**
+         * Normalised distance from a pixel to the ROTATED ellipse: < 1 means
+         * inside. Shared by the renderer (raster) and tests so a rotated oval
+         * behaves identically to the outline drawn on the preview. `aspect` is
+         * frameWidth/frameHeight; rotating in height-normalised physical space
+         * keeps the angle identical on non-square photos.
+         */
+        fun rotatedDistance(nx: Float, ny: Float, aspect: Float): Float {
+            val a = safeAspect(aspect)
+            val ux = (nx - x) * a
+            val uy = ny - y
+            val r = rotationDeg * DEG2RAD
+            val c = cos(r); val s = sin(r)
+            // Undo the screen rotation to get back into the ellipse's own axes.
+            val lx = ux * c + uy * s
+            val ly = -ux * s + uy * c
+            val rx = radiusX.coerceIn(0.01f, 1.5f) * a
+            val ry = radiusY.coerceIn(0.01f, 1.5f)
+            return hypot(lx / rx, ly / ry)
+        }
+    }
 
     /** Free-hand painted strokes rasterised into a distance field. */
     data class Brush(
         val strokes: List<BrushStroke> = emptyList(),
         val radius: Float = 0.06f,
         val feather: Float = 0.5f,
-        val invert: Boolean = false
-    ) : LocalMask()
+        val invert: Boolean = false,
+        /** Screen-space translation applied AFTER rotation (so drags follow the finger). */
+        val offsetX: Float = 0f,
+        val offsetY: Float = 0f,
+        /** Screen-space rotation around the stroke bounding-box centre, in degrees. */
+        val rotationDeg: Float = 0f
+    ) : LocalMask() {
+        /**
+         * Rotation centre, pinned to the FIRST stroke's bounding box.
+         * Pinning it (instead of recomputing over all strokes) means appending
+         * a second/third stroke never shifts the pixels already painted. An
+         * empty brush falls back to the frame centre; a brush cannot be spun
+         * before it has any strokes anyway (no rotation handle is shown).
+         */
+        fun centre(): Pair<Float, Float> {
+            val p = strokes.firstOrNull()?.points ?: return 0.5f to 0.5f
+            var minX = Float.POSITIVE_INFINITY; var maxX = Float.NEGATIVE_INFINITY
+            var minY = Float.POSITIVE_INFINITY; var maxY = Float.NEGATIVE_INFINITY
+            var i = 0
+            while (i + 1 < p.size) {
+                minX = minOf(minX, p[i]); maxX = maxOf(maxX, p[i])
+                minY = minOf(minY, p[i + 1]); maxY = maxOf(maxY, p[i + 1])
+                i += 2
+            }
+            if (minX == Float.POSITIVE_INFINITY) return 0.5f to 0.5f
+            return (minX + maxX) * 0.5f to (minY + maxY) * 0.5f
+        }
+
+        /** Local stroke point -> on-screen normalised point (rotate, then translate). */
+        fun mapPoint(px: Float, py: Float, aspect: Float): Pair<Float, Float> {
+            val a = safeAspect(aspect)
+            val (cx, cy) = centre()
+            val r = rotationDeg * DEG2RAD
+            val c = cos(r); val s = sin(r)
+            val ux = (px - cx) * a
+            val uy = py - cy
+            val rx = ux * c - uy * s
+            val ry = ux * s + uy * c
+            return (cx + rx / a + offsetX) to (cy + ry + offsetY)
+        }
+
+        /** On-screen normalised point -> local stroke point (inverse of [mapPoint]). */
+        fun unmapPoint(nx: Float, ny: Float, aspect: Float): Pair<Float, Float> {
+            val a = safeAspect(aspect)
+            val (cx, cy) = centre()
+            val r = rotationDeg * DEG2RAD
+            val c = cos(r); val s = sin(r)
+            val ux = (nx - offsetX - cx) * a
+            val uy = ny - offsetY - cy
+            val lx = ux * c + uy * s
+            val ly = -ux * s + uy * c
+            return (cx + lx / a) to (cy + ly)
+        }
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         when (this@LocalMask) {
@@ -155,12 +238,15 @@ sealed class LocalMask {
                 put("x", x.toDouble()); put("y", y.toDouble())
                 put("radiusX", radiusX.toDouble()); put("radiusY", radiusY.toDouble())
                 put("feather", feather.toDouble()); put("invert", invert)
+                put("rotation", rotationDeg.toDouble())
             }
             is Brush -> {
                 put("type", "brush")
                 put("strokes", JSONArray().apply { strokes.forEach { put(it.toJson()) } })
                 put("radius", radius.toDouble()); put("feather", feather.toDouble())
                 put("invert", invert)
+                put("offsetX", offsetX.toDouble()); put("offsetY", offsetY.toDouble())
+                put("rotation", rotationDeg.toDouble())
             }
         }
     }
@@ -178,12 +264,13 @@ sealed class LocalMask {
                     json.optBoolean("invert", false)
                 )
                 "radial" -> RadialGradient(
-                    json.optDouble("x", 0.5).toFloat(),
-                    json.optDouble("y", 0.5).toFloat(),
-                    json.optDouble("radiusX", 0.4).toFloat(),
-                    json.optDouble("radiusY", 0.4).toFloat(),
-                    json.optDouble("feather", 0.6).toFloat(),
-                    json.optBoolean("invert", false)
+                    x = json.optDouble("x", 0.5).toFloat(),
+                    y = json.optDouble("y", 0.5).toFloat(),
+                    radiusX = json.optDouble("radiusX", 0.4).toFloat(),
+                    radiusY = json.optDouble("radiusY", 0.4).toFloat(),
+                    feather = json.optDouble("feather", 0.6).toFloat(),
+                    invert = json.optBoolean("invert", false),
+                    rotationDeg = json.optDouble("rotation", 0.0).toFloat()
                 )
                 "brush" -> {
                     val array = json.optJSONArray("strokes") ?: JSONArray()
@@ -192,10 +279,13 @@ sealed class LocalMask {
                         strokes += BrushStroke.fromJson(array.optJSONObject(i))
                     }
                     Brush(
-                        strokes,
-                        json.optDouble("radius", 0.06).toFloat(),
-                        json.optDouble("feather", 0.5).toFloat(),
-                        json.optBoolean("invert", false)
+                        strokes = strokes,
+                        radius = json.optDouble("radius", 0.06).toFloat(),
+                        feather = json.optDouble("feather", 0.5).toFloat(),
+                        invert = json.optBoolean("invert", false),
+                        offsetX = json.optDouble("offsetX", 0.0).toFloat(),
+                        offsetY = json.optDouble("offsetY", 0.0).toFloat(),
+                        rotationDeg = json.optDouble("rotation", 0.0).toFloat()
                     )
                 }
                 else -> ControlPoint(

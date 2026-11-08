@@ -19,12 +19,15 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.dp
+import com.fujikon.app.data.BrushStroke
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
 import com.fujikon.app.ui.components.MaskEditorOverlay
+import com.fujikon.app.ui.components.fitImageRect
+import com.fujikon.app.ui.components.maskRotationHandle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -51,6 +54,7 @@ class MaskEditorOverlayTest {
         Bitmap.createBitmap(20, 20, Bitmap.Config.ARGB_8888).apply { eraseColor(argb) }
 
     private fun setEditor(
+        adjustments: EditAdjustments = EditAdjustments.Neutral,
         onPreview: (EditAdjustments, String?) -> Unit = { _, _ -> },
         onApply: (EditAdjustments) -> Unit = {},
         onCancel: () -> Unit = {}
@@ -58,7 +62,7 @@ class MaskEditorOverlayTest {
         val bmp = solidBitmap(0xFF336699.toInt())
         rule.setContent {
             MaskEditorOverlay(
-                initialAdjustments = EditAdjustments.Neutral,
+                initialAdjustments = adjustments,
                 sourceBitmap = bmp,
                 previewBitmap = bmp,
                 rendering = false,
@@ -267,5 +271,66 @@ class MaskEditorOverlayTest {
         setEditor()
         rule.onNodeWithTag("local_mask_overlay").assertDoesNotExist()
         rule.onNodeWithTag("adjustments_panel").assertDoesNotExist()
+    }
+
+    private fun editorWith(mask: LocalMask) = EditAdjustments.Neutral.copy(
+        local = LocalAdjustments(
+            listOf(LocalLayer(id = "m", mask = mask, params = LocalParams(brightness = 25f)))
+        )
+    )
+
+    @Test
+    fun singleFingerOnTheRotationHandleSpinsARadialMask() {
+        var last: EditAdjustments? = null
+        val radial = LocalMask.RadialGradient(x = 0.5f, y = 0.5f, radiusX = 0.3f, radiusY = 0.3f)
+        setEditor(adjustments = editorWith(radial), onPreview = { a, _ -> last = a })
+        rule.waitForIdle()
+
+        val canvas = rule.onNodeWithTag("mask_preview_canvas")
+        val size = canvas.fetchSemanticsNode().size
+        val rect = fitImageRect(size.width.toFloat(), size.height.toFloat(), 20, 20)
+        val aspect = rect.width / rect.height
+        val handle = maskRotationHandle(radial, rect, aspect)!!
+        // One finger pressed on the white handle, dragged sideways, must spin
+        // the ellipse — no second finger needed.
+        canvas.performTouchInput {
+            down(handle)
+            moveTo(handle + Offset(80f, 40f))
+            up()
+        }
+        rule.waitForIdle()
+        val rotated = (last?.local?.layers?.firstOrNull()?.mask as? LocalMask.RadialGradient)?.rotationDeg
+        assertTrue(
+            "单指按住旋转点应改变径向角度: $rotated",
+            rotated != null && kotlin.math.abs(rotated) > 1f
+        )
+    }
+
+    @Test
+    fun draggingAnExistingBrushStrokeMovesTheWholeSelection() {
+        var last: EditAdjustments? = null
+        val brush = LocalMask.Brush(
+            strokes = listOf(BrushStroke(listOf(0.3f, 0.5f, 0.7f, 0.5f)))
+        )
+        setEditor(adjustments = editorWith(brush), onPreview = { a, _ -> last = a })
+        rule.waitForIdle()
+
+        val canvas = rule.onNodeWithTag("mask_preview_canvas")
+        val size = canvas.fetchSemanticsNode().size
+        val rect = fitImageRect(size.width.toFloat(), size.height.toFloat(), 20, 20)
+        // Press ON an existing stroke (not on the rotation handle above it):
+        // a single-finger drag must translate the whole selection.
+        val mid = Offset(rect.left + 0.5f * rect.width, rect.top + 0.5f * rect.height)
+        canvas.performTouchInput {
+            down(mid)
+            moveTo(mid + Offset(0f, 60f))
+            up()
+        }
+        rule.waitForIdle()
+        val moved = last?.local?.layers?.firstOrNull()?.mask as? LocalMask.Brush
+        assertTrue(
+            "单指按已有笔迹拖动应整体移动: ${moved?.offsetY}",
+            (moved?.offsetY ?: 0f) > 0.01f
+        )
     }
 }
