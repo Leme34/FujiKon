@@ -13,7 +13,9 @@ import org.robolectric.annotation.Config
 /**
  * The 写真 look is a composite recipe, not just a tone grade. These tests lock
  * down that the recipe is resolved at render time from the filter id + strength
- * (so it never needs new persisted JSON fields) and that manual edits win.
+ * (so it never needs new persisted JSON fields), that manual edits win, and —
+ * most importantly — that it keeps a solid black point, real contrast/chroma
+ * and micro-texture instead of washing the portrait into a grey haze.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -35,38 +37,50 @@ class FilterLookTest {
         val profile = filter.profile
         assertFalse(profile.look.isEmpty())
         assertTrue(profile.tip.isNotBlank())
-        // Lift blacks / pull highlights / low contrast / slightly cool / low sat
-        assertTrue(profile.shadows > 0f)
-        assertTrue(profile.blacks > 0f)
-        assertTrue(profile.highlights < 0f)
-        assertTrue(profile.contrast < 0f)
-        assertTrue(profile.saturation < 0f)
-        assertTrue(profile.temperature < 0f)
-        // Split tone: cool shadows, warm-pink highlights
+
+        // Anti-grey guardrails. 1.6.20 stacked lifted blacks + fade + negative
+        // contrast + global de-saturation and washed the subject out. The
+        // reworked grade keeps a solid black point and real contrast/chroma.
+        assertTrue("black point must not be lifted", profile.blacks <= 0f)
+        assertTrue("no matte fade wash", profile.fade <= 0f)
+        assertTrue("contrast must be preserved, not flattened", profile.contrast > 0f)
+        assertTrue("no global de-saturation", profile.saturation >= 0f)
+        assertTrue("low-chroma pixels should be revived", profile.vibrance > 0f)
+        assertTrue("only a gentle shadow lift", profile.shadows > 0f && profile.shadows < 0.10f)
+        assertTrue("highlights still rolled off", profile.highlights < 0f)
+        assertTrue("split tone must not grey out face shadows", profile.splitStrength <= 0.10f)
+        assertTrue("temperature should not push the skin cold", profile.temperature >= 0f)
         assertTrue(profile.shadowTint != null)
         assertTrue(profile.highlightTint != null)
     }
 
     @Test
-    fun lookTargetsSkinFoliageAndRetouch() {
+    fun lookKeepsSkinBrightAndFoliageCleanWithoutGreyHaze() {
         val look = CreativeFilter.PORTRAIT_STUDIO.profile.look
         val hsl = look.hsl
-        // Orange / red bands: de-yellow, brighten skin
+        // Skin bands brighten (whitening) while KEEPING chroma — no more
+        // across-the-board saturation cuts that used to grey the whole frame.
         assertTrue(hsl.band(0).luminance > 0f)
         assertTrue(hsl.band(1).luminance > 0f)
+        assertTrue(hsl.band(0).saturation >= 0f)
+        assertTrue(hsl.band(1).saturation >= 0f)
         assertTrue(hsl.band(1).hue < 0f)
-        // Green band: de-saturate and shift toward cyan
+        // Green band: de-saturate and shift toward cyan, still directional.
         assertTrue(hsl.band(3).saturation < 0f)
         assertTrue(hsl.band(3).hue > 0f)
         assertTrue(hsl.band(3).luminance > 0f)
-        // Retouch: smooth + whiten dominant, gentle blush, weak contour
+        // Retouch: light smoothing, real whitening, strong contour/detail
+        // payback. contour > smooth is what keeps pores and facial structure.
         assertTrue(look.portrait.smooth > 0f)
         assertTrue(look.portrait.whiten > 0f)
         assertTrue(look.portrait.blush > 0f)
-        assertTrue(look.portrait.smooth > look.portrait.contour)
-        // Soft focus rather than sharpening
-        assertTrue(look.clarity < 0f)
-        assertTrue(look.texture < 0f)
+        assertTrue("micro-contrast must be paid back", look.portrait.contour > look.portrait.smooth)
+        assertTrue("smoothing must stay gentle", look.portrait.smooth < 25f)
+        // Positive texture restores micro-detail; clarity stays almost neutral.
+        assertTrue("texture must restore detail", look.texture > 0f)
+        assertTrue("clarity must not flatten local contrast", look.clarity < 0f)
+        assertTrue("clarity softening must be minimal", look.clarity > -5f)
+        assertTrue(look.vignette > 0f)
     }
 
     @Test
@@ -96,7 +110,7 @@ class FilterLookTest {
         assertFalse(resolved.hsl.isNeutral())
         assertFalse(resolved.portrait.isOff())
         assertTrue(resolved.clarity < 0f)
-        assertTrue(resolved.texture < 0f)
+        assertTrue(resolved.texture > 0f)
         assertTrue(resolved.vignette > 0f)
         // Full strength equals the recipe exactly.
         assertEquals(
@@ -122,6 +136,7 @@ class FilterLookTest {
         assertEquals(full.hsl.band(3).saturation * 0.5f, half.hsl.band(3).saturation, 0.001f)
         assertEquals(full.portrait.smooth * 0.5f, half.portrait.smooth, 0.001f)
         assertEquals(full.clarity * 0.5f, half.clarity, 0.001f)
+        assertEquals(full.texture * 0.5f, half.texture, 0.001f)
         assertEquals(full.vignette * 0.5f, half.vignette, 0.001f)
     }
 

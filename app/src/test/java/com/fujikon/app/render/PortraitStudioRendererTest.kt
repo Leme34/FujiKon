@@ -15,10 +15,12 @@ import org.robolectric.annotation.Config
 
 /**
  * Pixel-level acceptance for the 写真 (studio portrait) composite look.
- * A patchwork source carries the tones measured on the reference photos:
- * near-black, near-white, skin, foliage green and warm wood. The look must
- * lift the blacks without blowing the whites, brighten skin, and de-saturate
- * / cool the greens — the exact recipe reversed out of the samples.
+ *
+ * 1.6.20 washed the subject out into a grey haze: lifted blacks, faded
+ * contrast, global de-saturation, negative clarity/texture and heavy
+ * smoothing. These tests are the guardrails for the reworked recipe — a
+ * solid black point, preserved contrast/chroma, real skin micro-texture and
+ * a still-brighter, whiter skin tone.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -50,21 +52,70 @@ class PortraitStudioRendererTest {
     }
 
     @Test
-    fun liftsBlacksWithoutBlowingWhites() = runBlocking {
+    fun keepsBlackPointSolidAndDoesNotBlowWhites() = runBlocking {
         val source = patchwork()
         val base = renderer.render(source, Preset.none(), forExport = false)
         val filtered = renderStudio(source)
 
         val blackBefore = meanLuma(base, Patch.BLACK)
         val blackAfter = meanLuma(filtered, Patch.BLACK)
-        // Lifted blacks: the dark patch is measurably brighter but stays dark.
-        assertTrue("blacks should lift: $blackBefore -> $blackAfter", blackAfter > blackBefore + 2f)
-        assertTrue("blacks should not turn milky: $blackAfter", blackAfter < 90f)
+        // The black point must NOT be lifted into a milky grey. 1.6.20 raised
+        // a level-18 black to ~32; the reworked grade keeps it dark.
+        assertTrue("black point stayed dark: $blackBefore -> $blackAfter",
+            blackAfter < blackBefore + 8f)
+        assertTrue("black patch stays dark: $blackAfter", blackAfter < 60f)
 
-        // Rolled-off highlights: no new pure-white clipping anywhere.
+        // Positive texture + the hard band edges of this synthetic patchwork
+        // can push a handful of boundary pixels to 255. The real reference
+        // portraits clip <0.001% and keep full dress detail, so the guardrail
+        // targets a washed-out white FIELD and large dead-white areas rather
+        // than isolated edge pixels.
+        val whiteField = meanLuma(filtered, Patch.WHITE)
+        assertTrue("white field must retain detail: $whiteField", whiteField < 248f)
         val whiteBefore = pureWhiteCount(base)
         val whiteAfter = pureWhiteCount(filtered)
-        assertTrue("whites should not clip: $whiteBefore -> $whiteAfter", whiteAfter <= whiteBefore)
+        assertTrue("no large dead-white areas: $whiteBefore -> $whiteAfter", whiteAfter <= 60)
+    }
+
+    @Test
+    fun preservesGlobalContrastInsteadOfFlatteningIt() = runBlocking {
+        val source = patchwork()
+        val base = renderer.render(source, Preset.none(), forExport = false)
+        val filtered = renderStudio(source)
+        val before = meanLuma(base, Patch.WHITE) - meanLuma(base, Patch.BLACK)
+        val after = meanLuma(filtered, Patch.WHITE) - meanLuma(filtered, Patch.BLACK)
+        // 1.6.20 compressed the white/black span to ~89%; rolling off the
+        // highlights to avoid clipped whites costs a little, but the span
+        // must stay well above a washed-out grade.
+        assertTrue("contrast must not collapse: $before -> $after",
+            after >= before * 0.93f)
+    }
+
+    @Test
+    fun keepsChromaInsteadOfGreyingTheFrame() = runBlocking {
+        val source = patchwork()
+        val base = renderer.render(source, Preset.none(), forExport = false)
+        val filtered = renderStudio(source)
+        val before = globalSaturation(base)
+        val after = globalSaturation(filtered)
+        // 1.6.20 lost ~25% chroma (global de-saturation + whiten + all-eight
+        // HSL cuts). A small drop from the whitening step is expected and is
+        // the price of keeping skin fair; a wash-out is not.
+        assertTrue("global chroma must not be washed out: $before -> $after",
+            after >= before * 0.88f)
+    }
+
+    @Test
+    fun preservesSkinMicroTexture() = runBlocking {
+        val source = texturedSkin()
+        val base = renderer.render(source, Preset.none(), forExport = false)
+        val filtered = renderStudio(source)
+        val before = microContrast(base)
+        val after = microContrast(filtered)
+        // Positive texture + contour payback must keep pores / fine detail.
+        // Negative clarity/texture + heavy smoothing used to flatten them.
+        assertTrue("skin micro-texture must survive: $before -> $after",
+            after >= before * 0.85f)
     }
 
     @Test
@@ -74,7 +125,7 @@ class PortraitStudioRendererTest {
         val filtered = renderStudio(source)
         val before = meanLuma(base, Patch.SKIN)
         val after = meanLuma(filtered, Patch.SKIN)
-        assertTrue("skin should brighten: $before -> $after", after > before)
+        assertTrue("skin should still brighten (whitening): $before -> $after", after > before)
     }
 
     @Test
@@ -123,6 +174,23 @@ class PortraitStudioRendererTest {
                 val r = (patch.rgb[0] + jitter).coerceIn(0, 255)
                 val g = (patch.rgb[1] + jitter).coerceIn(0, 255)
                 val b = (patch.rgb[2] + jitter).coerceIn(0, 255)
+                pixels[y * w + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** A skin-tone field carrying a fine 2x2 checkerboard "pore" texture. */
+    private fun texturedSkin(): Bitmap {
+        val w = 64
+        val h = 48
+        val pixels = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val t = if (((x / 2) + (y / 2)) % 2 == 0) 11 else -11
+                val r = (200 + t).coerceIn(0, 255)
+                val g = (150 + t).coerceIn(0, 255)
+                val b = (130 + t).coerceIn(0, 255)
                 pixels[y * w + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
             }
         }
@@ -193,6 +261,45 @@ class PortraitStudioRendererTest {
             }
         }
         return sum / count
+    }
+
+    private fun globalSaturation(bitmap: Bitmap): Float {
+        val pixels = pixelsOf(bitmap)
+        var sum = 0f
+        for (c in pixels) {
+            val r = (c shr 16) and 0xFF
+            val g = (c shr 8) and 0xFF
+            val b = c and 0xFF
+            val max = maxOf(r, g, b)
+            val min = minOf(r, g, b)
+            sum += if (max == 0) 0f else (max - min).toFloat() / max
+        }
+        return sum / pixels.size
+    }
+
+    /** Mean absolute luma step between neighbours = fine detail energy. */
+    private fun microContrast(bitmap: Bitmap): Float {
+        val pixels = pixelsOf(bitmap)
+        val w = bitmap.width
+        val h = bitmap.height
+        var sum = 0f
+        var count = 0
+        for (y in 1 until h - 1) {
+            for (x in 1 until w - 1) {
+                val c = pixels[y * w + x]
+                sum += kotlin.math.abs(lumaOf(c) - lumaOf(pixels[y * w + x + 1]))
+                sum += kotlin.math.abs(lumaOf(c) - lumaOf(pixels[(y + 1) * w + x]))
+                count += 2
+            }
+        }
+        return sum / count
+    }
+
+    private fun lumaOf(c: Int): Float {
+        val r = (c shr 16) and 0xFF
+        val g = (c shr 8) and 0xFF
+        val b = c and 0xFF
+        return 0.299f * r + 0.587f * g + 0.114f * b
     }
 
     private fun pureWhiteCount(bitmap: Bitmap): Int {

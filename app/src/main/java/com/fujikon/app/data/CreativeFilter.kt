@@ -109,62 +109,66 @@ enum class CreativeFilter(
     // --------------------------------------------------------------- portraits
     /**
      * 写真人像：按一组户外日光写真样张（白色蕾丝裙 / 木廊 / 绿植背景）量化
-     * 调制的一键配方。样张的实测特征：亮度均值 0.53、对比仅 0.167、
+     * 调制的一键配方。样张的实测特征：亮度均值 0.53、对比 0.167、
      * 高光 >0.95 仅 0.01%（白裙不死白）、暗部 <0.05 为 0%（无死黑）、
      * 整体饱和度 0.156、肤色 H≈345–358° 且低饱和高明度、绿植 H≈140° 偏青。
-     * 因此这里用「抬黑压白 + 低对比 + 轻褪色 + 微冷」的胶片空气感影调，
-     * 叠加肤色粉润白皙 / 绿植去黄偏青的定向 HSL，以及保边磨皮、美白、
-     * 轻微柔焦——构成完整的写真人像美颜闭环，而非单一调色。
+     *
+     * 注意：样张是「成片」，把「抬黑压白 + 低对比 + 褪色 + 微冷」原样套到
+     * 未修原片上会叠成一层灰雾——黑位被抬虚、皮肤微对比被压平（1.6.20 的
+     * 教训）。因此这里只保留美白与定向校色，影调改为「黑位扎实、保留对比」：
+     * 不抬 blacks、不用 fade、contrast 微正、vibrance 微正、暗部用暖中性
+     * 分离色调；质感侧用轻磨皮 + 强 contour 回补 + 正向 texture，柔焦只留
+     * 极弱的负 clarity。目标是「白皙但通透、有质感、不发灰」，而非低对比胶片感。
      */
     PORTRAIT_STUDIO(
         id = "portrait_studio",
         displayName = "写真",
         group = "人像",
         profile = FilterProfile(
-            // 影调：抬暗部、压高光，两头都不clip；低对比 + 轻褪色做通透空气感
-            exposure = 0.04f,
-            contrast = -0.14f,
-            highlights = -0.18f,
-            shadows = 0.18f,
-            whites = -0.06f,
-            blacks = 0.10f,
-            fade = 0.05f,
-            // 近中性微冷 + 一丝洋红，避免暖黄、让肤色粉润
-            temperature = -0.02f,
-            tint = 0.02f,
-            // 整体低饱和、清透，但不靠加饱和撑肤色
-            saturation = -0.10f,
-            vibrance = -0.02f,
-            // 暗部冷青灰、高光暖粉白，弱分离色调增加层次而不脏
-            shadowTint = 0xFF3E5F66.toInt(),
-            highlightTint = 0xFFFFE8DC.toInt(),
-            splitStrength = 0.16f,
+            // 影调：黑位扎实、保留对比与层次；只轻抬暗部、压住高光不死白，绝不 fade/抬黑
+            exposure = 0.01f,
+            contrast = 0.04f,
+            highlights = -0.14f,
+            shadows = 0.06f,
+            whites = -0.05f,
+            blacks = 0f,
+            fade = 0f,
+            // 近中性微暖 + 一丝洋红：肤色粉润，不发青灰
+            temperature = 0.01f,
+            tint = 0.015f,
+            // 不做全局降饱和；vibrance 微正只补低彩度像素，保住通透与气色
+            saturation = 0f,
+            vibrance = 0.05f,
+            // 暗部暖中性、高光暖粉白，极弱分离色调只留空气感，不把面部阴影压成冷灰
+            shadowTint = 0xFF6B5A54.toInt(),
+            highlightTint = 0xFFFFF0E4.toInt(),
+            splitStrength = 0.07f,
             look = FilterLook(
                 hsl = HslAdjustments(
                     bands = listOf(
-                        HslBand(hue = -4f, saturation = -6f, luminance = 12f),   // 红：肤色粉润、提亮
-                        HslBand(hue = -8f, saturation = -10f, luminance = 14f), // 橙：去蜡黄、白皙
-                        HslBand(saturation = -8f, luminance = 2f),              // 黄：压木质黄
-                        HslBand(hue = 50f, saturation = -22f, luminance = 8f),  // 绿：去黄偏青、降饱和、提亮
-                        HslBand(saturation = -8f, luminance = 4f),              // 青：通透
-                        HslBand(saturation = -6f),                              // 蓝
-                        HslBand(),                                               // 紫
-                        HslBand(saturation = -2f, luminance = 2f)               // 洋红
+                        HslBand(hue = -3f, saturation = 2f, luminance = 9f),   // 红：白皙且保气色
+                        HslBand(hue = -6f, saturation = 2f, luminance = 11f), // 橙：去蜡黄、白皙，不掉彩度
+                        HslBand(saturation = -4f, luminance = 1f),            // 黄：轻压木质黄
+                        HslBand(hue = 42f, saturation = -12f, luminance = 6f),// 绿：去黄偏青、轻降饱和
+                        HslBand(luminance = 2f),                              // 青：通透，不降饱和
+                        HslBand(),                                             // 蓝
+                        HslBand(),                                             // 紫
+                        HslBand(saturation = 1f, luminance = 1f)              // 洋红：保唇色
                     )
                 ),
-                // 保边磨皮 + 白皙 + 淡粉气色 + 弱立体（避免塑料脸）
+                // 轻磨皮 + 白皙 + 气色 + 强立体回补：保住毛孔与皮肤微纹理，不做塑料脸
                 portrait = PortraitRetouch(
                     style = PortraitStyle.CUSTOM.id,
-                    smooth = 42f,
-                    whiten = 36f,
-                    blush = 14f,
-                    contour = 8f
+                    smooth = 18f,
+                    whiten = 28f,
+                    blush = 18f,
+                    contour = 24f
                 ),
-                clarity = -10f,
-                texture = -6f,
-                vignette = 4f
+                clarity = -2f,   // 只留一丝柔焦，不压局部对比
+                texture = 8f,    // 正向微纹理，回补磨皮/柔化丢失的皮肤质感
+                vignette = 2f
             ),
-            tip = "参考户外写真样张调制：抬暗部、压高光留住白裙层次，肤色粉润白皙、绿植去黄偏青，自带保边磨皮与轻微柔焦。强度越低越接近原图，适合日光户外人像。"
+            tip = "参考户外写真样张调制：黑位扎实、保留对比与皮肤微纹理，只轻抬暗部、轻压高光留住白裙层次；肤色白皙粉润、绿植去黄偏青，配合轻磨皮与立体回补，不发灰不糊脸。强度越低越接近原图，适合日光户外人像。"
         )
     ),
     PORTRAIT_SOFT(

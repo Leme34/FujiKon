@@ -37,6 +37,10 @@ import com.fujikon.app.ui.theme.InkElevated
  *   touches. Its height is capped so the top action bar is never covered.
  * - There is no swipe-to-dismiss gesture (per product requirement). Closing is
  *   explicit: an in-panel close button plus [BackHandler] for the back key.
+ *   The back handler is essential: this is an in-tree overlay, not a window,
+ *   so an unconsumed system back (including edge-to-edge swipe-back) would
+ *   fall through to the NavHost and pop the editor straight back to the
+ *   gallery. Consuming it here closes only this panel and returns to preview.
  *
  * @param panelColor background of the panel itself; pass [Color.Transparent]
  *   when the content draws its own gradient background (tone curve sheet).
@@ -52,6 +56,12 @@ fun EditorBottomPanel(
     maxHeightFraction: Float = 0.72f,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // In-tree overlays have no window to supply onDismissRequest, so we must
+    // consume the system back ourselves. This registers on the Activity's
+    // OnBackPressedDispatcher; the NavHost predictive-back fallback only runs
+    // when no other callback handles back.
+    BackHandler(onBack = onDismiss)
+
     // IMPORTANT: absolutely no scrim / background / pointerInput / clickable on
     // this root. Any of those would darken the upper half or steal taps from
     // the top action bar. Keep it a bare layout node.

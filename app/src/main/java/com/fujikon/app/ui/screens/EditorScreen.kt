@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -844,7 +845,9 @@ fun EditorScreen(
     when (val export = state.export) {
         is EditorViewModel.ExportState.Running -> {
             AlertDialog(
-                onDismissRequest = { },
+                // Back must not be swallowed with no effect; cancel the export
+                // so the user is never stuck and never popped to the gallery.
+                onDismissRequest = { viewModel.cancelExport() },
                 containerColor = Card,
                 title = { Text("正在导出", color = TextPrimary) },
                 text = {
@@ -1051,6 +1054,28 @@ fun EditorScreen(
             }
         )
         else -> Unit
+    }
+
+    // Crop / lens-blur / AI prompt are separate Dialog windows. Their own
+    // onDismissRequest handles back in most cases, but with Android 13+
+    // edge-to-edge swipe-back the window callback is not guaranteed to win
+    // over the NavHost's predictive-back handler. Registered last (LIFO),
+    // this in-tree handler reliably consumes back first and closes ONLY the
+    // top-most window page, so the user stays on the preview instead of being
+    // popped back to the photo picker.
+    val windowPagesOpen = showCrop || showBlur || showAiDialog
+    BackHandler(enabled = windowPagesOpen) {
+        when {
+            showAiDialog -> {
+                showAiDialog = false
+                viewModel.cancelPromptGen()
+            }
+            showBlur -> {
+                viewModel.setLensBlur(blurInitial)
+                showBlur = false
+            }
+            showCrop -> showCrop = false
+        }
     }
 
     } // close overlay root

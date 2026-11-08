@@ -381,7 +381,12 @@ fun AdjustmentsSheet(
         // Intentionally no preview: the host renders once on release.
     }
 
-    BackHandler(enabled = !saving) {
+    // Always consume back while the sheet is open. Disabling the handler while
+    // saving would leave back unconsumed and let the NavHost pop the editor
+    // back to the gallery; instead swallow it until the save finishes. The
+    // colour-picker layer still takes priority over closing the sheet.
+    BackHandler {
+        if (saving) return@BackHandler
         if (picking) picking = false else commitAndDismiss()
     }
 
