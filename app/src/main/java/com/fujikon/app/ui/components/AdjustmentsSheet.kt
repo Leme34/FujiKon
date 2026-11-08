@@ -78,7 +78,9 @@ private data class AdjustmentSpec(
     val range: ClosedFloatingPointRange<Float>,
     val step: Float,
     val get: (EditAdjustments) -> Float,
-    val set: (EditAdjustments, Float) -> EditAdjustments
+    val set: (EditAdjustments, Float) -> EditAdjustments,
+    /** Short "what is this / how to use it" hint shown under the slider. */
+    val help: String? = null
 )
 
 private data class AdjustmentGroup(
@@ -120,9 +122,19 @@ private val AdjustmentGroups = listOf(
     AdjustmentGroup(
         title = "画质",
         specs = listOf(
-            AdjustmentSpec("降噪", 0f..100f, 1f, { it.denoise }, { a, v -> a.copy(denoise = v) }),
-            AdjustmentSpec("颗粒", 0f..100f, 1f, { it.grain }, { a, v -> a.copy(grain = v) }),
-            AdjustmentSpec("暗角", toneRange, 1f, { it.vignette }, { a, v -> a.copy(vignette = v) })
+            AdjustmentSpec(
+                "降噪", 0f..100f, 1f, { it.denoise }, { a, v -> a.copy(denoise = v) },
+                help = "降噪：用保边滤波抹掉暗光、高 ISO 产生的彩色噪点和粗糙颗粒，只平滑平坦区域、保留轮廓与纹理，且在锐化之前执行以免放大噪点。" +
+                    "夜景、室内暗光人像建议 20–50；光线充足的原片保持 0 即可，数值过高会让人脸和细节变糊。"
+            ),
+            AdjustmentSpec(
+                "颗粒", 0f..100f, 1f, { it.grain }, { a, v -> a.copy(grain = v) },
+                help = "颗粒：叠加确定性的胶片颗粒，营造复古质感、掩盖降噪后的塑料感。建议 10–30，预览与导出结果一致。"
+            ),
+            AdjustmentSpec(
+                "暗角", toneRange, 1f, { it.vignette }, { a, v -> a.copy(vignette = v) },
+                help = "暗角：负值压暗四角把视线引向主体，正值提亮四角。人像、静物常用 -15 ~ -35。"
+            )
         )
     )
 )
@@ -137,7 +149,7 @@ private enum class AdjustTab(val label: String, val groupIndex: Int? = null) {
     PORTRAIT("人像"),
     TONE("影调"),
     FILTER("滤镜"),
-    LOCAL("局部")
+    MASK("蒙版")
 }
 
 /**
@@ -280,6 +292,9 @@ fun AdjustmentsSheet(
     var tab by remember { mutableStateOf(AdjustTab.LIGHT) }
     var hslTarget by remember { mutableStateOf<HslTarget>(HslTarget.Band(0)) }
     var picking by remember { mutableStateOf(false) }
+    // Shared by the mask tab page (parameters) and the full-size preview
+    // overlay (shapes / layers / placement) so both always edit one layer.
+    var maskLayerIndex by remember { mutableStateOf(0) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var draftName by remember { mutableStateOf("") }
 
@@ -337,6 +352,32 @@ fun AdjustmentsSheet(
                     .statusBarsPadding()
                     .padding(top = 64.dp)
                     .testTag("hsl_color_pick_layer")
+            )
+        }
+
+        // Mask editing happens directly on the full-size preview in the upper
+        // half. The tab page below stays parameters-only; a second tiny photo
+        // on the tab was both redundant and too small to position a mask.
+        if (tab == AdjustTab.MASK && !picking) {
+            LocalMaskOverlay(
+                local = draft.local,
+                selectedLayer = maskLayerIndex,
+                onSelectLayer = { maskLayerIndex = it },
+                onChange = { localAdjustments, field ->
+                    updateDraft(field) { it.copy(local = localAdjustments) }
+                },
+                onFinished = { field -> previewNow(field) },
+                enabled = !saving,
+                displayBitmap = previewBitmap ?: sourceBitmap,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(pickHeight)
+                    // Keep the status bar + TopAppBar strip untouched so the
+                    // top action bar stays visible and tappable while masking.
+                    .statusBarsPadding()
+                    .padding(top = 64.dp)
+                    .testTag("local_mask_overlay")
             )
         }
 
@@ -440,7 +481,12 @@ fun AdjustmentsSheet(
                 AdjustTab.entries.forEach { entry ->
                     FilterChip(
                         selected = tab == entry,
-                        onClick = { tab = entry },
+                        onClick = {
+                            tab = entry
+                            // Leaving HSL must drop a pending colour pick so
+                            // the picker overlay never covers another page.
+                            if (entry != AdjustTab.HSL) picking = false
+                        },
                         label = { Text(entry.label) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = Amber,
@@ -484,8 +530,23 @@ fun AdjustmentsSheet(
                                         draft = spec.set(draft, 0f).normalized()
                                         previewNow(spec.label)
                                     },
-                                    enabled = !saving
+                                    enabled = !saving,
+                                    // 0..100 controls (denoise / grain) have
+                                    // their zero at the LEFT edge. Without
+                                    // this the anchor was drawn at the centre,
+                                    // so the thumb and fill looked misplaced.
+                                    fillFromStart = spec.range.start >= -0.001f
                                 )
+                                if (spec.help != null) {
+                                    Text(
+                                        spec.help,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary,
+                                        modifier = Modifier.padding(
+                                            start = 2.dp, end = 2.dp, bottom = 8.dp
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -560,17 +621,15 @@ fun AdjustmentsSheet(
                         embedded = true
                     )
 
-                    AdjustTab.LOCAL -> LocalAdjustmentSection(
+                    AdjustTab.MASK -> LocalAdjustmentSection(
                         local = draft.local,
-                        expanded = true,
-                        onToggle = {},
+                        selectedLayer = maskLayerIndex,
+                        onSelectLayer = { maskLayerIndex = it },
                         onChange = { localAdjustments, field ->
                             updateDraft(field) { it.copy(local = localAdjustments) }
                         },
                         onFinished = { field -> previewNow(field) },
-                        enabled = !saving,
-                        sourceBitmap = sourceBitmap,
-                        embedded = true
+                        enabled = !saving
                     )
                 }
                 Spacer(Modifier.height(8.dp))

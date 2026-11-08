@@ -18,6 +18,7 @@ import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.ui.components.AdjustmentSlider
 import com.fujikon.app.ui.components.stepValue
+import com.fujikon.app.ui.components.valueAt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -277,5 +278,21 @@ class AdjustmentSliderTest {
         assertEquals(-5f, stepValue(-5f, -1, -5f..5f, 0.1f), 0.0001f)
         // 0..100 style sliders must not go below zero.
         assertEquals(0f, stepValue(0f, -1, 0f..100f, 1f), 0.0001f)
+    }
+
+    @Test
+    fun valueAtUsesTheSameTrackInsetAsTheDrawnThumb() {
+        // The drawn track is inset by 8.dp at both ends. Reading a drag with
+        // x/width instead put the thumb up to ~8.dp away from the finger and
+        // made 0..100 controls (denoise/grain) jump near the ends.
+        val pad = 8f
+        val width = 300
+        assertEquals(0f, valueAt(pad, width, 0f..100f, 1f, pad), 0.001f)
+        assertEquals(100f, valueAt(width - pad, width, 0f..100f, 1f, pad), 0.001f)
+        assertEquals(50f, valueAt(width / 2f, width, 0f..100f, 1f, pad), 0.001f)
+        // Bipolar ranges still map the centre to zero.
+        assertEquals(0f, valueAt(width / 2f, width, -100f..100f, 1f, pad), 0.001f)
+        assertEquals(-100f, valueAt(pad, width, -100f..100f, 1f, pad), 0.001f)
+        assertEquals(100f, valueAt(width - pad, width, -100f..100f, 1f, pad), 0.001f)
     }
 }

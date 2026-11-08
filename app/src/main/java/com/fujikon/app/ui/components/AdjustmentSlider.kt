@@ -78,6 +78,10 @@ fun AdjustmentSlider(
 
     val density = LocalDensity.current
     val tapThresholdPx = with(density) { 24.dp.toPx() }
+    // The drawn track has an 8.dp inset on both ends. Drag-to-value must use
+    // exactly the same inset, otherwise the thumb lags / leads the finger and
+    // the value jumps near the ends (most obvious on 0..100 sliders).
+    val trackPadPx = with(density) { 8.dp.toPx() }
     val safeStep = step.coerceAtLeast(0.001f)
     val modified = abs(value) > safeStep * 0.5f
 
@@ -166,7 +170,7 @@ fun AdjustmentSlider(
                                     change.consume()
                                     lastX = change.position.x
                                     currentOnChange(
-                                        valueAt(lastX, width, valueRange, safeStep)
+                                        valueAt(lastX, width, valueRange, safeStep, trackPadPx)
                                     )
                                 }
                             }
@@ -176,7 +180,7 @@ fun AdjustmentSlider(
                                 return@awaitEachGesture
                             }
                             if (dragging) {
-                                currentOnChange(valueAt(lastX, width, valueRange, safeStep))
+                                currentOnChange(valueAt(lastX, width, valueRange, safeStep, trackPadPx))
                                 currentOnFinished()
                                 lastTapTime = 0L
                                 return@awaitEachGesture
@@ -392,14 +396,22 @@ fun formatSliderValue(value: Float, step: Float = 1f): String {
     }
 }
 
-private fun valueAt(
+/**
+ * Value under a finger position, using the SAME 8.dp-inset geometry the track
+ * is drawn with. Exposed as internal so the alignment can be unit-tested: a
+ * press at the drawn track start must yield range.start, at the end range.end.
+ */
+internal fun valueAt(
     x: Float,
     width: Int,
     range: ClosedFloatingPointRange<Float>,
-    step: Float
+    step: Float,
+    pad: Float
 ): Float {
     if (width <= 0) return range.start
-    val fraction = (x / width).coerceIn(0f, 1f)
+    val start = pad
+    val end = (width - pad).coerceAtLeast(start + 1f)
+    val fraction = ((x - start) / (end - start)).coerceIn(0f, 1f)
     return snap(range.start + (range.endInclusive - range.start) * fraction, range, step)
 }
 

@@ -2,11 +2,15 @@ package com.fujikon.app
 
 import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
+import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
 import com.fujikon.app.data.PointColor
+import com.fujikon.app.ui.components.appendBrushStroke
+import com.fujikon.app.ui.components.fitImageRect
 import com.fujikon.app.ui.components.hueFromArgb
 import com.fujikon.app.ui.components.hueLabel
 import com.fujikon.app.ui.components.lightnessFromArgb
+import com.fujikon.app.ui.components.placeMask
 import com.fujikon.app.ui.components.saturationFromArgb
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,5 +81,41 @@ class QualitySectionsTest {
         assertEquals(1, all.activeLayers().size)
         assertFalse(all.isNeutral())
         assertTrue(LocalAdjustments.Neutral.isNeutral())
+    }
+
+    @Test
+    fun fitImageRectCentresThePhotoAndRejectsLetterboxTaps() {
+        // 100x100 photo inside a 200x100 view => 100x100 image centred at x=50.
+        val r = fitImageRect(200f, 100f, 100, 100)
+        assertEquals(50f, r.left, 0.001f)
+        assertEquals(0f, r.top, 0.001f)
+        assertEquals(100f, r.width, 0.001f)
+        assertEquals(100f, r.height, 0.001f)
+        val centre = r.normalized(100f, 50f)
+        assertEquals(0.5f, centre!!.first, 0.001f)
+        assertEquals(0.5f, centre.second, 0.001f)
+        assertEquals(null, r.normalized(10f, 50f))
+        assertEquals(null, r.normalized(100f, -1f))
+    }
+
+    @Test
+    fun placeMaskMovesAnchorsButLeavesBrushUntouched() {
+        val p = placeMask(LocalMask.ControlPoint(), 0.2f, 0.8f) as LocalMask.ControlPoint
+        assertEquals(0.2f, p.x, 0.001f)
+        assertEquals(0.8f, p.y, 0.001f)
+        val linear = placeMask(LocalMask.LinearGradient(), 0.3f, 0.9f) as LocalMask.LinearGradient
+        assertEquals(0.3f, linear.startX, 0.001f)
+        assertEquals(0.3f, linear.endX, 0.001f)
+        val brush = LocalMask.Brush()
+        assertTrue("点按不能改写画笔笔迹，改由拖动收集", placeMask(brush, 0.4f, 0.4f) === brush)
+    }
+
+    @Test
+    fun appendBrushStrokeCapsStrokesAndIgnoresNonBrushMasks() {
+        var m: LocalMask = LocalMask.Brush()
+        repeat(30) { m = appendBrushStroke(m, listOf(0.1f, 0.1f, 0.2f, 0.2f)) }
+        assertEquals(24, (m as LocalMask.Brush).strokes.size)
+        val point = LocalMask.ControlPoint()
+        assertTrue(appendBrushStroke(point, listOf(0.1f, 0.1f, 0.2f, 0.2f)) === point)
     }
 }

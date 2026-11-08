@@ -8,13 +8,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.down
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.moveTo
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.up
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.HslAdjustments
+import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.PointColor
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.ui.components.AdjustmentsSheet
@@ -90,7 +93,7 @@ class AdjustmentsPanelTest {
     @Test
     fun eachFeatureHasItsOwnTabPage() {
         setPanel()
-        listOf("LIGHT", "COLOR", "DETAIL", "QUALITY", "HSL", "PORTRAIT", "TONE", "FILTER", "LOCAL")
+        listOf("LIGHT", "COLOR", "DETAIL", "QUALITY", "HSL", "PORTRAIT", "TONE", "FILTER", "MASK")
             .forEach { rule.onNodeWithTag("adjust_tab_$it").assertExists() }
 
         // HSL page holds the merged picker button.
@@ -175,5 +178,71 @@ class AdjustmentsPanelTest {
         setPanel(onDismiss = { dismissals++ })
         rule.onNodeWithTag("adjustments_close").performClick()
         assertEquals(1, dismissals)
+    }
+
+    @Test
+    fun maskPageIsParametersOnlyAndUsesFullSizePreviewOverlay() {
+        setPanel(source = solidBitmap(0xFF336699.toInt()))
+        rule.onNodeWithTag("adjust_tab_MASK").performScrollTo().performClick()
+        rule.waitForIdle()
+
+        // Every mask operation now lives on the upper-half preview overlay.
+        rule.onNodeWithTag("local_mask_overlay").assertExists()
+        rule.onNodeWithTag("mask_preview_area").assertExists()
+        rule.onNodeWithTag("mask_toolbar").assertExists()
+        rule.onNodeWithTag("mask_preview_canvas").assertExists()
+        listOf("POINT", "LINEAR", "RADIAL", "BRUSH").forEach {
+            rule.onNodeWithTag("mask_kind_$it").assertExists()
+        }
+        rule.onNodeWithTag("mask_add_layer").assertExists()
+
+        // The redundant tiny photo canvas and in-tab shape/add controls are gone.
+        rule.onNodeWithTag("local_mask_canvas").assertDoesNotExist()
+        rule.onNodeWithTag("local_add_layer").assertDoesNotExist()
+        rule.onNodeWithText("本页只调参数", substring = true).assertExists()
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h891dp")
+    fun addingAndPlacingAMaskHappensOnThePreviewOverlay() {
+        var last: EditAdjustments? = null
+        setPanel(
+            source = solidBitmap(0xFF336699.toInt()),
+            onPreview = { adjustments, _ -> last = adjustments }
+        )
+        rule.onNodeWithTag("adjust_tab_MASK").performScrollTo().performClick()
+        rule.waitForIdle()
+
+        rule.onNodeWithTag("mask_add_layer").performClick()
+        rule.waitForIdle()
+        assertEquals("点 + 添加 应在预览图上建立蒙版图层", 1, last?.local?.layers?.size)
+
+        // A tap away from the centre of the full-size preview repositions the
+        // control point; the toolbar must never swallow that touch.
+        rule.onNodeWithTag("mask_preview_canvas").performTouchInput {
+            down(center + Offset(30f, 0f)); up()
+        }
+        rule.waitForIdle()
+        val mask = last?.local?.layers?.firstOrNull()?.mask
+        assertTrue("预览图点按应保留控制点类型: $mask", mask is LocalMask.ControlPoint)
+        assertTrue(
+            "点按应把选区写到手指位置（x 偏离默认 0.5）: $mask",
+            mask is LocalMask.ControlPoint && kotlin.math.abs(mask.x - 0.5f) > 0.01f
+        )
+    }
+
+    @Test
+    fun denoiseHasAnInlineUsageHintAndZeroBasedRange() {
+        setPanel()
+        rule.onNodeWithTag("adjust_tab_QUALITY").performClick()
+        rule.waitForIdle()
+        // The label is present and a real explanation sits right under it.
+        assertTrue(
+            "降噪滑条应存在",
+            rule.onAllNodesWithText("降噪", substring = true).fetchSemanticsNodes().isNotEmpty()
+        )
+        rule.onNodeWithText("用保边滤波抹掉暗光", substring = true).assertExists()
+        rule.onNodeWithText("颗粒：叠加确定性的胶片颗粒", substring = true).assertExists()
+        rule.onNodeWithText("暗角：负值压暗四角", substring = true).assertExists()
     }
 }
