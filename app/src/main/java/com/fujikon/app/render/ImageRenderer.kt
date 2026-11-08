@@ -7,6 +7,7 @@ import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.FilterProfile
 import com.fujikon.app.data.Preset
 import com.fujikon.app.data.buildChannelLuts
+import com.fujikon.app.data.withFilterLook
 import com.fujikon.app.ncp.BaseProfiles
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -55,8 +56,11 @@ class ImageRenderer {
         }
         checkCancelled(job)
 
-        val plan = buildPlan(preset, forExport, width, height)
-        val adjustments = preset.adjustments.normalized()
+        // Resolve a filter's composite look (HSL / skin retouch / softening)
+        // once, then use the same effective adjustments for every stage below.
+        // A stock film look resolves to itself, so its rendering is unchanged.
+        val adjustments = preset.adjustments.normalized().withFilterLook()
+        val plan = buildPlan(preset, forExport, width, height, adjustments)
 
         // Skin retouch runs before the grade so the mask sees natural skin
         // tones; strong looks (monochrome, filters) would otherwise hide it.
@@ -318,7 +322,13 @@ class ImageRenderer {
         val splitStrength: Float
     )
 
-    private fun buildPlan(preset: Preset, forExport: Boolean, width: Int, height: Int): Plan {
+    private fun buildPlan(
+        preset: Preset,
+        forExport: Boolean,
+        width: Int,
+        height: Int,
+        adjustments: EditAdjustments
+    ): Plan {
         val isNcp = preset.format == "NCP" || preset.format == "NP2"
         val scale = if (isNcp) 3f else 100f
 
@@ -403,7 +413,6 @@ class ImageRenderer {
             raw.coerceIn(0.1f, 1f)
         } else 0f
 
-        val adjustments = preset.adjustments.normalized()
         val temperature = adjustments.temperature / EditAdjustments.TONE_RANGE
         val tint = adjustments.tint / EditAdjustments.TONE_RANGE
         val whiteBalance = if (abs(temperature) > 0.001f || abs(tint) > 0.001f) {

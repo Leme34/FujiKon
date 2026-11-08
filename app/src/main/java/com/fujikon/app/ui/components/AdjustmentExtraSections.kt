@@ -195,6 +195,11 @@ internal fun CreativeFilterSection(
     if (!embedded) AdjustmentSectionHeader("滤镜", expanded, onToggle)
     if (!expanded && !embedded) return
 
+    // Studio looks carry a short usage hint. White text keeps it readable on
+    // the dark sheet, and it can be collapsed once the user knows the recipe.
+    var tipExpanded by remember { mutableStateOf(true) }
+    val tip = selected.profile.tip
+
     Column(
         Modifier
             .fillMaxWidth()
@@ -228,6 +233,36 @@ internal fun CreativeFilterSection(
                 label = { Text("原图色彩") },
                 colors = filterChipColors()
             )
+        }
+        if (tip.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { tipExpanded = !tipExpanded }
+                    .padding(horizontal = 2.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    "用法",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White,
+                    modifier = Modifier.width(44.dp)
+                )
+                Text(
+                    if (tipExpanded) tip else "点此展开写真配方说明",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    maxLines = if (tipExpanded) 6 else 1,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = if (tipExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (tipExpanded) "收起说明" else "展开说明",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
         }
         if (!selected.isNone) {
             Row(verticalAlignment = Alignment.CenterVertically) {
