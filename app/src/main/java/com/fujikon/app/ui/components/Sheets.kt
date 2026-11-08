@@ -20,20 +20,20 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,30 +69,30 @@ fun PresetPickerSheet(
     thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null,
     onOpenDetail: ((Preset) -> Unit)? = null
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val options = remember(presets) { listOf(Preset.none()) + presets }
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = InkElevated,
-        dragHandle = null
+    EditorBottomPanel(
+        onDismiss = onDismiss,
+        testTag = "preset_picker_panel"
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .navigationBarsPadding()
         ) {
-            Box(
-                Modifier
-                    .padding(top = 12.dp, bottom = 4.dp)
-                    .width(38.dp)
-                    .height(4.dp)
-                    .background(CardHigh, RoundedCornerShape(50))
-                    .align(Alignment.CenterHorizontally)
-            )
-            Spacer(Modifier.height(16.dp))
-            Text("选择预设", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "选择预设",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = TextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.testTag("preset_picker_close")) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭", tint = TextPrimary)
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 "预览：${photo?.displayName ?: "内置样张"} · 长按照片可查看原图，双指缩放查看细节",
@@ -236,33 +237,33 @@ fun ExportOptionsSheet(
     onStart: (ExportManager.Options) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var format by remember { mutableStateOf(if (initial.format == "PNG") "PNG" else "JPEG") }
     var preserveExif by remember { mutableStateOf(initial.preserveExif) }
     var album by remember { mutableStateOf(initial.album) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = InkElevated,
-        dragHandle = null
+    EditorBottomPanel(
+        onDismiss = onDismiss,
+        testTag = "export_options_panel"
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 22.dp)
-                .navigationBarsPadding()
         ) {
-            Box(
-                Modifier
-                    .padding(top = 12.dp, bottom = 4.dp)
-                    .width(38.dp)
-                    .height(4.dp)
-                    .background(CardHigh, RoundedCornerShape(50))
-                    .align(Alignment.CenterHorizontally)
-            )
-            Spacer(Modifier.height(18.dp))
-            Text("导出到相册", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "导出到相册",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = TextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.testTag("export_options_close")) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭", tint = TextPrimary)
+                }
+            }
             Spacer(Modifier.height(6.dp))
             Text(
                 "尽量按原图尺寸输出；内存不足时自动降到可处理的最大尺寸。",

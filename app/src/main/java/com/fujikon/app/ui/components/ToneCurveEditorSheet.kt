@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -29,12 +28,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -104,7 +101,6 @@ fun ToneCurveEditorSheet(
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var channel by remember { mutableStateOf(ToneCurveChannel.RGB) }
     var masterPoints by remember(presetName) { mutableStateOf(curve.normalizedPoints) }
     var rgbCurves by remember(presetName) { mutableStateOf(channelCurves.normalized()) }
@@ -179,15 +175,10 @@ fun ToneCurveEditorSheet(
         previewNow()
     }
 
-    ModalBottomSheet(
-        onDismissRequest = { if (!saving) onDismiss() },
-        sheetState = sheetState,
-        containerColor = Color.Transparent,
-        contentColor = TextPrimary,
-        tonalElevation = 0.dp,
-        scrimColor = Color.Black.copy(alpha = 0.03f),
-        dragHandle = null,
-        contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
+    EditorBottomPanel(
+        onDismiss = { if (!saving) onDismiss() },
+        testTag = "tone_curve_panel",
+        panelColor = Color.Transparent
     ) {
         Column(
             Modifier

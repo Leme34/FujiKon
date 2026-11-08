@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -308,17 +309,12 @@ fun AdjustmentsSheet(
         if (picking) picking = false else commitAndDismiss()
     }
 
-    Box(Modifier.fillMaxSize()) {
-        // Scrim: consumes taps outside the panel so the underlying editor
-        // buttons cannot be hit by accident. It has no drag gesture at all.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.03f))
-                .pointerInput(Unit) { detectTapGestures { } }
-                .testTag("adjustments_scrim")
-        )
-
+    // Root is a bare, fully transparent Box: NO scrim and NO pointerInput on
+    // the upper half. Taps there pass straight through to the editor's
+    // TopAppBar (preset switch / undo / redo / history), so those actions stay
+    // reachable while the adjustment panel is open. Only the bottom panel and
+    // the (temporary) colour-picker consume touches.
+    Box(Modifier.fillMaxSize().testTag("adjustments_host")) {
         if (picking) {
             ColorPickLayer(
                 displayBitmap = previewBitmap ?: sourceBitmap,
@@ -336,6 +332,10 @@ fun AdjustmentsSheet(
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
                     .height(pickHeight)
+                    // Leave the status bar + TopAppBar strip untouched so the
+                    // top action bar stays visible and tappable while picking.
+                    .statusBarsPadding()
+                    .padding(top = 64.dp)
                     .testTag("hsl_color_pick_layer")
             )
         }

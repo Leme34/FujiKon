@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,19 +21,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,7 +41,6 @@ import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
-import com.fujikon.app.ui.theme.InkElevated
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 import java.text.SimpleDateFormat
@@ -55,7 +52,6 @@ import java.util.Locale
  * listed newest first; tapping a row restores that state (including the photo
  * that was being edited).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditHistorySheet(
     entries: List<EditHistory.Entry>,
@@ -68,19 +64,16 @@ fun EditHistorySheet(
     onRedo: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = InkElevated
+    EditorBottomPanel(
+        onDismiss = onDismiss,
+        testTag = "edit_history_panel"
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .navigationBarsPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.History, contentDescription = null, tint = Amber)
@@ -106,6 +99,9 @@ fun EditHistorySheet(
                         contentDescription = "下一步",
                         tint = if (canRedo) TextPrimary else TextSecondary.copy(alpha = 0.4f)
                     )
+                }
+                IconButton(onClick = onDismiss, modifier = Modifier.testTag("edit_history_close")) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭", tint = TextPrimary)
                 }
             }
 
