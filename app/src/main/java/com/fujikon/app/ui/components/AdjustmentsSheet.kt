@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -248,6 +249,66 @@ private fun ColorPickLayer(
 }
 
 /**
+ * The mask tab is now only a launcher: masking lives in its own full-screen
+ * editor [MaskEditorOverlay]. A half-screen overlay above the panel was far
+ * too small to position a mask, so we no longer embed any photo or mask
+ * controls here — just a short explanation and a single, obvious entry point.
+ */
+@Composable
+private fun MaskLauncherCard(layerCount: Int, onOpen: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(CardHigh.copy(alpha = 0.16f), RoundedCornerShape(14.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 16.dp, vertical = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            Icons.Filled.Tune,
+            contentDescription = null,
+            tint = Amber,
+            modifier = Modifier.size(34.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "蒙版 · 局部调整",
+            style = MaterialTheme.typography.titleMedium,
+            color = TextPrimary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "只调整照片的一部分：提亮人脸、压暗过亮的天空，其余区域不受影响。" +
+                "蒙版已独立为全屏编辑页面，预览大图占满屏幕，形状、位置、图层与画笔都直接在照片上操作。",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onOpen,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("open_mask_editor"),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
+        ) {
+            Text(
+                if (layerCount > 0) "打开全屏蒙版编辑（$layerCount 个蒙版）" else "打开全屏蒙版编辑",
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "进入后可在底部展开参数调节，默认收起以最大化预览图",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary
+        )
+    }
+}
+
+/**
  * Lightroom-style adjustment panel.
  *
  * This is a plain overlay rather than a ModalBottomSheet: there is no
@@ -275,7 +336,10 @@ fun AdjustmentsSheet(
     onClearAllCurves: () -> Unit,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit,
-    /** Unedited source used by the colour picker and local-mask canvas. */
+    /** Open the standalone full-screen mask editor (masking is no longer a
+     * cramped half-screen overlay inside this panel). */
+    onOpenMaskEditor: () -> Unit = {},
+    /** Unedited source used by the colour picker. */
     sourceBitmap: Bitmap? = null,
     /** Current rendered preview, shown while picking a colour. */
     previewBitmap: Bitmap? = null
@@ -292,9 +356,6 @@ fun AdjustmentsSheet(
     var tab by remember { mutableStateOf(AdjustTab.LIGHT) }
     var hslTarget by remember { mutableStateOf<HslTarget>(HslTarget.Band(0)) }
     var picking by remember { mutableStateOf(false) }
-    // Shared by the mask tab page (parameters) and the full-size preview
-    // overlay (shapes / layers / placement) so both always edit one layer.
-    var maskLayerIndex by remember { mutableStateOf(0) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var draftName by remember { mutableStateOf("") }
 
@@ -352,32 +413,6 @@ fun AdjustmentsSheet(
                     .statusBarsPadding()
                     .padding(top = 64.dp)
                     .testTag("hsl_color_pick_layer")
-            )
-        }
-
-        // Mask editing happens directly on the full-size preview in the upper
-        // half. The tab page below stays parameters-only; a second tiny photo
-        // on the tab was both redundant and too small to position a mask.
-        if (tab == AdjustTab.MASK && !picking) {
-            LocalMaskOverlay(
-                local = draft.local,
-                selectedLayer = maskLayerIndex,
-                onSelectLayer = { maskLayerIndex = it },
-                onChange = { localAdjustments, field ->
-                    updateDraft(field) { it.copy(local = localAdjustments) }
-                },
-                onFinished = { field -> previewNow(field) },
-                enabled = !saving,
-                displayBitmap = previewBitmap ?: sourceBitmap,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .height(pickHeight)
-                    // Keep the status bar + TopAppBar strip untouched so the
-                    // top action bar stays visible and tappable while masking.
-                    .statusBarsPadding()
-                    .padding(top = 64.dp)
-                    .testTag("local_mask_overlay")
             )
         }
 
@@ -621,15 +656,9 @@ fun AdjustmentsSheet(
                         embedded = true
                     )
 
-                    AdjustTab.MASK -> LocalAdjustmentSection(
-                        local = draft.local,
-                        selectedLayer = maskLayerIndex,
-                        onSelectLayer = { maskLayerIndex = it },
-                        onChange = { localAdjustments, field ->
-                            updateDraft(field) { it.copy(local = localAdjustments) }
-                        },
-                        onFinished = { field -> previewNow(field) },
-                        enabled = !saving
+                    AdjustTab.MASK -> MaskLauncherCard(
+                        layerCount = draft.local.layers.size,
+                        onOpen = onOpenMaskEditor
                     )
                 }
                 Spacer(Modifier.height(8.dp))

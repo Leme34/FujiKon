@@ -17,7 +17,6 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.up
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.HslAdjustments
-import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.PointColor
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.ui.components.AdjustmentsSheet
@@ -49,6 +48,7 @@ class AdjustmentsPanelTest {
     private fun setPanel(
         source: Bitmap? = null,
         onDismiss: () -> Unit = {},
+        onOpenMaskEditor: () -> Unit = {},
         onPreview: (EditAdjustments, String?) -> Unit = { _, _ -> }
     ) {
         rule.setContent {
@@ -66,6 +66,7 @@ class AdjustmentsPanelTest {
                 onClearAllCurves = {},
                 onSave = {},
                 onDismiss = onDismiss,
+                onOpenMaskEditor = onOpenMaskEditor,
                 sourceBitmap = source,
                 previewBitmap = source
             )
@@ -181,54 +182,30 @@ class AdjustmentsPanelTest {
     }
 
     @Test
-    fun maskPageIsParametersOnlyAndUsesFullSizePreviewOverlay() {
-        setPanel(source = solidBitmap(0xFF336699.toInt()))
-        rule.onNodeWithTag("adjust_tab_MASK").performScrollTo().performClick()
-        rule.waitForIdle()
-
-        // Every mask operation now lives on the upper-half preview overlay.
-        rule.onNodeWithTag("local_mask_overlay").assertExists()
-        rule.onNodeWithTag("mask_preview_area").assertExists()
-        rule.onNodeWithTag("mask_toolbar").assertExists()
-        rule.onNodeWithTag("mask_preview_canvas").assertExists()
-        listOf("POINT", "LINEAR", "RADIAL", "BRUSH").forEach {
-            rule.onNodeWithTag("mask_kind_$it").assertExists()
-        }
-        rule.onNodeWithTag("mask_add_layer").assertExists()
-
-        // The redundant tiny photo canvas and in-tab shape/add controls are gone.
-        rule.onNodeWithTag("local_mask_canvas").assertDoesNotExist()
-        rule.onNodeWithTag("local_add_layer").assertDoesNotExist()
-        rule.onNodeWithText("本页只调参数", substring = true).assertExists()
-    }
-
-    @Test
     @Config(sdk = [34], qualifiers = "w411dp-h891dp")
-    fun addingAndPlacingAMaskHappensOnThePreviewOverlay() {
-        var last: EditAdjustments? = null
+    fun maskTabIsOnlyALauncherForTheFullScreenEditor() {
+        var opened = 0
         setPanel(
             source = solidBitmap(0xFF336699.toInt()),
-            onPreview = { adjustments, _ -> last = adjustments }
+            onOpenMaskEditor = { opened++ }
         )
         rule.onNodeWithTag("adjust_tab_MASK").performScrollTo().performClick()
         rule.waitForIdle()
 
-        rule.onNodeWithTag("mask_add_layer").performClick()
-        rule.waitForIdle()
-        assertEquals("点 + 添加 应在预览图上建立蒙版图层", 1, last?.local?.layers?.size)
+        // Masking no longer lives inside the adjustments panel at all: no
+        // half-screen overlay, no tiny photo, no shape / layer controls here.
+        rule.onNodeWithTag("local_mask_overlay").assertDoesNotExist()
+        rule.onNodeWithTag("mask_preview_canvas").assertDoesNotExist()
+        rule.onNodeWithTag("mask_toolbar").assertDoesNotExist()
+        rule.onNodeWithTag("local_mask_canvas").assertDoesNotExist()
+        rule.onNodeWithTag("local_add_layer").assertDoesNotExist()
 
-        // A tap away from the centre of the full-size preview repositions the
-        // control point; the toolbar must never swallow that touch.
-        rule.onNodeWithTag("mask_preview_canvas").performTouchInput {
-            down(center + Offset(30f, 0f)); up()
-        }
+        // Just one obvious entry point that opens the standalone full-screen page.
+        rule.onNodeWithTag("open_mask_editor").assertExists()
+        rule.onNodeWithText("全屏编辑页面", substring = true).assertExists()
+        rule.onNodeWithTag("open_mask_editor").performClick()
         rule.waitForIdle()
-        val mask = last?.local?.layers?.firstOrNull()?.mask
-        assertTrue("预览图点按应保留控制点类型: $mask", mask is LocalMask.ControlPoint)
-        assertTrue(
-            "点按应把选区写到手指位置（x 偏离默认 0.5）: $mask",
-            mask is LocalMask.ControlPoint && kotlin.math.abs(mask.x - 0.5f) > 0.01f
-        )
+        assertEquals("点启动按钮应打开全屏蒙版编辑页", 1, opened)
     }
 
     @Test

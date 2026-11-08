@@ -101,7 +101,7 @@ fun hueLabel(hue: Float): String {
     }
 }
 
-private fun usable(bitmap: Bitmap?): Boolean = bitmap != null && !bitmap.isRecycled
+internal fun usable(bitmap: Bitmap?): Boolean = bitmap != null && !bitmap.isRecycled
 
 @Composable
 private fun SectionHelp(text: String) {
@@ -119,18 +119,18 @@ private fun Modifier.qualityCard(): Modifier = this
     .border(1.dp, Color.White.copy(alpha = 0.07f), qualityCard)
     .padding(horizontal = 12.dp, vertical = 4.dp)
 
-private enum class MaskKind(val label: String) {
+internal enum class MaskKind(val label: String) {
     POINT("控制点"), LINEAR("线性"), RADIAL("径向"), BRUSH("画笔")
 }
 
-private fun kindOf(mask: LocalMask): MaskKind = when (mask) {
+internal fun kindOf(mask: LocalMask): MaskKind = when (mask) {
     is LocalMask.ControlPoint -> MaskKind.POINT
     is LocalMask.LinearGradient -> MaskKind.LINEAR
     is LocalMask.RadialGradient -> MaskKind.RADIAL
     is LocalMask.Brush -> MaskKind.BRUSH
 }
 
-private fun defaultMask(kind: MaskKind): LocalMask = when (kind) {
+internal fun defaultMask(kind: MaskKind): LocalMask = when (kind) {
     MaskKind.POINT -> LocalMask.ControlPoint()
     MaskKind.LINEAR -> LocalMask.LinearGradient()
     MaskKind.RADIAL -> LocalMask.RadialGradient()
@@ -273,13 +273,12 @@ private fun DrawScope.drawMaskOutline(
 }
 
 /**
- * Parameters-only tab page for the mask feature.
+ * Parameters-only drawer for the standalone full-screen [MaskEditorOverlay].
  *
  * Everything that positions or shapes a mask (shape picking, layer add /
- * remove / switch, tap-to-place and brush painting) lives on the full-size
- * preview overlay [LocalMaskOverlay], not here. Keeping this page to sliders
- * avoids a second, tiny copy of the photo on the tab and removes the risk of
- * accidental edits while scrolling.
+ * remove / switch, tap-to-place and brush painting) lives on the full-screen
+ * photo, not here. Keeping this drawer to sliders avoids a second tiny copy
+ * of the photo and lets the user collapse it to maximise the preview area.
  */
 @Composable
 fun LocalAdjustmentSection(
@@ -313,7 +312,7 @@ fun LocalAdjustmentSection(
     Column(Modifier.qualityCard()) {
         SectionHelp(
             "用途：只调整照片的一部分，比如提亮人脸、压暗过亮的天空，其余区域不受影响。\n" +
-                "蒙版形状、位置、图层和画笔都在上方预览大图上操作；本页只调参数。"
+                "形状、位置、图层和画笔都在全屏预览大图上操作；这里只调数值，可折叠收起让画面更大。"
         )
 
         if (layers.size > 1) {
@@ -340,7 +339,7 @@ fun LocalAdjustmentSection(
 
         if (layer == null) {
             Text(
-                "还没有蒙版：点上方预览图工具条里的「+ 添加」，再在照片上点一下定位选区，然后回来调参数。",
+                "还没有蒙版：点照片下方工具条里的「+ 添加」，再在照片上点一下定位选区，然后展开参数调节数值。",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(8.dp)
@@ -525,17 +524,15 @@ fun LocalAdjustmentSection(
 }
 
 /**
- * Full-size mask editor drawn over the editor's preview area.
+ * The photo + mask interaction surface, shared by the standalone full-screen
+ * [MaskEditorOverlay]. The user works directly on the (large) preview image —
+ * tap to place, drag to move, finger-paint for the brush — with shape / layer
+ * controls in a compact toolbar below the photo.
  *
- * This replaces the old 200dp thumbnail canvas that used to sit inside the
- * tab page: a second, tiny copy of the photo was both redundant and far too
- * small to position a mask accurately. Here the user works directly on the
- * preview image — tap to place, drag to move, finger-paint for the brush —
- * with shape / layer controls in a compact toolbar at the bottom.
- *
- * The overlay is transparent to the very top strip: the caller applies a
- * status-bar + top-app-bar padding, so the editor's undo / redo / history
- * actions stay clickable while masking.
+ * The caller decides how much space this fills: in the full-screen editor it
+ * is weighted to occupy essentially the whole screen. Photo area and toolbar
+ * are separate vertical zones (never overlaid), so a tap near the centre of
+ * the photo can never land on a shape button.
  */
 @Composable
 fun LocalMaskOverlay(
