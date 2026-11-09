@@ -332,4 +332,43 @@ class SelectionAiRefineTest {
         assertTrue(m.sample(m.subject, 0.1f, 0.5f) < 0.1f)
         assertTrue(m.sample(m.subject, 0.49f, 0.5f) in 0f..1f)
     }
+
+    @Test
+    fun overlayIsTranslucentRedMaskScopeShadow() {
+        val w = 16
+        val h = 16
+        val solid = SelectionMaskGenerator.toOverlay(FloatArray(w * h) { 1f }, w, h)
+        val px = solid[8 * w + 8]
+        val a = (px ushr 24) and 0xFF
+        val r = (px shr 16) and 0xFF
+        val g = (px shr 8) and 0xFF
+        val b = px and 0xFF
+        assertEquals("mask scope must be red (R)", 0xFF, r)
+        assertEquals("mask scope G", 0x3B, g)
+        assertEquals("mask scope B", 0x30, b)
+        assertTrue("amber had G=176; red must dominate", r - g > 120 && r - b > 120)
+        assertTrue("wash must stay translucent, not opaque (alpha=$a)", a in 1..210)
+
+        // The Compose theme colour and the render-side constant must not drift.
+        assertEquals("render constant", 0x00FF3B30, SelectionMaskGenerator.OVERLAY_RGB)
+        val theme = com.fujikon.app.ui.theme.MaskScopeRed
+        assertEquals("theme red", 1f, theme.red, 0.001f)
+        assertEquals("theme green", 0x3B / 255f, theme.green, 0.01f)
+        assertEquals("theme blue", 0x30 / 255f, theme.blue, 0.01f)
+
+        // Unselected pixels stay fully transparent; a boundary reads darker
+        // than the flat interior, so the wash looks like a shadow not a fill.
+        val none = SelectionMaskGenerator.toOverlay(FloatArray(w * h) { 0f }, w, h)
+        assertEquals("unselected area must not be tinted", 0, (none[0] ushr 24) and 0xFF)
+        val half = FloatArray(w * h) { i -> if (i % w >= w / 2) 1f else 0f }
+        val edge = SelectionMaskGenerator.toOverlay(half, w, h)
+        // Sample the interior at x = w-4, not w-1: the generator probes a
+        // flat index +-1, so the last column wraps into the next row and is
+        // (correctly for display) treated as a boundary too.
+        assertTrue(
+            "boundary should read darker than interior",
+            ((edge[8 * w + w / 2] ushr 24) and 0xFF) >
+                ((edge[8 * w + w - 4] ushr 24) and 0xFF)
+        )
+    }
 }

@@ -8,6 +8,8 @@ val Card = Color(0xFF1A1A1E)
 val CardHigh = Color(0xFF232329)
 val Amber = Color(0xFFFFC400)
 val AmberSoft = Color(0xFFFFDE6A)
+/** Lightroom-style red wash used to show a mask's scope directly on the photo. */
+val MaskScopeRed = Color(0xFFFF3B30)
 val TextPrimary = Color(0xFFF3F3F5)
 val TextSecondary = Color(0xFF9BA0AA)
 val Outline = Color(0xFF2C2C33)

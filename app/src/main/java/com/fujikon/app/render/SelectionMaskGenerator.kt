@@ -44,6 +44,9 @@ object SelectionMaskGenerator {
 
     const val SIDE = 384
 
+    /** RGB of the red mask-scope shadow; per-pixel alpha is set in [toOverlay]. */
+    const val OVERLAY_RGB = 0x00FF3B30
+
     /**
      * Injectable AI source. The app container sets this to [MlSegmentation];
      * pure-JVM tests leave it null (or install a deterministic fake) so no
@@ -844,7 +847,7 @@ object SelectionMaskGenerator {
         return out
     }
 
-    /** Semi-transparent amber overlay for the mask editor preview. */
+    /** Semi-transparent RED shadow showing the mask scope in the editor preview. */
     fun toOverlay(values: FloatArray, w: Int, h: Int): IntArray {
         val out = IntArray(w * h)
         for (y in 0 until h) {
@@ -857,7 +860,7 @@ object SelectionMaskGenerator {
                     boundary = max(boundary, abs(v - values[j].coerceIn(0f, 1f)))
                 }
                 val alpha = if (boundary > 0.28f) (v * 190f).roundToInt() else (v * 74f).roundToInt()
-                out[i] = (alpha.coerceIn(0, 210) shl 24) or 0x00FFB030.toInt()
+                out[i] = (alpha.coerceIn(0, 210) shl 24) or OVERLAY_RGB
             }
         }
         return out

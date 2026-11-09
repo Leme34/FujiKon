@@ -63,6 +63,7 @@ import com.fujikon.app.data.isContentAware
 import com.fujikon.app.render.MlSegmentation
 import com.fujikon.app.render.SelectionMaskGenerator
 import com.fujikon.app.ui.theme.Amber
+import com.fujikon.app.ui.theme.MaskScopeRed
 import com.fujikon.app.ui.theme.CardHigh
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
@@ -606,9 +607,9 @@ private fun DrawScope.drawMaskOutline(
         is LocalMask.ControlPoint -> {
             val r = mask.radius * base
             val c = Offset(px(mask.x), py(mask.y))
-            drawCircle(Amber.copy(alpha = 0.16f), r, c)
-            drawCircle(Amber, r, c, style = Stroke(2.dp.toPx()))
-            drawCircle(Amber, 5.dp.toPx(), c)
+            drawCircle(MaskScopeRed.copy(alpha = 0.30f), r, c)
+            drawCircle(MaskScopeRed, r, c, style = Stroke(2.dp.toPx()))
+            drawCircle(MaskScopeRed, 5.dp.toPx(), c)
             // Grab handle: pinch (or drag the ring) to resize the region.
             drawCircle(Color.White, 6.dp.toPx(), Offset(c.x + r, c.y))
         }
@@ -619,8 +620,8 @@ private fun DrawScope.drawMaskOutline(
             // The raster uses the same rotationDeg, so the outline matches the
             // pixels that actually change.
             rotate(mask.rotationDeg, pivot = c) {
-                drawOval(Amber.copy(alpha = 0.16f), topLeft, oval)
-                drawOval(Amber, topLeft, oval, style = Stroke(2.dp.toPx()))
+                drawOval(MaskScopeRed.copy(alpha = 0.30f), topLeft, oval)
+                drawOval(MaskScopeRed, topLeft, oval, style = Stroke(2.dp.toPx()))
             }
             // Resize handle on the rotated +X rim.
             val r = Math.toRadians(mask.rotationDeg.toDouble())
@@ -634,7 +635,7 @@ private fun DrawScope.drawMaskOutline(
             if (handle != null) {
                 drawLine(Color.White.copy(alpha = 0.55f), c, handle, 2.dp.toPx())
                 drawCircle(Color.White, 9.dp.toPx(), handle)
-                drawCircle(Amber, 4.dp.toPx(), handle)
+                drawCircle(MaskScopeRed, 4.dp.toPx(), handle)
             }
         }
         is LocalMask.LinearGradient -> {
@@ -654,7 +655,7 @@ private fun DrawScope.drawMaskOutline(
                     2.dp.toPx()
                 )
             }
-            drawLine(Amber, s, e, 3.dp.toPx())
+            drawLine(MaskScopeRed, s, e, 3.dp.toPx())
             drawCircle(Color.White, 6.dp.toPx(), s)
             drawCircle(Color.White, 6.dp.toPx(), e)
         }
@@ -666,7 +667,7 @@ private fun DrawScope.drawMaskOutline(
                     val a = mask.mapPoint(pts[i], pts[i + 1], aspect)
                     val b = mask.mapPoint(pts[i + 2], pts[i + 3], aspect)
                     drawLine(
-                        Amber.copy(alpha = 0.8f),
+                        MaskScopeRed.copy(alpha = 0.8f),
                         Offset(px(a.first), py(a.second)),
                         Offset(px(b.first), py(b.second)),
                         (mask.radius * base * 2f).coerceAtLeast(3f)
@@ -676,7 +677,7 @@ private fun DrawScope.drawMaskOutline(
                 if (pts.size == 2) {
                     val a = mask.mapPoint(pts[0], pts[1], aspect)
                     drawCircle(
-                        Amber.copy(alpha = 0.8f),
+                        MaskScopeRed.copy(alpha = 0.8f),
                         (mask.radius * base).coerceAtLeast(3f),
                         Offset(px(a.first), py(a.second))
                     )
@@ -690,7 +691,7 @@ private fun DrawScope.drawMaskOutline(
                 if (handle != null) {
                     drawLine(Color.White.copy(alpha = 0.55f), c, handle, 2.dp.toPx())
                     drawCircle(Color.White, 9.dp.toPx(), handle)
-                    drawCircle(Amber, 4.dp.toPx(), handle)
+                    drawCircle(MaskScopeRed, 4.dp.toPx(), handle)
                 }
             }
         }
@@ -702,17 +703,17 @@ private fun DrawScope.drawMaskOutline(
             val sx = if (mask is LocalMask.SubjectMask) mask.seedX else (mask as LocalMask.ColorRangeMask).seedX
             val sy = if (mask is LocalMask.SubjectMask) mask.seedY else (mask as LocalMask.ColorRangeMask).seedY
             val c = Offset(px(sx), py(sy))
-            drawCircle(Amber.copy(alpha = 0.9f), 9.dp.toPx(), c, style = Stroke(2.dp.toPx()))
-            drawCircle(Amber, 3.dp.toPx(), c)
+            drawCircle(MaskScopeRed.copy(alpha = 0.9f), 9.dp.toPx(), c, style = Stroke(2.dp.toPx()))
+            drawCircle(MaskScopeRed, 3.dp.toPx(), c)
         }
         is LocalMask.SkyMask -> {
             // Sky grows down from the top edge; a hairline marks that edge.
-            drawLine(Amber.copy(alpha = 0.8f), Offset(l, t + 2.dp.toPx()), Offset(l + w, t + 2.dp.toPx()), 2.dp.toPx())
+            drawLine(MaskScopeRed.copy(alpha = 0.8f), Offset(l, t + 2.dp.toPx()), Offset(l + w, t + 2.dp.toPx()), 2.dp.toPx())
         }
     }
     for (i in 1 until liveBrush.size) {
         drawLine(
-            Amber.copy(alpha = 0.9f),
+            MaskScopeRed.copy(alpha = 0.9f),
             Offset(px(liveBrush[i - 1].x), py(liveBrush[i - 1].y)),
             Offset(px(liveBrush[i].x), py(liveBrush[i].y)),
             6.dp.toPx()
@@ -1586,7 +1587,7 @@ fun LocalMaskOverlay(
         ) {
             val rect = rectFor(size.width, size.height, displayBitmap)
             val aspect = if (rect.height > 0f) rect.width / rect.height else 1f
-            // Draw the recognised area as a translucent amber wash BEFORE the
+            // Draw the recognised area as a RED mask-scope shadow BEFORE the
             // outline, so the user can see exactly what "选择主体/天空/颜色"
             // selected and re-tap to correct it.
             if (showOverlay) selectionOverlay?.let { overlay ->
@@ -1612,7 +1613,7 @@ fun LocalMaskOverlay(
                 .testTag("mask_toolbar")
         ) {
             Text(
-                "端侧 AI 识别选区 · 橙色为选中区域 · 点图重定位/取色 · 参数区可用「＋添加 / －擦除」笔刷精修 · 双指缩放旋转",
+                "端侧 AI 识别选区 · 红色阴影为选中区域 · 点图重定位/取色 · 参数区可用「＋添加 / －擦除」笔刷精修 · 双指缩放旋转",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White
             )
