@@ -59,6 +59,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 分区与推荐默认收起，初次进入编辑器不被说明文字占满。 */
+internal const val AUTO_ENHANCE_DETAILS_DEFAULT_EXPANDED = false
+
+/** 一键优化按钮底色：全透明，取代旧的浅黄填充。 */
+internal val AutoEnhanceButtonFill: Color = Color.Transparent
+
+
 /** One-line, explainable summary of what the closed loop actually measured. */
 private fun reportLine(r: OptimizationReport): String {
     val rounds = if (r.iterations == 0) {
@@ -108,7 +115,7 @@ fun HistogramCard(
     var report by remember { mutableStateOf<OptimizationReport?>(null) }
     var optimizing by remember { mutableStateOf(false) }
     /** Whether the zone description + report + preset picks panel is expanded. */
-    var detailsExpanded by remember { mutableStateOf(true) }
+    var detailsExpanded by remember { mutableStateOf(AUTO_ENHANCE_DETAILS_DEFAULT_EXPANDED) }
     val scope = rememberCoroutineScope()
 
     // Reset only when the PHOTO changes, not on every preview re-render, so the
@@ -311,8 +318,8 @@ fun HistogramCard(
                 .fillMaxWidth()
                 .height(28.dp)
                 .clip(RoundedCornerShape(14.dp))
-                .background(Amber.copy(alpha = 0.16f))
-                .border(1.dp, Amber.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+                .background(AutoEnhanceButtonFill)
+                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(14.dp))
                 .clickable(enabled = optimised != null && !optimizing) {
                     optimised ?: return@clickable
                     scope.launch {

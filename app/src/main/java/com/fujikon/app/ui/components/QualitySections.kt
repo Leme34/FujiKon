@@ -39,11 +39,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -80,6 +83,18 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 private val qualityCard = RoundedCornerShape(14.dp)
+
+/**
+ * Red mask-scope shadow for a linear gradient, ordered start -> end.
+ * LocalMaskRenderer gates the ramp to the strip BETWEEN the two endpoint
+ * lines and drives it from 0 at the start to 1 at the end (or the reverse
+ * when inverted), so the painted shadow ramps in the same direction.
+ */
+internal fun linearScopeColors(invert: Boolean): List<Color> {
+    val weak = MaskScopeRed.copy(alpha = 0.03f)
+    val strong = MaskScopeRed.copy(alpha = 0.34f)
+    return if (invert) listOf(strong, weak) else listOf(weak, strong)
+}
 
 /** HSL hue in degrees (0..360) for an ARGB pixel; grey pixels report hue 0. */
 fun hueFromArgb(argb: Int): Float = hslFromArgb(argb)[0]
@@ -645,11 +660,31 @@ private fun DrawScope.drawMaskOutline(
             val len = hypot(dx, dy).coerceAtLeast(1f)
             val nx = -dy / len; val ny = dx / len
             val reach = maxOf(w, h)
-            // Two boundary lines AT the endpoints: the effect is confined to
-            // the strip BETWEEN them (LocalMaskRenderer gates the ramp there).
+            // RED SCOPE SHADOW: the renderer confines the effect to the strip
+            // BETWEEN the two endpoint lines, ramping start -> end. Paint that
+            // same band with a translucent red gradient (clipped to the photo)
+            // so a linear mask shows its scope exactly like the point / radial
+            // fills, instead of only showing two hairlines.
+            val band = Path().apply {
+                moveTo(s.x - nx * reach, s.y - ny * reach)
+                lineTo(e.x - nx * reach, e.y - ny * reach)
+                lineTo(e.x + nx * reach, e.y + ny * reach)
+                lineTo(s.x + nx * reach, s.y + ny * reach)
+                close()
+            }
+            clipRect(l, t, l + w, t + h) {
+                drawPath(
+                    band,
+                    brush = Brush.linearGradient(
+                        linearScopeColors(mask.invert), start = s, end = e
+                    )
+                )
+            }
+            // Two red boundary lines AT the endpoints: the effect is confined
+            // to the strip BETWEEN them (LocalMaskRenderer gates the ramp there).
             listOf(s, e).forEach { p ->
                 drawLine(
-                    Color.White.copy(alpha = 0.42f),
+                    MaskScopeRed.copy(alpha = 0.75f),
                     Offset(p.x - nx * reach, p.y - ny * reach),
                     Offset(p.x + nx * reach, p.y + ny * reach),
                     2.dp.toPx()

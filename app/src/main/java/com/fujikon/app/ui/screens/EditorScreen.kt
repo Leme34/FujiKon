@@ -123,6 +123,7 @@ import com.fujikon.app.ui.viewmodel.EditorViewModel
 import com.fujikon.app.ui.viewmodel.FujiKonViewModelFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import com.fujikon.app.ui.components.EditorPageTransition
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -693,7 +694,10 @@ fun EditorScreen(
     // strip is a bare transparent, scrim-free area, so the real action bar
     // stays visible and clickable. Drawn BEFORE the picker / history sheets
     // so those still stack on top when opened from that action bar.
-    if (showMaskEditor && preset != null) {
+    EditorPageTransition(
+        visible = showMaskEditor && preset != null,
+        modifier = Modifier.fillMaxSize()
+    ) {
         MaskEditorOverlay(
             initialAdjustments = state.adjustments,
             sourceBitmap = state.original ?: state.rendered,
@@ -713,7 +717,7 @@ fun EditorScreen(
         )
     }
 
-    if (showPicker) {
+    EditorPageTransition(visible = showPicker, modifier = Modifier.fillMaxSize()) {
         PresetPickerSheet(
             presets = state.presets,
             selectedId = state.presetId,
@@ -742,10 +746,15 @@ fun EditorScreen(
         )
     }
 
-    if (showCurve && preset != null) {
+    val curvePreset = preset
+    EditorPageTransition(
+        visible = showCurve && curvePreset != null,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val p = curvePreset ?: return@EditorPageTransition
         ToneCurveEditorSheet(
-            presetName = preset.name,
-            baseCurve = preset.baseCurvePoints(),
+            presetName = p.name,
+            baseCurve = p.baseCurvePoints(),
             presetCurve = state.selectedPreset?.toneCurve ?: ToneCurve.linear(),
             curve = state.effectiveToneCurve,
             presetChannelCurves = state.selectedPreset?.channelCurves ?: ChannelToneCurves.Neutral,
@@ -778,13 +787,18 @@ fun EditorScreen(
         )
     }
 
-    if (showAdjustments && preset != null) {
+    val adjustPreset = preset
+    EditorPageTransition(
+        visible = showAdjustments && adjustPreset != null,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val p = adjustPreset ?: return@EditorPageTransition
         AdjustmentsSheet(
-            presetName = preset.name,
+            presetName = p.name,
             initialAdjustments = state.adjustments,
             initialToneCurve = state.effectiveToneCurve,
             presetToneCurve = state.selectedPreset?.toneCurve ?: ToneCurve.linear(),
-            baseCurve = preset.baseCurvePoints(),
+            baseCurve = p.baseCurvePoints(),
             rendering = state.loading,
             saving = savingAdjustments,
             onPreview = { adjustments, field ->
