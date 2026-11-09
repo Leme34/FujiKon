@@ -427,6 +427,8 @@ FujiKon 接入 Agnes 最新一代图像大模型 `agnes-image-2.5-flash`（图�
 
 > 1.6.30 修复**左上角「当前照片数」显示不完整**：Material3 小尺寸 `TopAppBar` 只有 64dp 高，右上角五个操作（撤销 / 重做 / 历史 / 预设名 / 更多）把 title 区挤到极窄，旧的内联标题用不限行数的 `titleMedium` 显示 `"1 / 3"`，窄屏下换行成两行使两行 `Column` 变三行、超出顶栏高度后垂直溢出（「1」飘到状态栏、「/」掉到图标下方）。抽出 `EditorTopBarTitle.kt`：计数改为 `titleSmall` + `maxLines = 1` + `softWrap = false` + `wrapContentWidth(unbounded = true)`，按内容固有宽度绘制、任何窄槽下都单行完整显示；文件名单行省略；计数格式下沉为纯函数 `editorPhotoCounter(index, count)`（空选择显示「查看」，其余为 1 基「当前 / 总数」）。同时把顶栏预设名按钮从固定 `width(76.dp)` 改为 `widthIn(max = 56.dp)` 自适应，给 title 腾出宽度。新增 `EditorPhotoCounterTest` 9 例（格式、紧凑单行、文本完整、窄槽内单行渲染），全量 **420 个测试通过**。
 
+> 1.6.31 新增**仅首次进入的一次性「右滑」引导**：为配合 1.6.29 的一行可左右滑动工具栏，编辑器预览区右下角（工具栏上方）以小浮窗弹出「右滑更精彩 · 底部功能按钮可左右滑动」并带「知道了」按钮。是否显示由持久化标志 `AppSettings.hasSeenSwipeHint`（`seen_swipe_hint`）决定，只在「未看过且已有预览图」时出现；点「知道了」调用 `EditorViewModel.markSwipeHintSeen()` 写盘并更新 `UiState.seenSwipeHint`，之后重新选照片 / 重进编辑器 / 重启进程都**不再弹出**。显示规则下沉为纯函数 `shouldShowSwipeHint(seen, hasRenderedPhoto)`，浮窗抽出为 `EditorSwipeHint.kt`（`EditorSwipeHintCard`）；新浮窗与既有「长按对比原图」一次性提示互斥，避免两个新手提示同时抢底部空间。新增 `EditorSwipeHintTest`、`AppSettingsTest` 相关用例；同时给 3 个 ViewModel 测试类的 `tearDown` 补上 IO 协程排空（`Thread.sleep(150)`），根治全量套件偶发的 `Dispatchers.Main is used concurrently with setting it` 竞争。全量 **428 个测试通过**（连续两次重跑一致）。
+
 ### 隐私与限制
 
 - 只有点击「开始修图」才会上传**当前这一张预览图**（最长边 1800 px 的 JPEG）；不会上传原图文件、其它照片、预设或相册信息。

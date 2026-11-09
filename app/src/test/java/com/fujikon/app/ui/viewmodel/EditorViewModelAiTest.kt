@@ -124,6 +124,9 @@ class EditorViewModelAiTest {
     fun tearDown() {
         server.close()
         serverThread.join(2_000)
+        // Let `load()` / render continuations drain before swapping Main,
+        // otherwise resetMain() races with them in a full-suite run.
+        Thread.sleep(150)
         Dispatchers.resetMain()
         cacheDir.deleteRecursively()
     }

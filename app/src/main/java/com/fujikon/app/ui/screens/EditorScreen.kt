@@ -131,6 +131,8 @@ import com.fujikon.app.ui.components.EditorTool
 import com.fujikon.app.ui.components.EditorToolAppearance
 import com.fujikon.app.ui.components.EditorToolsRow
 import com.fujikon.app.ui.components.EditorTopBarTitle
+import com.fujikon.app.ui.components.EditorSwipeHintCard
+import com.fujikon.app.ui.components.shouldShowSwipeHint
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -444,6 +446,10 @@ fun EditorScreen(
                     .background(Color.Black)
             ) {
                 val rendered = state.rendered
+                // 1.6.31: one-shot hint for the horizontally scrollable tool
+                // row. Anchored bottom-right of the preview, just above the
+                // toolbar; shown only until the user taps 「知道了」.
+                val showSwipeHint = shouldShowSwipeHint(state.seenSwipeHint, rendered != null)
                 if (rendered != null) {
                     ZoomableImage(
                         bitmap = rendered,
@@ -548,7 +554,10 @@ fun EditorScreen(
                     }
                 }
 
-                if (!state.seenCompareHint && rendered != null) {
+                // The swipe hint takes priority: while it is visible the
+                // long-press compare hint is held back, so the two one-shot
+                // tips never compete for the bottom of the preview at once.
+                if (!state.seenCompareHint && rendered != null && !showSwipeHint) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -575,6 +584,15 @@ fun EditorScreen(
                             )
                         }
                     }
+                }
+
+                if (showSwipeHint) {
+                    EditorSwipeHintCard(
+                        onDismiss = { viewModel.markSwipeHintSeen() },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 12.dp, bottom = 12.dp)
+                    )
                 }
 
                 if (rendered != null && !exporting) {

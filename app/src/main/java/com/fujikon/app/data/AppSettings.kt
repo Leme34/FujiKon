@@ -32,6 +32,18 @@ class AppSettings(context: Context) {
         }
 
     /**
+     * Whether the one-shot "底部工具可右滑" hint has been dismissed (1.6.31).
+     * Stored so the floating hint appears only on the first entry into the
+     * editor and never again after the user taps 「知道了」 — even across
+     * process restarts, re-selecting photos or re-entering the editor.
+     */
+    var hasSeenSwipeHint: Boolean
+        get() = prefs.getBoolean("seen_swipe_hint", false)
+        set(value) {
+            prefs.edit().putBoolean("seen_swipe_hint", value).apply()
+        }
+
+    /**
      * Agnes API key for one-tap AI retouching. Stored locally in the app's own
      * SharedPreferences and only attached to requests the user explicitly starts.
      */

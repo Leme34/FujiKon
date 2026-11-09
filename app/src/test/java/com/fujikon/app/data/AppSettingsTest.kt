@@ -95,4 +95,27 @@ class AppSettingsTest {
         assertFalse(reread.preserveExif)
         assertTrue(reread.hasSeenCompareHint)
     }
+
+    @Test
+    fun swipeHintDefaultsToNotSeen() {
+        assertFalse(AppSettings(context).hasSeenSwipeHint)
+    }
+
+    @Test
+    fun markingSwipeHintSeenPersistsAcrossInstances() {
+        val settings = AppSettings(context)
+        settings.hasSeenSwipeHint = true
+        // A brand new instance (fresh ViewModel / process) must still see it.
+        assertTrue(AppSettings(context).hasSeenSwipeHint)
+    }
+
+    @Test
+    fun swipeHintIsIndependentFromCompareHint() {
+        val settings = AppSettings(context)
+        settings.hasSeenCompareHint = true
+        // Dismissing the long-press tip must NOT hide the swipe tip.
+        assertFalse(settings.hasSeenSwipeHint)
+        settings.hasSeenSwipeHint = true
+        assertTrue(AppSettings(context).hasSeenCompareHint)
+    }
 }

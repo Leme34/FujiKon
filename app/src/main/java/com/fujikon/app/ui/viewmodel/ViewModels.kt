@@ -689,6 +689,12 @@ class EditorViewModel(
         val error: String? = null,
         val export: ExportState = ExportState.Idle,
         val seenCompareHint: Boolean = false,
+        /**
+         * Whether the one-shot "底部工具可右滑" hint was dismissed (1.6.31).
+         * Read from [AppSettings] at startup so it persists across sessions;
+         * the UI shows the floating hint only while this is false.
+         */
+        val seenSwipeHint: Boolean = false,
         /** Non-null while the user has an unsaved master curve edit for the session. */
         val toneCurveOverride: ToneCurve? = null,
         /** Non-null while the user has unsaved per-channel curve edits. */
@@ -744,6 +750,7 @@ class EditorViewModel(
     private val _state = MutableStateFlow(
         UiState(
             seenCompareHint = settings.hasSeenCompareHint,
+            seenSwipeHint = settings.hasSeenSwipeHint,
             aiPrompt = settings.agnesPrompt
         )
     )
@@ -879,6 +886,17 @@ class EditorViewModel(
     fun markCompareHintSeen() {
         settings.hasSeenCompareHint = true
         _state.update { it.copy(seenCompareHint = true) }
+    }
+
+    /**
+     * Dismisses the one-shot "底部工具可右滑" hint for good (1.6.31). The flag
+     * is persisted in [AppSettings], so the floating hint never comes back —
+     * not on a later photo, not after re-entering the editor, not after a
+     * process restart. Called only when the user taps 「知道了」.
+     */
+    fun markSwipeHintSeen() {
+        settings.hasSeenSwipeHint = true
+        _state.update { it.copy(seenSwipeHint = true) }
     }
 
     // ------------------------------------------------------------- AI retouch

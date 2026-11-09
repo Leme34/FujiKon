@@ -91,6 +91,10 @@ class EditorPerPhotoEditTest {
 
     @After
     fun tearDown() {
+        // `presetRepository.load()` switches to Dispatchers.IO; let any
+        // in-flight continuation drain before swapping the Main dispatcher,
+        // otherwise resetMain() races with it across test classes in a full run.
+        Thread.sleep(150)
         Dispatchers.resetMain()
         cacheDir.deleteRecursively()
     }
