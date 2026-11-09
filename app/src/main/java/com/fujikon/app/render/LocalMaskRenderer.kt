@@ -1,6 +1,7 @@
 package com.fujikon.app.render
 
 import com.fujikon.app.data.LocalAdjustments
+import com.fujikon.app.data.EraserStroke
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
@@ -239,6 +240,60 @@ object LocalMaskRenderer {
         }
     }
 
+    /**
+     * Removes painted ERASER strokes from a rasterised mask. It works for
+     * EVERY mask kind because it acts on the final float grid, after the shape
+     * (or the AI selection) has already been built. Both preview and export go
+     * through [prepare], so the erased scope is identical in both.
+     */
+    fun applyEraser(values: FloatArray, w: Int, h: Int, strokes: List<EraserStroke>) {
+        if (strokes.isEmpty() || w <= 0 || h <= 0) return
+        val long = max(w, h).toFloat()
+        for (stroke in strokes) {
+            val pts = stroke.points
+            if (pts.size < 2) continue
+            val radiusPx = (stroke.radius.coerceIn(0.005f, 0.4f) * long).coerceAtLeast(1.2f)
+            val inner = radiusPx * (1f - stroke.feather.coerceIn(0.05f, 1f))
+            var k = 0
+            while (k + 3 < pts.size) {
+                eraseSegment(values, w, h, pts[k], pts[k + 1], pts[k + 2], pts[k + 3],
+                    radiusPx, inner, stroke.strength)
+                k += 2
+            }
+            if (pts.size == 2) {
+                eraseSegment(values, w, h, pts[0], pts[1], pts[0], pts[1],
+                    radiusPx, inner, stroke.strength)
+            }
+        }
+    }
+
+    /** One soft round dab along a stroke segment; multiplies scope down. */
+    private fun eraseSegment(
+        values: FloatArray, w: Int, h: Int,
+        x0: Float, y0: Float, x1: Float, y1: Float,
+        radiusPx: Float, inner: Float, strength: Float
+    ) {
+        val ax = x0 * (w - 1); val ay = y0 * (h - 1)
+        val bx = x1 * (w - 1); val by = y1 * (h - 1)
+        val minX = (min(ax, bx) - radiusPx).toInt().coerceAtLeast(0)
+        val maxX = (max(ax, bx) + radiusPx).toInt().coerceAtMost(w - 1)
+        val minY = (min(ay, by) - radiusPx).toInt().coerceAtLeast(0)
+        val maxY = (max(ay, by) + radiusPx).toInt().coerceAtMost(h - 1)
+        val dx = bx - ax; val dy = by - ay
+        val len2 = (dx * dx + dy * dy).coerceAtLeast(1e-6f)
+        for (py in minY..maxY) {
+            for (px in minX..maxX) {
+                val t = (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0f, 1f)
+                val d = hypot(px - (ax + t * dx), py - (ay + t * dy))
+                if (d > radiusPx) continue
+                val falloff = 1f - smoothstep(inner, radiusPx, d)
+                val amount = (falloff * strength).coerceIn(0f, 1f)
+                val i = py * w + px
+                values[i] = (values[i] * (1f - amount)).coerceIn(0f, 1f)
+            }
+        }
+    }
+
     /** Prepares every active layer once per render (geometric-only path). */
     fun prepare(local: LocalAdjustments, width: Int, height: Int, job: Job?): List<PreparedLayer> =
         prepare(local, width, height, job, null)
@@ -259,8 +314,12 @@ object LocalMaskRenderer {
         if (layers.isEmpty()) return emptyList()
         return layers.map { layer ->
             checkCancelled(job)
+            val grid = buildGrid(layer.mask, width, height, analysis, job)
+            // The eraser is layer-scoped and mask-agnostic: apply it to the
+            // final grid so geometric shapes and AI selections behave alike.
+            applyEraser(grid.values, grid.width, grid.height, layer.eraser)
             PreparedLayer(
-                buildGrid(layer.mask, width, height, analysis, job),
+                grid,
                 layer.params,
                 layer.strength / 100f
             )

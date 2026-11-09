@@ -98,6 +98,10 @@ fun MaskEditorOverlay(
     var sampleMode by remember { mutableStateOf<Boolean?>(null) }
     var showOverlay by remember { mutableStateOf(true) }
     var selectionVersion by remember { mutableStateOf(0) }
+    // Mask eraser: shared between the photo gesture surface and the drawer.
+    var eraserMode by remember { mutableStateOf(false) }
+    var eraserRadius by remember { mutableStateOf(0.045f) }
+    var eraserFeather by remember { mutableStateOf(0.5f) }
 
     val screenHeight = LocalConfiguration.current.screenHeightDp
     val paramsHeight = (screenHeight * 0.26f).dp
@@ -191,11 +195,14 @@ fun MaskEditorOverlay(
                 // original, not the graded preview, so the sample never drifts.
                 sourceBitmap = sourceBitmap ?: previewBitmap,
                 refineMode = refineMode,
-                onRefineModeChange = { refineMode = it },
+                onRefineModeChange = { refineMode = it; if (it != RefineMode.NONE) eraserMode = false },
                 showOverlay = showOverlay,
                 selectionVersion = selectionVersion,
                 sampleMode = sampleMode,
                 onSampleTaken = { sampleMode = null },
+                eraserMode = eraserMode,
+                eraserRadius = eraserRadius,
+                eraserFeather = eraserFeather,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -260,12 +267,21 @@ fun MaskEditorOverlay(
                         enabled = true,
                         aspect = aspect,
                         refineMode = refineMode,
-                        onRefineModeChange = { refineMode = it },
+                        onRefineModeChange = { refineMode = it; if (it != RefineMode.NONE) eraserMode = false },
                         sampleMode = sampleMode,
-                        onSampleModeChange = { sampleMode = it },
+                        onSampleModeChange = { sampleMode = it; if (it != null) eraserMode = false },
                         showOverlay = showOverlay,
                         onShowOverlayChange = { showOverlay = it },
-                        onRedetect = { selectionVersion++ }
+                        onRedetect = { selectionVersion++ },
+                        eraserMode = eraserMode,
+                        onEraserModeChange = { active ->
+                            eraserMode = active
+                            if (active) { refineMode = RefineMode.NONE; sampleMode = null }
+                        },
+                        eraserRadius = eraserRadius,
+                        onEraserRadiusChange = { eraserRadius = it },
+                        eraserFeather = eraserFeather,
+                        onEraserFeatherChange = { eraserFeather = it }
                     )
                 }
             }

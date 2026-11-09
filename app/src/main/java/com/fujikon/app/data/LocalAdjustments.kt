@@ -146,6 +146,58 @@ data class RefineStroke(
     }
 }
 
+/**
+ * One stroke of the mask ERASER: a free-hand path that removes scope from the
+ * CURRENT layer, for EVERY mask kind (control point / linear / radial / brush
+ * and the three AI selections). Unlike [RefineStroke], which only refines a
+ * content-aware selection, this lives on [LocalLayer] so the same eraser works
+ * on a plain gradient too. [points] is a flat normalised `[x0,y0,x1,y1,...]`.
+ */
+data class EraserStroke(
+    val points: List<Float> = emptyList(),
+    val radius: Float = 0.045f,
+    val feather: Float = 0.5f,
+    val strength: Float = 1f
+) {
+    fun normalized(): EraserStroke = copy(
+        points = points.map { it.coerceIn(0f, 1f) },
+        radius = radius.coerceIn(0.005f, 0.4f),
+        feather = feather.coerceIn(0.05f, 1f),
+        strength = strength.coerceIn(0f, 1f)
+    )
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("points", JSONArray().apply { points.forEach { put(it.toDouble()) } })
+        put("radius", radius.toDouble())
+        put("feather", feather.toDouble())
+        put("strength", strength.toDouble())
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): EraserStroke {
+            if (json == null) return EraserStroke()
+            val array = json.optJSONArray("points") ?: JSONArray()
+            val pts = ArrayList<Float>(array.length())
+            for (i in 0 until array.length()) pts += array.optDouble(i, 0.0).toFloat()
+            return EraserStroke(
+                pts,
+                json.optDouble("radius", 0.045).toFloat(),
+                json.optDouble("feather", 0.5).toFloat(),
+                json.optDouble("strength", 1.0).toFloat()
+            ).normalized()
+        }
+    }
+}
+
+internal fun JSONArray.toEraserStrokes(): List<EraserStroke> {
+    val out = ArrayList<EraserStroke>(length())
+    for (i in 0 until length()) out += EraserStroke.fromJson(optJSONObject(i))
+    return out
+}
+
+internal fun List<EraserStroke>.toEraserJsonArray(): JSONArray =
+    JSONArray().apply { forEach { put(it.toJson()) } }
+
 /** An extra eyedropper sample for the colour-range tool. */
 data class ColorSample(
     val hue: Float, val sat: Float, val lum: Float,
@@ -555,11 +607,14 @@ data class LocalLayer(
     val mask: LocalMask = LocalMask.ControlPoint(),
     val params: LocalParams = LocalParams.Neutral,
     val strength: Float = 100f,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    /** Free-hand eraser strokes that remove scope from THIS layer's mask. */
+    val eraser: List<EraserStroke> = emptyList()
 ) {
     fun normalized(): LocalLayer = copy(
         strength = strength.coerceIn(0f, 100f),
-        params = params.normalized()
+        params = params.normalized(),
+        eraser = eraser.map { it.normalized() }.take(64)
     )
 
     fun active(): Boolean = enabled && strength > 0.001f && !params.isNeutral()
@@ -571,6 +626,7 @@ data class LocalLayer(
         put("params", params.toJson())
         put("strength", strength.toDouble())
         put("enabled", enabled)
+        put("eraser", eraser.toEraserJsonArray())
     }
 
     companion object {
@@ -584,7 +640,9 @@ data class LocalLayer(
                 mask = LocalMask.fromJson(json.optJSONObject("mask")),
                 params = LocalParams.fromJson(json.optJSONObject("params")),
                 strength = json.optDouble("strength", 100.0).toFloat(),
-                enabled = json.optBoolean("enabled", true)
+                enabled = json.optBoolean("enabled", true),
+                // Legacy presets have no "eraser" key -> empty list.
+                eraser = (json.optJSONArray("eraser") ?: JSONArray()).toEraserStrokes()
             ).normalized()
         }
     }

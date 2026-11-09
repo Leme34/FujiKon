@@ -38,15 +38,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -56,6 +59,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.BrushStroke
 import com.fujikon.app.data.ColorSample
+import com.fujikon.app.data.EraserStroke
 import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
@@ -64,6 +68,7 @@ import com.fujikon.app.data.RefineStroke
 import com.fujikon.app.data.SelectionRefine
 import com.fujikon.app.data.isContentAware
 import com.fujikon.app.render.MlSegmentation
+import com.fujikon.app.render.LocalMaskRenderer
 import com.fujikon.app.render.SelectionMaskGenerator
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.MaskScopeRed
@@ -201,6 +206,16 @@ internal fun appendRefineStroke(mask: LocalMask, points: List<Float>, erase: Boo
     }
 }
 
+/** Appends one ERASER stroke to a layer. Works for EVERY mask kind. */
+internal fun appendEraserStroke(
+    layer: LocalLayer, points: List<Float>, radius: Float, feather: Float
+): LocalLayer = layer.copy(
+    eraser = (layer.eraser + EraserStroke(points = points, radius = radius, feather = feather)).take(64)
+)
+
+/** Removes every eraser stroke, restoring the layer's full scope. */
+internal fun clearEraser(layer: LocalLayer): LocalLayer = layer.copy(eraser = emptyList())
+
 /** Clears painted refinement strokes (the AI selection itself is untouched). */
 internal fun clearRefineStrokes(mask: LocalMask): LocalMask = when (mask) {
     is LocalMask.SubjectMask -> mask.copy(refine = mask.refine.copy(strokes = emptyList()))
@@ -229,12 +244,17 @@ internal fun withRefine(mask: LocalMask, transform: (SelectionRefine) -> Selecti
  * and side-effect free (apart from bitmap allocation) so it can be unit-tested
  * and safely called from a background dispatcher by the mask editor.
  */
-internal fun buildSelectionOverlay(mask: LocalMask, bitmap: Bitmap?): ImageBitmap? {
+internal fun buildSelectionOverlay(
+    mask: LocalMask, bitmap: Bitmap?, eraser: List<EraserStroke> = emptyList()
+): ImageBitmap? {
     if (!mask.isContentAware || !usable(bitmap)) return null
     val analysis = SelectionMaskGenerator.fromBitmap(bitmap) ?: return null
     val values = SelectionMaskGenerator.build(mask, analysis, null, analysis.w, analysis.h)
         ?: return null
     if (values.size != analysis.w * analysis.h) return null
+    // The eraser is layer-scoped: punch the painted areas out of the red wash
+    // too, so the preview matches the scope actually applied at render time.
+    LocalMaskRenderer.applyEraser(values, analysis.w, analysis.h, eraser)
     val argb = SelectionMaskGenerator.toOverlay(values, analysis.w, analysis.h)
     return Bitmap.createBitmap(argb, analysis.w, analysis.h, Bitmap.Config.ARGB_8888)
         .asImageBitmap()
@@ -599,11 +619,50 @@ internal fun appendBrushStroke(
     } else mask
 
 /** Draw the mask outline in the same geometry used to interpret touches. */
+/**
+ * Builds a Path covering every eraser dab, used with ClipOp.Difference to
+ * punch holes in the red scope fills. Dabs are sampled along each segment so
+ * a fast drag still leaves a continuous gap rather than isolated dots.
+ */
+private fun buildEraserClip(eraser: List<EraserStroke>, rect: ImageRect): Path? {
+    if (eraser.isEmpty()) return null
+    val path = Path()
+    val long = maxOf(rect.width, rect.height)
+    var any = false
+    for (stroke in eraser) {
+        val r = (stroke.radius.coerceIn(0.005f, 0.4f) * long).coerceAtLeast(2f)
+        val pts = stroke.points
+        var k = 0
+        while (k + 3 < pts.size) {
+            val ax = rect.left + pts[k] * rect.width
+            val ay = rect.top + pts[k + 1] * rect.height
+            val bx = rect.left + pts[k + 2] * rect.width
+            val by = rect.top + pts[k + 3] * rect.height
+            val steps = maxOf(1, (hypot(bx - ax, by - ay) / (r * 0.5f)).roundToInt())
+            for (j in 0..steps) {
+                val t = j.toFloat() / steps
+                val cx = ax + (bx - ax) * t; val cy = ay + (by - ay) * t
+                path.addOval(Rect(cx - r, cy - r, cx + r, cy + r))
+                any = true
+            }
+            k += 2
+        }
+        if (pts.size == 2) {
+            val cx = rect.left + pts[0] * rect.width
+            val cy = rect.top + pts[1] * rect.height
+            path.addOval(Rect(cx - r, cy - r, cx + r, cy + r))
+            any = true
+        }
+    }
+    return if (any) path else null
+}
+
 private fun DrawScope.drawMaskOutline(
     mask: LocalMask,
     rect: ImageRect,
     liveBrush: List<Offset>,
-    aspect: Float
+    aspect: Float,
+    eraser: List<EraserStroke> = emptyList()
 ) {
     val l = rect.left
     val t = rect.top
@@ -614,6 +673,13 @@ private fun DrawScope.drawMaskOutline(
     fun px(nx: Float) = l + nx * w
     fun py(ny: Float) = t + ny * h
 
+    // Punch painted eraser strokes out of the RED scope fills, so the visual
+    // matches the mask actually applied by LocalMaskRenderer.applyEraser().
+    val eraserPath = buildEraserClip(eraser, rect)
+    fun DrawScope.scopedFill(block: DrawScope.() -> Unit) {
+        if (eraserPath != null) clipPath(eraserPath, ClipOp.Difference, block) else block()
+    }
+
     for (i in 1..2) {
         drawLine(Color.White.copy(alpha = 0.10f), Offset(l + w * i / 3f, t), Offset(l + w * i / 3f, t + h))
         drawLine(Color.White.copy(alpha = 0.10f), Offset(l, t + h * i / 3f), Offset(l + w, t + h * i / 3f))
@@ -622,7 +688,7 @@ private fun DrawScope.drawMaskOutline(
         is LocalMask.ControlPoint -> {
             val r = mask.radius * base
             val c = Offset(px(mask.x), py(mask.y))
-            drawCircle(MaskScopeRed.copy(alpha = 0.30f), r, c)
+            scopedFill { drawCircle(MaskScopeRed.copy(alpha = 0.30f), r, c) }
             drawCircle(MaskScopeRed, r, c, style = Stroke(2.dp.toPx()))
             drawCircle(MaskScopeRed, 5.dp.toPx(), c)
             // Grab handle: pinch (or drag the ring) to resize the region.
@@ -635,7 +701,7 @@ private fun DrawScope.drawMaskOutline(
             // The raster uses the same rotationDeg, so the outline matches the
             // pixels that actually change.
             rotate(mask.rotationDeg, pivot = c) {
-                drawOval(MaskScopeRed.copy(alpha = 0.30f), topLeft, oval)
+                scopedFill { drawOval(MaskScopeRed.copy(alpha = 0.30f), topLeft, oval) }
                 drawOval(MaskScopeRed, topLeft, oval, style = Stroke(2.dp.toPx()))
             }
             // Resize handle on the rotated +X rim.
@@ -673,12 +739,14 @@ private fun DrawScope.drawMaskOutline(
                 close()
             }
             clipRect(l, t, l + w, t + h) {
-                drawPath(
-                    band,
-                    brush = Brush.linearGradient(
-                        linearScopeColors(mask.invert), start = s, end = e
+                scopedFill {
+                    drawPath(
+                        band,
+                        brush = Brush.linearGradient(
+                            linearScopeColors(mask.invert), start = s, end = e
+                        )
                     )
-                )
+                }
             }
             // Two red boundary lines AT the endpoints: the effect is confined
             // to the strip BETWEEN them (LocalMaskRenderer gates the ramp there).
@@ -695,27 +763,29 @@ private fun DrawScope.drawMaskOutline(
             drawCircle(Color.White, 6.dp.toPx(), e)
         }
         is LocalMask.Brush -> {
-            mask.strokes.forEach { stroke ->
-                val pts = stroke.points
-                var i = 0
-                while (i + 3 < pts.size) {
-                    val a = mask.mapPoint(pts[i], pts[i + 1], aspect)
-                    val b = mask.mapPoint(pts[i + 2], pts[i + 3], aspect)
-                    drawLine(
-                        MaskScopeRed.copy(alpha = 0.8f),
-                        Offset(px(a.first), py(a.second)),
-                        Offset(px(b.first), py(b.second)),
-                        (mask.radius * base * 2f).coerceAtLeast(3f)
-                    )
-                    i += 2
-                }
-                if (pts.size == 2) {
-                    val a = mask.mapPoint(pts[0], pts[1], aspect)
-                    drawCircle(
-                        MaskScopeRed.copy(alpha = 0.8f),
-                        (mask.radius * base).coerceAtLeast(3f),
-                        Offset(px(a.first), py(a.second))
-                    )
+            scopedFill {
+                mask.strokes.forEach { stroke ->
+                    val pts = stroke.points
+                    var i = 0
+                    while (i + 3 < pts.size) {
+                        val a = mask.mapPoint(pts[i], pts[i + 1], aspect)
+                        val b = mask.mapPoint(pts[i + 2], pts[i + 3], aspect)
+                        drawLine(
+                            MaskScopeRed.copy(alpha = 0.8f),
+                            Offset(px(a.first), py(a.second)),
+                            Offset(px(b.first), py(b.second)),
+                            (mask.radius * base * 2f).coerceAtLeast(3f)
+                        )
+                        i += 2
+                    }
+                    if (pts.size == 2) {
+                        val a = mask.mapPoint(pts[0], pts[1], aspect)
+                        drawCircle(
+                            MaskScopeRed.copy(alpha = 0.8f),
+                            (mask.radius * base).coerceAtLeast(3f),
+                            Offset(px(a.first), py(a.second))
+                        )
+                    }
                 }
             }
             if (mask.strokes.isNotEmpty()) {
@@ -784,7 +854,14 @@ fun LocalAdjustmentSection(
     onSampleModeChange: (Boolean?) -> Unit = {},
     showOverlay: Boolean = true,
     onShowOverlayChange: (Boolean) -> Unit = {},
-    onRedetect: () -> Unit = {}
+    onRedetect: () -> Unit = {},
+    /** Mask ERASER tool state (shared with the photo gesture surface). */
+    eraserMode: Boolean = false,
+    onEraserModeChange: (Boolean) -> Unit = {},
+    eraserRadius: Float = 0.045f,
+    onEraserRadiusChange: (Float) -> Unit = {},
+    eraserFeather: Float = 0.5f,
+    onEraserFeatherChange: (Float) -> Unit = {}
 ) {
     val layers = local.layers
     val index = selectedLayer.coerceIn(0, (layers.size - 1).coerceAtLeast(0))
@@ -1035,6 +1112,52 @@ fun LocalAdjustmentSection(
                     )
                 }
             }
+
+            // ----------------------------------------------------------
+            // MASK ERASER: available for EVERY mask kind. Painted areas are
+            // subtracted from this layer's scope in both preview and export.
+            // ----------------------------------------------------------
+            val eraserCount = layer?.eraser?.size ?: 0
+            Text(
+                "橡皮擦 · 开启后在照片上涂抹，即可从当前蒙版的作用域中擦除",
+                color = Amber,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    .testTag("mask_eraser_hint")
+            )
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                TextButton(
+                    onClick = { onEraserModeChange(!eraserMode) },
+                    enabled = enabled,
+                    modifier = Modifier.testTag("mask_eraser_toggle")
+                ) {
+                    Text(
+                        if (eraserMode) "● 橡皮擦（涂抹中）" else "○ 橡皮擦",
+                        color = if (eraserMode) Amber else TextSecondary
+                    )
+                }
+                TextButton(
+                    onClick = { update({ clearEraser(it) }, "橡皮擦"); commit("橡皮擦") },
+                    enabled = enabled && eraserCount > 0,
+                    modifier = Modifier.testTag("mask_eraser_clear")
+                ) { Text("清除擦除 ($eraserCount)", color = TextSecondary) }
+            }
+            AdjustmentSlider(
+                label = "橡皮擦大小", value = eraserRadius,
+                valueRange = 0.01f..0.2f, step = 0.005f,
+                onValueChange = onEraserRadiusChange,
+                onValueChangeFinished = {},
+                onReset = { onEraserRadiusChange(0.045f) },
+                enabled = enabled
+            )
+            AdjustmentSlider(
+                label = "橡皮擦羽化", value = eraserFeather,
+                valueRange = 0.05f..1f, step = 0.01f,
+                onValueChange = onEraserFeatherChange,
+                onValueChangeFinished = {},
+                onReset = { onEraserFeatherChange(0.5f) },
+                enabled = enabled
+            )
 
             // ----------------------------------------------------------
             // Shared "refine selection" panel for the three AI selections.
@@ -1338,6 +1461,10 @@ fun LocalMaskOverlay(
     /** Pending colour-range eyedropper: null = off, true = add, false = exclude. */
     sampleMode: Boolean? = null,
     onSampleTaken: () -> Unit = {},
+    /** Mask ERASER (layer-scoped, works on EVERY mask kind). */
+    eraserMode: Boolean = false,
+    eraserRadius: Float = 0.045f,
+    eraserFeather: Float = 0.5f,
     modifier: Modifier = Modifier
 ) {
     val layers = local.layers
@@ -1359,6 +1486,9 @@ fun LocalMaskOverlay(
     val versionState = rememberUpdatedState(selectionVersion)
     val sampleModeState = rememberUpdatedState(sampleMode)
     val onSampleTakenState = rememberUpdatedState(onSampleTaken)
+    val eraserState = rememberUpdatedState(eraserMode)
+    val eraserRadiusState = rememberUpdatedState(eraserRadius)
+    val eraserFeatherState = rememberUpdatedState(eraserFeather)
 
     fun update(transform: (LocalLayer) -> LocalLayer, field: String = "蒙版") {
         val list = layersState.value
@@ -1381,12 +1511,15 @@ fun LocalMaskOverlay(
         if (selectionVersion > 0) MlSegmentation.invalidate()
     }
     val selectionOverlay by produceState<ImageBitmap?>(
-        initialValue = null, currentMask, sourceBitmap, displayBitmap, selectionVersion
+        initialValue = null, currentMask, sourceBitmap, displayBitmap,
+        selectionVersion, layer?.eraser
     ) {
         val mask = currentMask
         val src = sourceBitmap ?: displayBitmap
         value = if (mask != null && mask.isContentAware) {
-            withContext(Dispatchers.Default) { buildSelectionOverlay(mask, src) }
+            withContext(Dispatchers.Default) {
+                buildSelectionOverlay(mask, src, layer?.eraser ?: emptyList())
+            }
         } else null
     }
 
@@ -1429,6 +1562,43 @@ fun LocalMaskOverlay(
                         )
                         val aspect = if (rect.height > 0f) rect.width / rect.height else 1f
                         val baseMask = layersState.value.getOrNull(indexState.value)?.mask
+
+                        // MASK ERASER: a single-finger drag removes scope from
+                        // the CURRENT layer. Unlike the refine brush it works on
+                        // EVERY mask kind, and takes priority over placement,
+                        // panning and the AI refine brush.
+                        if (eraserState.value && baseMask != null) {
+                            val points = ArrayList<Float>()
+                            val first = rect.normalized(down.position.x, down.position.y)
+                            if (first != null) {
+                                points += first.first; points += first.second
+                                liveBrush = listOf(Offset(first.first, first.second))
+                            }
+                            do {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.pressed }
+                                if (change != null) {
+                                    val p = rect.normalized(change.position.x, change.position.y)
+                                    if (p != null) {
+                                        if (points.size < 2 ||
+                                            hypot(p.first - points[points.size - 2],
+                                                p.second - points[points.size - 1]) > 0.004f) {
+                                            points += p.first; points += p.second
+                                            liveBrush = liveBrush + Offset(p.first, p.second)
+                                        }
+                                    }
+                                    change.consume()
+                                }
+                            } while (event.changes.any { it.pressed })
+                            if (points.size >= 2) {
+                                val r = eraserRadiusState.value
+                                val f = eraserFeatherState.value
+                                update({ l -> appendEraserStroke(l, points, r, f) }, "橡皮擦")
+                                commit("橡皮擦")
+                            }
+                            liveBrush = emptyList()
+                            return@awaitEachGesture
+                        }
 
                         // Lightroom-style +/- brush: a single-finger drag paints
                         // an "add to selection" or "subtract from selection"
@@ -1635,7 +1805,30 @@ fun LocalMaskOverlay(
                     )
                 )
             }
-            layer?.let { drawMaskOutline(it.mask, rect, liveBrush, aspect) }
+            layer?.let {
+                // A refine drag is red (adding scope); an eraser drag is drawn
+                // in white below, so it never looks like adding scope back.
+                drawMaskOutline(
+                    it.mask, rect,
+                    if (eraserMode) emptyList() else liveBrush,
+                    aspect, it.eraser
+                )
+            }
+            if (eraserMode && liveBrush.isNotEmpty()) {
+                val r = (eraserRadius * maxOf(rect.width, rect.height)).coerceAtLeast(3f)
+                liveBrush.forEach { p ->
+                    drawCircle(
+                        Color.White.copy(alpha = 0.16f), r,
+                        Offset(rect.left + p.x * rect.width, rect.top + p.y * rect.height)
+                    )
+                }
+                val head = liveBrush.last()
+                drawCircle(
+                    Color.White.copy(alpha = 0.9f), r,
+                    Offset(rect.left + head.x * rect.width, rect.top + head.y * rect.height),
+                    style = Stroke(2.dp.toPx())
+                )
+            }
         }
         }
 
@@ -1648,7 +1841,7 @@ fun LocalMaskOverlay(
                 .testTag("mask_toolbar")
         ) {
             Text(
-                "端侧 AI 识别选区 · 红色阴影为选中区域 · 点图重定位/取色 · 参数区可用「＋添加 / －擦除」笔刷精修 · 双指缩放旋转",
+                "红色阴影为选中区域 · 点图重定位/取色 · 参数区「橡皮擦」可擦除任意蒙版作用域 · 「＋添加 / －擦除」笔刷精修 · 双指缩放旋转",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White
             )
