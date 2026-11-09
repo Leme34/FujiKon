@@ -29,17 +29,21 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 /**
- * Regression tests for the multi-photo "回退上一步" defect (1.6.27):
+ * Regression tests for the multi-photo "回退上一步" defect (1.6.27), kept as
+ * guards after the 1.6.28 per-photo history refactor.
  *
- * Undo / redo / jumping through the GLOBAL history must restore the LOOK but
- * keep the user on the photo they are currently editing — it must never
- * teleport back to the first photo.
+ * Undo / redo / jumping through the CURRENT PHOTO's history must restore that
+ * photo's look while keeping the user on the photo they are editing — it must
+ * never teleport back to the first photo, and (1.6.28) must never leak into
+ * another photo's grade or stack.
  *
- * Root cause: the history stack is shared across all photos, the initial
- * "打开照片" step always points at photo #1, `show()` (switching photos) does
- * not record a step, and jumpHistory() used to force `index = photoIndex`
- * derived from the snapshot's photoId. So editing a non-first photo and then
- * undoing jumped the user straight back to the first photo.
+ * Root cause of the original defect: the history stack used to be shared
+ * across all photos, the initial "打开照片" step always pointed at photo #1,
+ * `show()` (switching photos) did not record a step, and jumpHistory() used to
+ * force `index = photoIndex` derived from the snapshot's photoId. So editing a
+ * non-first photo and then undoing jumped the user straight back to photo #1.
+ * Since 1.6.28 each photo has its own EditHistory, so every step in a stack
+ * belongs to the photo being previewed.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)

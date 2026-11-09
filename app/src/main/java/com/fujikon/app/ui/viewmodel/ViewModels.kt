@@ -676,9 +676,9 @@ class EditorViewModel(
         val toneCurveOverride: ToneCurve? = null,
         /** Non-null while the user has unsaved per-channel curve edits. */
         val channelCurvesOverride: ChannelToneCurves? = null,
-        /** Global Lightroom-style adjustments for the current look. */
+        /** Adjustments of the photo currently being previewed (per-photo grade). */
         val adjustments: EditAdjustments = EditAdjustments.Neutral,
-        /** Global undo/redo stack shared by every photo in this edit session. */
+        /** Undo/redo stack of the photo currently being previewed. */
         val historyEntries: List<EditHistory.Entry> = emptyList(),
         val historyIndex: Int = -1,
         /** State of the one-tap Agnes AI retouch request. */
@@ -739,7 +739,25 @@ class EditorViewModel(
     private var exportJob: Job? = null
     private var aiJob: Job? = null
     private var renderGeneration = 0
-    private val editHistory = EditHistory()
+
+    /**
+     * One photo's private edit session.
+     *
+     * "下一步" is the ONLY batch operation: the preset chosen in the gallery is
+     * copied once onto every selected photo as a shared baseline. From then on
+     * each photo owns its own grade AND its own undo/redo stack, so editing,
+     * undoing or changing the preset on one photo never touches another.
+     */
+    private data class PhotoEditSession(
+        var presetId: String?,
+        var toneCurveOverride: ToneCurve? = null,
+        var channelCurvesOverride: ChannelToneCurves? = null,
+        var adjustments: EditAdjustments = EditAdjustments.Neutral,
+        val history: EditHistory = EditHistory()
+    )
+
+    /** Keyed by PhotoItem.id; [show] swaps the whole grade + history pair. */
+    private val photoSessions = LinkedHashMap<Long, PhotoEditSession>()
 
     init {
         viewModelScope.launch {
@@ -756,44 +774,82 @@ class EditorViewModel(
             } else {
                 loaded.firstOrNull { it.id == selectedId }
             }
+            val photos = selectionStore.photos.value
+            val baseline = selected?.adjustments ?: EditAdjustments.Neutral
+
+            // Batch apply happens exactly here: every selected photo receives
+            // its OWN copy of the chosen preset as step 0 of its OWN history.
+            photoSessions.clear()
+            photos.forEach { photo ->
+                val session = PhotoEditSession(
+                    presetId = selectedId,
+                    adjustments = baseline
+                )
+                session.history.reset(
+                    EditSnapshot(
+                        photoId = photo.id,
+                        presetId = selectedId,
+                        toneCurve = null,
+                        adjustments = baseline
+                    ),
+                    "打开照片"
+                )
+                photoSessions[photo.id] = session
+            }
+
             _state.update {
                 it.copy(
-                    photos = selectionStore.photos.value,
+                    photos = photos,
                     presets = loaded,
                     presetId = selectedId,
-                    adjustments = selected?.adjustments ?: EditAdjustments.Neutral
+                    adjustments = baseline
                 )
             }
-            if (_state.value.photos.isEmpty()) {
+            if (photos.isEmpty()) {
                 _state.update { it.copy(loading = false, error = "没有待处理的照片") }
             } else {
                 selectionStore.setCurrentPhoto(_state.value.currentPhoto)
-                resetHistory("打开照片")
+                syncHistoryState()
                 renderCurrent()
             }
         }
         viewModelScope.launch {
             presetRepository.presets.collect { list ->
-                _state.update { current ->
-                    val stillThere = current.presetId == Preset.NONE_ID ||
-                        list.any { it.id == current.presetId }
-                    val nextId = if (stillThere) current.presetId else list.firstOrNull()?.id
-                    val nextPreset = if (nextId == Preset.NONE_ID) {
-                        Preset.none()
-                    } else {
-                        list.firstOrNull { it.id == nextId }
+                val fallbackId = list.firstOrNull()?.id
+                val fallbackAdjustments = if (fallbackId == Preset.NONE_ID) {
+                    Preset.none().adjustments
+                } else {
+                    list.firstOrNull { it.id == fallbackId }?.adjustments ?: EditAdjustments.Neutral
+                }
+                // A preset deleted from the repository would otherwise leave a
+                // stale id in a session and break that photo's export.
+                photoSessions.values.forEach { session ->
+                    val valid = session.presetId == Preset.NONE_ID ||
+                        list.any { it.id == session.presetId }
+                    if (!valid) {
+                        session.presetId = fallbackId
+                        session.toneCurveOverride = null
+                        session.channelCurvesOverride = null
+                        session.adjustments = fallbackAdjustments
                     }
-                    current.copy(
-                        presets = list,
-                        presetId = nextId,
-                        toneCurveOverride = if (stillThere) current.toneCurveOverride else null,
-                        channelCurvesOverride = if (stillThere) current.channelCurvesOverride else null,
-                        adjustments = if (stillThere) {
-                            current.adjustments
-                        } else {
-                            nextPreset?.adjustments ?: EditAdjustments.Neutral
-                        }
-                    )
+                }
+                val currentValid = _state.value.presetId == Preset.NONE_ID ||
+                    list.any { it.id == _state.value.presetId }
+                _state.update { current ->
+                    if (currentValid) {
+                        // Do not clobber an in-flight grade change (e.g. saving
+                        // a look creates a new preset and re-emits this flow).
+                        current.copy(presets = list)
+                    } else {
+                        val session = photoSessions[current.currentPhoto?.id]
+                        current.copy(
+                            presets = list,
+                            presetId = session?.presetId ?: fallbackId,
+                            toneCurveOverride = session?.toneCurveOverride,
+                            channelCurvesOverride = session?.channelCurvesOverride,
+                            adjustments = session?.adjustments ?: fallbackAdjustments
+                        )
+                    }
                 }
             }
         }
@@ -1060,6 +1116,20 @@ class EditorViewModel(
 
     // ------------------------------------------------------------- history
 
+    /** Private session of the photo currently shown in the preview. */
+    private fun currentSession(): PhotoEditSession? =
+        _state.value.currentPhoto?.id?.let { photoSessions[it] }
+
+    /** Copies the visible grade back into the current photo's session. */
+    private fun persistCurrentSession() {
+        val session = currentSession() ?: return
+        val visible = _state.value
+        session.presetId = visible.presetId
+        session.toneCurveOverride = visible.toneCurveOverride
+        session.channelCurvesOverride = visible.channelCurvesOverride
+        session.adjustments = visible.adjustments
+    }
+
     private fun currentSnapshot(): EditSnapshot? {
         val snapshot = _state.value
         val photo = snapshot.currentPhoto ?: return null
@@ -1075,87 +1145,85 @@ class EditorViewModel(
         )
     }
 
-    private fun resetHistory(label: String) {
-        val snapshot = currentSnapshot() ?: return
-        editHistory.reset(snapshot, label)
-        syncHistoryState()
-    }
-
+    /** Records one step in the CURRENT photo's own history. */
     private fun recordHistory(label: String, coalesceKey: String? = null) {
+        val session = currentSession() ?: return
         val snapshot = currentSnapshot() ?: return
-        editHistory.record(label, snapshot, coalesceKey)
+        persistCurrentSession()
+        session.history.record(label, snapshot, coalesceKey)
         syncHistoryState()
     }
 
+    /** Mirrors the current photo's history into the UI state. */
     private fun syncHistoryState() {
-        val entries = editHistory.entries.toList()
-        val index = editHistory.index
-        _state.update { it.copy(historyEntries = entries, historyIndex = index) }
+        val history = currentSession()?.history
+        _state.update {
+            it.copy(
+                historyEntries = history?.entries?.toList() ?: emptyList(),
+                historyIndex = history?.index ?: -1
+            )
+        }
     }
 
     /**
-     * Restores one history step's LOOK without navigating away from the photo
-     * the user is currently editing.
+     * Restores one step of the CURRENT photo's history.
      *
-     * History is GLOBAL: one grade is shared by every photo in the session (for
-     * batch export), while AI results are per-photo. Undo / redo / jumpTo must
-     * therefore restore the shared grade (preset / curves / adjustments) and
-     * the AI layer of the photo the step belongs to, but must NEVER change
-     * `index`.
-     *
-     * Bug fixed in 1.6.27: this used to set `index = photoIndex` derived from
-     * [EditSnapshot.photoId]. The initial "打开照片" step always points at the
-     * first photo and switching photos ([show]) records no step, so undoing an
-     * edit made on a non-first photo teleported the user back to photo #1.
+     * History is PER PHOTO: neither `index` (which photo is previewed) nor any
+     * other photo's grade is touched. [show] is the only place that swaps in a
+     * different photo's grade + history pair. Undoing on a non-first photo can
+     * therefore never teleport back to photo #1 (1.6.27) and can never change
+     * what another photo will export (1.6.28).
      */
     private fun jumpHistory(target: Int): Boolean {
-        val entry = editHistory.entries.getOrNull(target) ?: return false
+        val session = currentSession() ?: return false
+        val entry = session.history.entries.getOrNull(target) ?: return false
         val snapshot = entry.snapshot
+        val photoId = _state.value.currentPhoto?.id ?: return false
 
         val presetStillExists = snapshot.presetId == Preset.NONE_ID ||
             _state.value.presets.any { it.id == snapshot.presetId }
-        // Re-attach the AI layer that belonged to this history step, but only
-        // when its cached file still exists (a purged cache degrades cleanly).
-        // photoId now only identifies WHICH photo owns that AI layer; it is no
-        // longer a navigation target.
+        // Re-attach the AI layer that belonged to this step, but only when its
+        // cached file still exists (a purged cache degrades cleanly).
         val restoredAi = snapshot.aiResultUri
             ?.takeIf { snapshot.aiResultVisible && snapshot.aiResultOpacity > 0.001f }
             ?.let { Uri.parse(it) }
             ?.takeIf { it.path?.let { path -> File(path).exists() } == true }
         _state.update { current ->
             current.copy(
-                // `index` intentionally left untouched: keep the user on the
-                // photo they are editing. See the KDoc above.
+                // `index` intentionally left untouched: undo / redo / jumpTo
+                // operate on the photo the user is editing right now.
                 presetId = if (presetStillExists) snapshot.presetId else current.presetId,
                 toneCurveOverride = snapshot.toneCurve,
                 channelCurvesOverride = snapshot.channelCurves,
                 adjustments = snapshot.adjustments,
                 aiResultUris = if (restoredAi != null) {
-                    current.aiResultUris + (snapshot.photoId to restoredAi)
+                    current.aiResultUris + (photoId to restoredAi)
                 } else {
-                    current.aiResultUris - snapshot.photoId
+                    current.aiResultUris - photoId
                 }
             )
         }
-        editHistory.jumpTo(target)
+        session.history.jumpTo(target)
+        persistCurrentSession()
         selectionStore.setPreset(_state.value.presetId)
-        // currentPhoto is unchanged because index did not move; [show] is the
-        // only place that re-points selectionStore at a different photo.
         syncHistoryState()
         renderCurrent()
         return true
     }
 
     fun undo() {
-        if (editHistory.canUndo) jumpHistory(editHistory.index - 1)
+        val history = currentSession()?.history ?: return
+        if (history.canUndo) jumpHistory(history.index - 1)
     }
 
     fun redo() {
-        if (editHistory.canRedo) jumpHistory(editHistory.index + 1)
+        val history = currentSession()?.history ?: return
+        if (history.canRedo) jumpHistory(history.index + 1)
     }
 
     fun jumpToHistory(index: Int) {
-        if (index == editHistory.index) return
+        val history = currentSession()?.history ?: return
+        if (index == history.index) return
         jumpHistory(index)
     }
 
@@ -1295,9 +1363,33 @@ class EditorViewModel(
         return saved
     }
 
+    /**
+     * Switches to another photo for individual editing.
+     *
+     * The batch preset was already applied once on "下一步"; from here on every
+     * photo is graded on its own, so switching swaps in that photo's private
+     * grade AND its private history stack. Switching itself records no step.
+     */
     fun show(index: Int) {
         if (index !in _state.value.photos.indices || index == _state.value.index) return
-        _state.update { it.copy(index = index) }
+        persistCurrentSession()
+        val targetId = _state.value.photos[index].id
+        val target = photoSessions[targetId]
+        _state.update { current ->
+            if (target == null) {
+                current.copy(index = index)
+            } else {
+                current.copy(
+                    index = index,
+                    presetId = target.presetId,
+                    toneCurveOverride = target.toneCurveOverride,
+                    channelCurvesOverride = target.channelCurvesOverride,
+                    adjustments = target.adjustments,
+                    historyEntries = target.history.entries.toList(),
+                    historyIndex = target.history.index
+                )
+            }
+        }
         selectionStore.setCurrentPhoto(_state.value.currentPhoto)
         renderCurrent()
     }
@@ -1402,12 +1494,41 @@ class EditorViewModel(
         }
     }
 
+    /**
+     * Builds the export preset for every selected photo from its OWN session.
+     *
+     * The batch "下一步" only seeds a shared baseline. After that, a preset /
+     * curve / adjustment change on one photo must never be exported onto any
+     * other photo. Batch export still processes the whole selection in one run
+     * — it is the EDITING that is per-photo, not the export loop.
+     */
+    fun exportPresetsByPhoto(): Map<Long, Preset> {
+        persistCurrentSession()
+        val state = _state.value
+        val result = LinkedHashMap<Long, Preset>()
+        state.photos.forEach { photo ->
+            val session = photoSessions[photo.id] ?: return@forEach
+            val base = when (session.presetId) {
+                Preset.NONE_ID -> Preset.none()
+                else -> state.presets.firstOrNull { it.id == session.presetId }
+            } ?: return@forEach
+            result[photo.id] = base.copy(
+                toneCurve = session.toneCurveOverride ?: base.toneCurve,
+                channelCurves = session.channelCurvesOverride ?: base.channelCurves,
+                adjustments = session.adjustments
+            )
+        }
+        return result
+    }
+
     fun export(options: ExportManager.Options) {
         if (_state.value.export is ExportState.Running) return
         exportJob?.cancel()
         exportJob = viewModelScope.launch {
-            val preset = _state.value.currentPreset
-            if (preset == null) {
+            // Snapshot every photo's own grade before the (long) export starts.
+            val perPhoto = exportPresetsByPhoto()
+            val fallback = _state.value.currentPreset
+            if (fallback == null) {
                 _state.update { it.copy(export = ExportState.Failed("请选择一个预设")) }
                 return@launch
             }
@@ -1415,9 +1536,10 @@ class EditorViewModel(
             try {
                 val result = exportManager.export(
                     photos = _state.value.photos,
-                    preset = preset,
+                    preset = fallback,
                     options = options,
-                    finalImageUris = _state.value.aiResultUris
+                    finalImageUris = _state.value.aiResultUris,
+                    presetsByPhoto = perPhoto
                 ) { progress ->
                     _state.update { current ->
                         current.copy(

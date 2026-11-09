@@ -48,9 +48,12 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Lightroom-style history panel. Every editing step for the current session is
- * listed newest first; tapping a row restores that state (including the photo
- * that was being edited).
+ * Lightroom-style history panel for the CURRENT photo only.
+ *
+ * Each selected photo owns an independent stack, so switching photos swaps in
+ * that photo's own steps. Every step listed here belongs to the photo being
+ * previewed; tapping a row restores that state without navigating away and
+ * without touching any other photo.
  */
 @Composable
 fun EditHistorySheet(
@@ -79,9 +82,9 @@ fun EditHistorySheet(
                 Icon(Icons.Filled.History, contentDescription = null, tint = Amber)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("历史步骤", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
+                    Text("当前照片 · 历史步骤", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
                     Text(
-                        "点击任意步骤即可回退；回退后的新编辑会替换后面的步骤",
+                        "每张照片的操作历史相互独立；点击任意步骤即可回退",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )

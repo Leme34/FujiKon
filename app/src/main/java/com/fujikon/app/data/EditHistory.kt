@@ -3,11 +3,12 @@ package com.fujikon.app.data
 /**
  * Immutable editor state stored in one history step.
  *
- * The photo id identifies which photo an (optional, per-photo) AI result
- * belongs to. It is NOT a navigation target: the history is global (one grade
- * shared by all photos for batch export), so undo / redo / jumpTo restore the
- * grade on every photo but keep the user on the photo they are currently
- * editing. Switching photos records no step. See EditorViewModel.jumpHistory.
+ * Each photo in the batch owns a private [EditHistory], so every snapshot in
+ * one stack belongs to the SAME photo. [photoId] identifies that owner (and is
+ * used to re-attach its per-photo AI result); it is NOT a navigation target —
+ * undo / redo / jumpTo must keep the user on the photo they are editing and
+ * must never affect another photo's grade or history. See
+ * EditorViewModel.jumpHistory.
  */
 data class EditSnapshot(
     val photoId: Long,
@@ -44,7 +45,11 @@ data class EditSnapshot(
 }
 
 /**
- * Lightroom-style undo / redo stack for the preview editor.
+ * Lightroom-style undo / redo stack for ONE photo.
+ *
+ * The editor keeps one instance per selected photo. "下一步" is the only batch
+ * operation (it seeds every photo with the chosen preset as step 0); after that
+ * each photo is edited and undone independently.
  *
  * A new edit truncates any redo branch. Consecutive changes made with the same
  * [Entry.coalesceKey] inside [coalesceWindowMs] update the newest entry instead

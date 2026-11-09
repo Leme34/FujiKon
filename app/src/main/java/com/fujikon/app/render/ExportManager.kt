@@ -10,7 +10,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
-/** Renders and saves a batch of photos with one preset. */
+/** Renders and saves a batch of photos, each with its own resulting preset. */
 class ExportManager(
     private val context: Context,
     private val renderer: ImageRenderer,
@@ -36,6 +36,7 @@ class ExportManager(
 
     suspend fun export(
         photos: List<PhotoItem>,
+        /** Fallback for photos without an entry in [presetsByPhoto]. */
         preset: Preset,
         options: Options,
         /**
@@ -44,6 +45,14 @@ class ExportManager(
          * already the finished photo and must not have the preset applied again.
          */
         finalImageUris: Map<Long, Uri> = emptyMap(),
+        /**
+         * Per-photo grades produced by individual editing. Batch apply only
+         * happens once, when the gallery's "下一步" seeds every selected photo
+         * with the chosen preset; afterwards each photo is edited on its own,
+         * so exporting must use each photo's own look instead of one shared
+         * preset. Empty means the legacy single-preset behaviour.
+         */
+        presetsByPhoto: Map<Long, Preset> = emptyMap(),
         onProgress: (Progress) -> Unit
     ): Result = withContext(Dispatchers.Default) {
         val saved = mutableListOf<Uri>()
@@ -51,6 +60,7 @@ class ExportManager(
         photos.forEachIndexed { index, photo ->
             coroutineContext.ensureActive()
             onProgress(Progress(index, photos.size, photo.displayName))
+            val photoPreset = presetFor(photo.id, preset, presetsByPhoto)
             var source: android.graphics.Bitmap? = null
             var rendered: android.graphics.Bitmap? = null
             try {
@@ -61,7 +71,7 @@ class ExportManager(
                 } else {
                     source = BitmapLoader.decodeFull(context, photo.uri)
                         ?: throw IllegalStateException("无法读取照片")
-                    rendered = renderer.render(source, preset, forExport = true)
+                    rendered = renderer.render(source, photoPreset, forExport = true)
                 }
                 val uri = GallerySaver.save(
                     context = context,
@@ -69,7 +79,7 @@ class ExportManager(
                     format = options.format,
                     album = options.album,
                     baseName = photo.displayName,
-                    presetName = preset.name,
+                    presetName = photoPreset.name,
                     sourceUri = photo.uri,
                     dateTaken = if (options.preserveExif) ExifWriter.readDateTaken(context, photo.uri) else null,
                     preserveExif = options.preserveExif
@@ -95,4 +105,14 @@ class ExportManager(
         album = settings.albumName,
         preserveExif = settings.preserveExif
     )
+
+    companion object {
+        /**
+         * Resolves the look used for ONE photo in a batch. [preset] is only a
+         * fallback: after individual editing every photo must export with its
+         * own grade, never with a single look shared by the whole selection.
+         */
+        fun presetFor(photoId: Long, fallback: Preset, presetsByPhoto: Map<Long, Preset>): Preset =
+            presetsByPhoto[photoId] ?: fallback
+    }
 }

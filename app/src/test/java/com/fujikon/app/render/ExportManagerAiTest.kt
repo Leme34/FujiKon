@@ -8,6 +8,7 @@ import com.fujikon.app.data.AppSettings
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -82,6 +83,23 @@ class ExportManagerAiTest {
         )
         finalFile.delete()
         Unit
+    }
+
+    /**
+     * 1.6.28: batch export still walks the whole selection, but each photo is
+     * rendered with its OWN look instead of one preset applied to every photo.
+     */
+    @Test
+    fun perPhotoPresetsOverrideTheSharedFallback() {
+        val fallback = Preset.none().copy(id = "fallback", name = "共享")
+        val first = Preset.none().copy(id = "a", name = "甲")
+        val second = Preset.none().copy(id = "b", name = "乙")
+        val perPhoto = mapOf(1L to first, 2L to second)
+
+        assertEquals("甲", ExportManager.presetFor(1L, fallback, perPhoto).name)
+        assertEquals("乙", ExportManager.presetFor(2L, fallback, perPhoto).name)
+        assertEquals("共享", ExportManager.presetFor(3L, fallback, perPhoto).name)
+        assertEquals("共享", ExportManager.presetFor(1L, fallback, emptyMap()).name)
     }
 
     companion object {
