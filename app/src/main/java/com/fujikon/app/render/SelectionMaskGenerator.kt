@@ -1,46 +1,56 @@
 package com.fujikon.app.render
 
 import android.graphics.Bitmap
+import com.fujikon.app.data.ColorSample
 import com.fujikon.app.data.LocalMask
+import com.fujikon.app.data.RefineStroke
+import com.fujikon.app.data.SelectionRefine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlin.math.abs
+import kotlin.math.cbrt
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * Pixel-accurate, CONTENT-AWARE selection generator for the three new mask
- * tools (select subject / select sky / select colour range).
+ * Pixel-accurate, CONTENT-AWARE selection generator for the three mask tools
+ * (select subject / select sky / select colour range).
  *
- * This is deliberately a **deterministic on-device heuristic, NOT an AI model**.
- * There is no neural network, no model file and no network call. Precision
- * comes from classic image segmentation building blocks instead of a coarse
- * "centre disc / upper half" guess:
+ * 1.6.23 replaces the coarse colour heuristics with an **on-device AI semantic
+ * segmentation backbone**, the same architecture class Lightroom / Meitu use:
  *
- *  - a downsampled feature analysis of the UNEDITED original photo
- *    (colour, HSL, YCbCr skin weight, edge energy, local texture);
- *  - foreground/background colour probability (a lightweight GrabCut seed
- *    model) plus centre and skin priors for the subject;
- *  - a dynamically detected horizon, top-edge colour distance flood fill and
- *    a top-connected-component constraint for the sky;
- *  - ring hue distance + HSL/RGB distance + grey rejection for the colour
- *    range, with an optional seed-connected component (magic wand);
- *  - region growing with edge barriers, morphological clean-up (remove
- *    isolated specks / fill pinholes) and a feathered boundary.
+ *  - [MlSegmentation] runs two TFLite graphs on the UNEDITED original photo and
+ *    returns soft "object" and "sky" probability maps. The AI prior dominates
+ *    the decision; the classic CV features below act as a prior-corrector and
+ *    as a complete fallback when no model is available (unit tests, unsupported
+ *    ABIs, missing assets).
+ *  - A **guided / joint-bilateral refinement** aligns the coarse network output
+ *    to real edges in the original photo (hair, foliage, horizon), instead of
+ *    leaving a visibly soft "sticker" outline.
+ *  - Colour range now uses **OKLab perceptual colour difference** plus multiple
+ *    +/- eyedropper samples, so nearby shades are separated the way an eye sees
+ *    them rather than by a raw HSL/RGB mix.
+ *  - Every selection gets the same finishing controls as Lightroom's mask
+ *    panel: add/erase brush, edge shift (contract/expand), smoothing and
+ *    feather, all persisted as parameters so preview and export stay identical.
  *
- * Nothing pixel-sized is persisted: callers store only the generation
- * parameters and (optionally) a seed point, so preview and export rebuild the
- * identical mask from the identical original pixels.
- *
- * Everything runs on a grid whose longest side is at most [SIDE] (256), then
- * the renderer samples it bilinearly. That bounds memory to a few MB even for
- * a 36 MP export and keeps the per-render cost in the low tens of ms.
+ * Nothing pixel-sized is persisted: callers store only generation parameters.
+ * Everything runs on a grid whose longest side is at most [SIDE], then the
+ * renderer samples it bilinearly, bounding memory to a few MB on a 36 MP export.
  */
 object SelectionMaskGenerator {
 
-    const val SIDE = 256
+    const val SIDE = 384
+
+    /**
+     * Injectable AI source. The app container sets this to [MlSegmentation];
+     * pure-JVM tests leave it null (or install a deterministic fake) so no
+     * native library is ever loaded on a desktop JVM.
+     */
+    @Volatile
+    var provider: SelectionAiProvider? = null
 
     /**
      * Per-cell features of the ORIGINAL photo, all indexed as `y * w + x`.
@@ -59,7 +69,14 @@ object SelectionMaskGenerator {
         val lig: FloatArray,
         val skin: FloatArray,
         val edge: FloatArray,
-        val texture: FloatArray
+        val texture: FloatArray,
+        /** OKLab perceptual coordinates, used by the colour-range tool. */
+        val okL: FloatArray,
+        val okA: FloatArray,
+        val okB: FloatArray,
+        /** AI probabilities resampled onto this grid (null = CV-only fallback). */
+        val aiSubject: FloatArray? = null,
+        val aiSky: FloatArray? = null
     ) {
         val size: Int get() = w * h
 
@@ -84,7 +101,10 @@ object SelectionMaskGenerator {
      * patch per cell (instead of a single pixel) suppresses sensor noise and
      * thin lines without a separate blur pass.
      */
-    fun analyze(pixels: IntArray, sw: Int, sh: Int, side: Int = SIDE): Analysis {
+    fun analyze(
+        pixels: IntArray, sw: Int, sh: Int, side: Int = SIDE,
+        ml: MlMaps? = provider?.segment(pixels, sw, sh, side)
+    ): Analysis {
         val long = max(sw, sh).coerceAtLeast(1)
         val scale = min(1f, side.toFloat() / long)
         val w = (sw * scale).roundToInt().coerceIn(8, side)
@@ -94,6 +114,7 @@ object SelectionMaskGenerator {
         val luma = FloatArray(n); val hue = FloatArray(n)
         val sat = FloatArray(n); val lig = FloatArray(n); val skin = FloatArray(n)
         val edge = FloatArray(n); val texture = FloatArray(n)
+        val okL = FloatArray(n); val okA = FloatArray(n); val okB = FloatArray(n)
 
         for (gy in 0 until h) {
             val sy0 = (gy * sh / h).coerceIn(0, sh - 1)
@@ -138,6 +159,10 @@ object SelectionMaskGenerator {
                 skin[i] = bandWeight(cb, 77f, 127f, 14f) *
                     bandWeight(cr, 133f, 173f, 14f) *
                     bandWeight(luma[i], 28f, 246f, 16f)
+                // OKLab: perceptually uniform, so a fixed distance threshold
+                // means the same "similar colour" everywhere in the gamut.
+                val lab = rgbToOklab(r[i], g[i], b[i])
+                okL[i] = lab[0]; okA[i] = lab[1]; okB[i] = lab[2]
             }
         }
 
@@ -162,11 +187,32 @@ object SelectionMaskGenerator {
                 texture[i] = (sqrt(variance) / 255f * 5f).coerceIn(0f, 1f)
             }
         }
-        return Analysis(w, h, r, g, b, luma, hue, sat, lig, skin, edge, texture)
+        // Resample the AI probability maps from the model's square grid onto
+        // this (aspect-preserving) grid, so the network and the CV features
+        // live in the same coordinate space.
+        var aiSubject: FloatArray? = null
+        var aiSky: FloatArray? = null
+        if (ml != null) {
+            aiSubject = FloatArray(n); aiSky = FloatArray(n)
+            for (y in 0 until h) {
+                val v = y.toFloat() / (h - 1).coerceAtLeast(1)
+                for (x in 0 until w) {
+                    val u = x.toFloat() / (w - 1).coerceAtLeast(1)
+                    val i = y * w + x
+                    aiSubject!![i] = ml.sample(ml.subject, u, v)
+                    aiSky!![i] = ml.sample(ml.sky, u, v)
+                }
+            }
+        }
+        return Analysis(w, h, r, g, b, luma, hue, sat, lig, skin, edge, texture,
+            okL, okA, okB, aiSubject, aiSky)
     }
 
     /** UI-side entry point: scales the original bitmap down before reading it. */
-    fun fromBitmap(bitmap: Bitmap?, side: Int = SIDE): Analysis? {
+    fun fromBitmap(
+        bitmap: Bitmap?, side: Int = SIDE,
+        ml: MlMaps? = null
+    ): Analysis? {
         if (bitmap == null || bitmap.isRecycled || bitmap.width < 2 || bitmap.height < 2) return null
         val sw = bitmap.width; val sh = bitmap.height
         val scale = min(1f, side.toFloat() / max(sw, sh).coerceAtLeast(1))
@@ -176,7 +222,11 @@ object SelectionMaskGenerator {
         val pixels = IntArray(tw * th)
         small.getPixels(pixels, 0, tw, 0, 0, tw, th)
         if (small !== bitmap) small.recycle()
-        return analyze(pixels, tw, th, side)
+        // The overlay and the renderer must see the SAME AI inference. The
+        // provider's fingerprint is resolution-independent, so this hits the
+        // cache produced by ImageRenderer instead of re-running the networks.
+        val maps = ml ?: provider?.segment(pixels, tw, th, side)
+        return analyze(pixels, tw, th, side, maps)
     }
 
     /**
@@ -212,6 +262,7 @@ object SelectionMaskGenerator {
         val tol = m.tolerance.coerceIn(0f, 1f)
         val fg = averageColor(a, seed, 3)
         val bg = borderAverageColor(a)
+        val ai = a.aiSubject
         val score = FloatArray(n)
 
         for (y in 0 until h) {
@@ -222,27 +273,39 @@ object SelectionMaskGenerator {
                 val nx = x.toFloat() / (w - 1).coerceAtLeast(1)
                 val dFg = a.colorTo(i, fg[0], fg[1], fg[2])
                 val dBg = a.colorTo(i, bg[0], bg[1], bg[2])
-                // Foreground/background colour probability: a cell is "subject"
-                // when it looks more like the tapped seed than like the frame border.
                 val colorProb = dBg / (dFg + dBg + 0.015f)
                 val centre = 1f - smoothstep(
                     0.10f, 0.60f,
                     sqrt((nx - m.seedX) * (nx - m.seedX) * 1.25f +
                         (ny - m.seedY) * (ny - m.seedY) * 1.7f)
                 )
-                score[i] = (0.42f * colorProb + 0.19f * a.skin[i] +
+                val cv = (0.42f * colorProb + 0.19f * a.skin[i] +
                     0.24f * centre + 0.15f * localDetail(a, x, y)).coerceIn(0f, 1f)
+                // The network decides WHAT an object is; the CV prior only
+                // settles ambiguous low-confidence boundary pixels.
+                val p = if (ai != null) {
+                    val net = ai[i]
+                    val ambiguity = 1f - abs(net - 0.5f) * 2f
+                    (net * 0.86f + cv * 0.30f * ambiguity).coerceIn(0f, 1f)
+                } else cv
+                score[i] = p
             }
         }
-        val threshold = (0.60f - tol * 0.32f).coerceIn(0.20f, 0.74f)
-        val soft = 0.11f
-        val weight = FloatArray(n) { smoothstep(threshold - soft, threshold + soft, score[it]) }
-        // Region growing out of the seed, stopped by strong edges: the selected
-        // blob follows object contours rather than a radial falloff.
+        val threshold = if (ai != null) (0.44f - tol * 0.22f) else (0.60f - tol * 0.32f)
+        val soft = if (ai != null) 0.14f else 0.11f
+        val weight = FloatArray(n) {
+            smoothstep(threshold - soft, threshold + soft, score[it])
+        }
+        // Grow out of the tapped seed (or the strongest AI cell near it) so
+        // tapping one of several people/cars selects THAT object, not all of
+        // them — the same "click to pick an object" behaviour as Lightroom.
+        val seeds = if (ai != null) bestSeed(weight, seed, w, h, 6) else bestSeed(weight, seed, w, h)
         val connected = keepConnected(
-            weight, w, h, bestSeed(weight, seed, w, h), 0.34f, a.edge, 0.74f
+            weight, w, h, seeds, if (ai != null) 0.26f else 0.34f, a.edge, 0.74f
         )
-        return finish(clean(connected, w, h), w, h, m.feather, m.invert)
+        val cleaned = clean(connected, w, h)
+        val aligned = if (m.refine.detectEdges) guidedRefine(cleaned, a, 2, 0.0008f) else cleaned
+        return finish(aligned, w, h, m.feather, m.invert, m.refine, job)
     }
 
     // -------------------------------------------------------------------- sky
@@ -250,32 +313,31 @@ object SelectionMaskGenerator {
     private fun sky(a: Analysis, m: LocalMask.SkyMask, job: Job?): FloatArray {
         val w = a.w; val h = a.h; val n = a.size
         val tol = m.tolerance.coerceIn(0f, 1f)
-        // Reference sky colour from only the BLUEST top pixels, so a white dress
-        // / glass / ceiling at the top cannot drag the reference towards grey
-        // and then re-match itself as "sky".
+        val ai = a.aiSky
         val skyColor = topBlueColor(a)
-        val rowMean = FloatArray(h)
-
-        // Blueness is the dominant cue. A white dress, glass reflection, wood
-        // floor or green plant has b≈r, so blueish≈0 and is NOT mistaken for sky.
         val blueishAt: (Int) -> Float = { i -> ((a.b[i] - a.r[i]) / 255f * 2.4f).coerceIn(0f, 1f) }
 
+        // Per-cell sky likelihood. With a model, the SEMANTIC prior dominates —
+        // this is what finally recognises sunsets, overcast / white skies and
+        // clouds, which a "blue pixels" test can never do. Without a model the
+        // original colour/texture likelihood is used unchanged (CV fallback).
+        fun likelihood(i: Int): Float {
+            val blueish = blueishAt(i)
+            val brightNeutral = if (a.sat[i] < 0.18f && a.luma[i] > 0.62f * 255f) 0.4f else 0f
+            val lowTex = 1f - a.texture[i]
+            val colW = 1f - smoothstep(0.10f, 0.46f, a.colorTo(i, skyColor[0], skyColor[1], skyColor[2]))
+            val cv = (0.62f * blueish + 0.16f * colW + 0.16f * lowTex + 0.06f * brightNeutral)
+                .coerceIn(0f, 1f)
+            return if (ai != null) (ai[i] * 0.92f + cv * 0.20f).coerceIn(0f, 1f) else cv
+        }
+
+        val rowMean = FloatArray(h)
         for (y in 0 until h) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             var sum = 0f
-            for (x in 0 until w) {
-                val i = y * w + x
-                val blueish = blueishAt(i)
-                val brightNeutral = if (a.sat[i] < 0.18f && a.luma[i] > 0.62f * 255f) 0.4f else 0f
-                val lowTex = 1f - a.texture[i]
-                val colW = 1f - smoothstep(0.10f, 0.46f, a.colorTo(i, skyColor[0], skyColor[1], skyColor[2]))
-                sum += (0.62f * blueish + 0.16f * colW + 0.16f * lowTex + 0.06f * brightNeutral).coerceIn(0f, 1f)
-            }
+            for (x in 0 until w) sum += likelihood(y * w + x)
             rowMean[y] = sum / w
         }
-
-        // Dynamic horizon: first row whose sky likelihood collapses relative to
-        // the top band. Falls back to a conservative 0.8 of the frame.
         val topRows = (h * 0.12f).roundToInt().coerceIn(2, h)
         var peak = 0f
         for (y in 0 until topRows) peak += rowMean[y]
@@ -289,42 +351,39 @@ object SelectionMaskGenerator {
         }
         horizon = horizon.coerceIn(0.16f, 0.94f)
 
-        val threshold = (0.52f - tol * 0.28f).coerceIn(0.20f, 0.62f)
+        // A model needs no artificial horizon gate (sky can sit behind a
+        // mountain at any height); the CV fallback keeps the gate to stop a
+        // blue lake at the bottom from being swept in.
+        val threshold = if (ai != null) (0.42f - tol * 0.24f) else (0.52f - tol * 0.28f)
         val weight = FloatArray(n)
         for (y in 0 until h) {
             val ny = y.toFloat() / (h - 1).coerceAtLeast(1)
-            val upper = 1f - smoothstep(horizon - 0.10f, horizon + 0.03f, ny)
+            val upper = if (ai != null) 1f
+            else 1f - smoothstep(horizon - 0.10f, horizon + 0.03f, ny)
             for (x in 0 until w) {
                 val i = y * w + x
-                val blueish = blueishAt(i)
-                val brightNeutral = if (a.sat[i] < 0.18f && a.luma[i] > 0.62f * 255f) 0.4f else 0f
-                val lowTex = 1f - a.texture[i]
-                val colW = 1f - smoothstep(0.10f, 0.46f, a.colorTo(i, skyColor[0], skyColor[1], skyColor[2]))
-                val likelihood = (0.62f * blueish + 0.16f * colW + 0.16f * lowTex + 0.06f * brightNeutral).coerceIn(0f, 1f)
-                weight[i] = smoothstep(threshold - 0.10f, threshold + 0.10f, likelihood) * upper
+                weight[i] = smoothstep(threshold - 0.10f, threshold + 0.10f, likelihood(i)) * upper
             }
         }
 
-        // Seeds must be BLUISH and near the TOP edge. A bright but colourless
-        // top (white dress / window / ceiling) seeds nothing, and a photo with
-        // no sky therefore yields an (almost) empty selection instead of
-        // flooding the whole frame. Blue clothing / water lower in the frame is
-        // excluded because it never touches the blue top edge.
         val seedRows = max(2, (h * 0.06f).roundToInt())
         val topSeeds = ArrayList<Int>()
         for (y in 0 until seedRows) {
             for (x in 0 until w) {
                 val i = y * w + x
-                if (blueishAt(i) > 0.18f && weight[i] > 0.30f) topSeeds += i
+                val ok = if (ai != null) weight[i] > 0.42f
+                else blueishAt(i) > 0.18f && weight[i] > 0.30f
+                if (ok) topSeeds += i
             }
         }
         if (topSeeds.isEmpty()) {
-            // No blue sky touching the top: nothing to select.
-            return finish(FloatArray(n), w, h, m.feather, m.invert)
+            return finish(FloatArray(n), w, h, m.feather, m.invert, m.refine, job)
         }
         val seeds = IntArray(topSeeds.size) { topSeeds[it] }
         val connected = keepConnected(weight, w, h, seeds, 0.22f, null, 1f)
-        return finish(clean(connected, w, h), w, h, m.feather, m.invert)
+        val cleaned = clean(connected, w, h)
+        val aligned = if (m.refine.detectEdges) guidedRefine(cleaned, a, 2, 0.0008f) else cleaned
+        return finish(aligned, w, h, m.feather, m.invert, m.refine, job)
     }
 
     // ------------------------------------------------------------ colour range
@@ -332,24 +391,39 @@ object SelectionMaskGenerator {
     private fun colorRange(a: Analysis, m: LocalMask.ColorRangeMask, job: Job?): FloatArray {
         val w = a.w; val h = a.h; val n = a.size
         val range = m.hueRange.coerceIn(5f, 90f)
-        val tol = (0.10f + m.tolerance.coerceIn(0f, 1f) * 0.42f).coerceIn(0.06f, 0.60f)
+        // hueRange widens the chroma tolerance; tolerance controls OKLab ΔE.
+        val chromaScale = (range / 24f).coerceIn(0.25f, 3.6f)
+        val baseTol = (0.085f + m.tolerance.coerceIn(0f, 1f) * 0.30f).coerceIn(0.03f, 0.42f)
         val minSat = m.minSaturation.coerceIn(0f, 0.9f)
-        val targetRgb = hslToRgb(m.targetHue, m.targetSat.coerceIn(0f, 1f), m.targetLum.coerceIn(0f, 1f))
+
+        // Primary sample = the tapped colour; extra +/- samples behave like
+        // Lightroom's additive / subtractive eyedroppers.
+        val adds = ArrayList<FloatArray>(m.samples.size + 1)
+        val subs = ArrayList<FloatArray>(m.samples.size)
+        adds += sampleLab(m.targetHue, m.targetSat, m.targetLum)
+        for (s in m.samples) {
+            val lab = sampleLab(s.hue, s.sat, s.lum)
+            if (s.add) adds += lab else subs += lab
+        }
         val weight = FloatArray(n)
 
         for (y in 0 until h) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             for (x in 0 until w) {
                 val i = y * w + x
-                var dh = abs(a.hue[i] - m.targetHue)
-                if (dh > 180f) dh = 360f - dh
-                // Narrower hueRange => a hue difference costs more.
-                val hueTerm = (dh / 180f) * (60f / range)
-                val ds = abs(a.sat[i] - m.targetSat)
-                val dl = abs(a.lig[i] - m.targetLum)
-                val dRgb = a.colorTo(i, targetRgb[0], targetRgb[1], targetRgb[2])
-                val d = 0.46f * hueTerm + 0.20f * ds + 0.14f * dl + 0.20f * dRgb
-                var v = 1f - smoothstep(tol * 0.55f, tol, d)
+                var best = Float.MAX_VALUE
+                for (lab in adds) {
+                    val d = labDistance(a, i, lab, chromaScale)
+                    if (d < best) best = d
+                }
+                var v = 1f - smoothstep(baseTol * 0.55f, baseTol, best)
+                // Subtractive dropper carves out a confusing neighbouring hue.
+                for (lab in subs) {
+                    val d = labDistance(a, i, lab, chromaScale)
+                    if (d < baseTol * 1.15f) {
+                        v *= smoothstep(baseTol * 0.45f, baseTol * 1.15f, d)
+                    }
+                }
                 if (a.sat[i] < minSat) {
                     v *= (a.sat[i] / minSat.coerceAtLeast(0.01f)).coerceIn(0f, 1f)
                 }
@@ -362,7 +436,21 @@ object SelectionMaskGenerator {
             keepConnected(weight, w, h, bestSeed(weight, seed, w, h), 0.20f, null, 1f)
         } else weight.copyOf()
         val cleaned = if (m.contiguous) clean(out, w, h) else out
-        return finish(cleaned, w, h, m.feather, m.invert)
+        val aligned = if (m.refine.detectEdges) guidedRefine(cleaned, a, 2, 0.0012f) else cleaned
+        return finish(aligned, w, h, m.feather, m.invert, m.refine, job)
+    }
+
+    /** ΔE-like distance in OKLab; chroma is scaled by the "色相范围" slider. */
+    private fun labDistance(a: Analysis, i: Int, lab: FloatArray, chromaScale: Float): Float {
+        val dl = a.okL[i] - lab[0]
+        val da = (a.okA[i] - lab[1]) / chromaScale
+        val db = (a.okB[i] - lab[2]) / chromaScale
+        return sqrt(dl * dl * 1.15f + da * da + db * db)
+    }
+
+    private fun sampleLab(hue: Float, sat: Float, lum: Float): FloatArray {
+        val rgb = hslToRgb(hue, sat.coerceIn(0f, 1f), lum.coerceIn(0f, 1f))
+        return rgbToOklab(rgb[0], rgb[1], rgb[2])
     }
 
     // ------------------------------------------------------------ shared tools
@@ -406,11 +494,11 @@ object SelectionMaskGenerator {
     }
 
     /** If the tapped seed misses the likely region, snap to its best neighbour. */
-    private fun bestSeed(weight: FloatArray, seed: Int, w: Int, h: Int): IntArray {
+    private fun bestSeed(weight: FloatArray, seed: Int, w: Int, h: Int, radius: Int = 3): IntArray {
         val x = seed % w; val y = seed / w
         var best = seed; var bestV = weight[seed]
-        for (dy in -3..3) {
-            for (dx in -3..3) {
+        for (dy in -radius..radius) {
+            for (dx in -radius..radius) {
                 val nx = (x + dx).coerceIn(0, w - 1); val ny = (y + dy).coerceIn(0, h - 1)
                 val j = ny * w + nx
                 if (weight[j] > bestV) { bestV = weight[j]; best = j }
@@ -444,10 +532,21 @@ object SelectionMaskGenerator {
         return out
     }
 
-    /** Feathered, optionally inverted, clamped final grid. */
+    /**
+     * Final finishing pipeline shared by all three selections:
+     * edge shift (contract / expand) → +/- refinement brush → smoothing →
+     * feather → optional inversion. Every step is deterministic and stored as
+     * parameters, so preview and export rebuild the exact same grid.
+     */
     private fun finish(
-        values: FloatArray, w: Int, h: Int, feather: Float, invert: Boolean
+        values: FloatArray, w: Int, h: Int, feather: Float, invert: Boolean,
+        refine: SelectionRefine, job: Job?
     ): FloatArray {
+        checkCancelled(job)
+        edgeShift(values, w, h, refine.edgeShift)
+        applyStrokes(values, w, h, refine.strokes)
+        val smoothRadius = (refine.smooth.coerceIn(0f, 1f) * 2f).roundToInt().coerceIn(0, 2)
+        if (smoothRadius > 0) boxBlur(values, w, h, smoothRadius)
         val radius = (feather.coerceIn(0f, 1f) * 6f).roundToInt().coerceIn(0, 6)
         if (radius > 0) boxBlur(values, w, h, radius)
         for (i in values.indices) {
@@ -455,6 +554,144 @@ object SelectionMaskGenerator {
             values[i] = if (invert) 1f - v else v
         }
         return values
+    }
+
+    /**
+     * Fast guided filter (He et al.) using the original luminance as the guide.
+     * The network output is a coarse 256-ish probability map; this transfers
+     * the photo's real edges (hair, leaves, rooflines) onto the selection
+     * boundary, which is the difference between a "sticker" outline and the
+     * edge-aware masks in Lightroom / Meitu. O(n) via separable box filters.
+     */
+    private fun guidedRefine(
+        input: FloatArray, a: Analysis, radius: Int, eps: Float
+    ): FloatArray {
+        val w = a.w; val h = a.h; val n = a.size
+        if (radius < 1 || n == 0) return input
+        val guide = FloatArray(n) { (a.luma[it] / 255f).coerceIn(0f, 1f) }
+        val meanI = boxFilter(guide, w, h, radius)
+        val meanP = boxFilter(input, w, h, radius)
+        val corrII = FloatArray(n) { guide[it] * guide[it] }
+        val corrIP = FloatArray(n) { guide[it] * input[it] }
+        val meanII = boxFilter(corrII, w, h, radius)
+        val meanIP = boxFilter(corrIP, w, h, radius)
+        val coefA = FloatArray(n); val coefB = FloatArray(n)
+        for (i in 0 until n) {
+            val variance = meanII[i] - meanI[i] * meanI[i]
+            val covariance = meanIP[i] - meanI[i] * meanP[i]
+            val k = covariance / (variance + eps)
+            coefA[i] = k
+            coefB[i] = meanP[i] - k * meanI[i]
+        }
+        val meanA = boxFilter(coefA, w, h, radius)
+        val meanB = boxFilter(coefB, w, h, radius)
+        val out = FloatArray(n)
+        for (i in 0 until n) {
+            out[i] = (meanA[i] * guide[i] + meanB[i]).coerceIn(0f, 1f)
+        }
+        return out
+    }
+
+    /** Separable O(n) box filter with clamped edges. */
+    private fun boxFilter(src: FloatArray, w: Int, h: Int, radius: Int): FloatArray {
+        val temp = FloatArray(src.size)
+        val out = FloatArray(src.size)
+        val win = radius * 2 + 1
+        for (y in 0 until h) {
+            var sum = 0f
+            for (k in -radius..radius) sum += src[y * w + k.coerceIn(0, w - 1)]
+            for (x in 0 until w) {
+                temp[y * w + x] = sum / win
+                sum -= src[y * w + (x - radius).coerceIn(0, w - 1)]
+                sum += src[y * w + (x + radius + 1).coerceIn(0, w - 1)]
+            }
+        }
+        for (x in 0 until w) {
+            var sum = 0f
+            for (k in -radius..radius) sum += temp[k.coerceIn(0, h - 1) * w + x]
+            for (y in 0 until h) {
+                out[y * w + x] = sum / win
+                sum -= temp[(y - radius).coerceIn(0, h - 1) * w + x]
+                sum += temp[(y + radius + 1).coerceIn(0, h - 1) * w + x]
+            }
+        }
+        return out
+    }
+
+    /**
+     * Contract / expand the selection boundary. Implemented as a level-set
+     * shift on the soft mask followed by a short dilation/erosion, so the edge
+     * moves by roughly `|shift| * 6` cells without a jagged 1-bit outline.
+     */
+    private fun edgeShift(values: FloatArray, w: Int, h: Int, shift: Float) {
+        val s = shift.coerceIn(-1f, 1f)
+        if (abs(s) < 0.01f) return
+        val rounds = (abs(s) * 5f).roundToInt().coerceIn(1, 5)
+        for (r in 0 until rounds) {
+            val src = values.copyOf()
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    var v = if (s > 0f) 0f else 1f
+                    for (dy in -1..1) {
+                        for (dx in -1..1) {
+                            val c = src[(y + dy).coerceIn(0, h - 1) * w + (x + dx).coerceIn(0, w - 1)]
+                            v = if (s > 0f) max(v, c) else min(v, c)
+                        }
+                    }
+                    values[y * w + x] = v
+                }
+            }
+        }
+    }
+
+    /** Rasterises the manual add/erase brush on top of the automatic mask. */
+    private fun applyStrokes(values: FloatArray, w: Int, h: Int, strokes: List<RefineStroke>) {
+        if (strokes.isEmpty()) return
+        val long = max(w, h).toFloat()
+        for (stroke in strokes) {
+            val pts = stroke.points
+            if (pts.size < 2) continue
+            val radiusPx = (stroke.radius.coerceIn(0.005f, 0.4f) * long).coerceAtLeast(1.2f)
+            val inner = radiusPx * (1f - stroke.feather.coerceIn(0.05f, 1f))
+            var k = 0
+            while (k + 3 < pts.size) {
+                stamp(values, w, h, pts[k], pts[k + 1], pts[k + 2], pts[k + 3],
+                    radiusPx, inner, stroke.strength, stroke.erase)
+                k += 2
+            }
+            if (pts.size == 2) {
+                stamp(values, w, h, pts[0], pts[1], pts[0], pts[1],
+                    radiusPx, inner, stroke.strength, stroke.erase)
+            }
+        }
+    }
+
+    private fun stamp(
+        values: FloatArray, w: Int, h: Int,
+        x0: Float, y0: Float, x1: Float, y1: Float,
+        radiusPx: Float, inner: Float, strength: Float, erase: Boolean
+    ) {
+        val ax = x0 * (w - 1); val ay = y0 * (h - 1)
+        val bx = x1 * (w - 1); val by = y1 * (h - 1)
+        val minX = (min(ax, bx) - radiusPx).toInt().coerceAtLeast(0)
+        val maxX = (max(ax, bx) + radiusPx).toInt().coerceAtMost(w - 1)
+        val minY = (min(ay, by) - radiusPx).toInt().coerceAtLeast(0)
+        val maxY = (max(ay, by) + radiusPx).toInt().coerceAtMost(h - 1)
+        val dx = bx - ax; val dy = by - ay
+        val len2 = (dx * dx + dy * dy).coerceAtLeast(1e-6f)
+        for (py in minY..maxY) {
+            for (px in minX..maxX) {
+                val t = (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0f, 1f)
+                val d = sqrt((px - ax - t * dx) * (px - ax - t * dx) +
+                    (py - ay - t * dy) * (py - ay - t * dy))
+                if (d > radiusPx) continue
+                val falloff = 1f - smoothstep(inner, radiusPx, d)
+                val amount = (falloff * strength).coerceIn(0f, 1f)
+                val i = py * w + px
+                values[i] = if (erase) min(values[i], 1f - amount)
+                else max(values[i], amount)
+            }
+        }
     }
 
     private fun boxBlur(values: FloatArray, w: Int, h: Int, radius: Int) {
@@ -537,6 +774,29 @@ object SelectionMaskGenerator {
         }
         if (count == 0) return floatArrayOf(150f, 185f, 225f)
         return floatArrayOf(sr / count, sg / count, sb / count)
+    }
+
+    /**
+     * sRGB (0..255) -> OKLab. OKLab is perceptually uniform, so a single
+     * distance threshold selects "the same colour" consistently in shadows,
+     * highlights and saturated regions — unlike HSL, where a 20 degree hue
+     * step means very different things near blue and near yellow.
+     */
+    private fun rgbToOklab(r8: Float, g8: Float, b8: Float): FloatArray {
+        fun linear(c: Float): Float {
+            val v = c / 255f
+            return if (v <= 0.04045f) v / 12.92f else Math.pow(((v + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
+        }
+        val r = linear(r8); val g = linear(g8); val b = linear(b8)
+        val l = 0.4122214708f * r + 0.5363325363f * g + 0.0514459929f * b
+        val m = 0.2119034982f * r + 0.6806995451f * g + 0.1073969566f * b
+        val s = 0.0883024619f * r + 0.2817188376f * g + 0.6299787005f * b
+        val l_ = cbrt(l); val m_ = cbrt(m); val s_ = cbrt(s)
+        return floatArrayOf(
+            0.2104542553f * l_ + 0.7936177850f * m_ - 0.0040720468f * s_,
+            1.9779984951f * l_ - 2.4285922050f * m_ + 0.4505937099f * s_,
+            0.0259040371f * l_ + 0.7827717662f * m_ - 0.8086757660f * s_
+        )
     }
 
     /** HSL (degrees / 0..1 / 0..1) -> 0..255 RGB, matching the picker's HSL. */

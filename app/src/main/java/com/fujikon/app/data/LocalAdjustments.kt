@@ -104,6 +104,127 @@ data class BrushStroke(
 }
 
 /**
+ * One manual refinement stroke painted ON TOP of an automatic selection.
+ * [points] is a flat normalised `[x0, y0, x1, y1, ...]` list; [erase] chooses
+ * "add to selection" vs "subtract from selection" (Lightroom's +/- brush).
+ */
+data class RefineStroke(
+    val points: List<Float> = emptyList(),
+    val radius: Float = 0.035f,
+    val feather: Float = 0.5f,
+    val erase: Boolean = false,
+    val strength: Float = 1f
+) {
+    fun normalized(): RefineStroke = copy(
+        points = points.map { it.coerceIn(0f, 1f) },
+        radius = radius.coerceIn(0.005f, 0.4f),
+        feather = feather.coerceIn(0.05f, 1f),
+        strength = strength.coerceIn(0f, 1f)
+    )
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("points", JSONArray().apply { points.forEach { put(it.toDouble()) } })
+        put("radius", radius.toDouble())
+        put("feather", feather.toDouble())
+        put("erase", erase)
+        put("strength", strength.toDouble())
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): RefineStroke {
+            if (json == null) return RefineStroke()
+            val array = json.optJSONArray("points") ?: JSONArray()
+            val pts = ArrayList<Float>(array.length())
+            for (i in 0 until array.length()) pts += array.optDouble(i, 0.0).toFloat()
+            return RefineStroke(
+                pts, json.optDouble("radius", 0.035).toFloat(),
+                json.optDouble("feather", 0.5).toFloat(),
+                json.optBoolean("erase", false),
+                json.optDouble("strength", 1.0).toFloat()
+            ).normalized()
+        }
+    }
+}
+
+/** An extra eyedropper sample for the colour-range tool. */
+data class ColorSample(
+    val hue: Float, val sat: Float, val lum: Float,
+    /** true = add this colour, false = exclude it (Lightroom +/- dropper). */
+    val add: Boolean = true
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("hue", hue.toDouble()); put("sat", sat.toDouble())
+        put("lum", lum.toDouble()); put("add", add)
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): ColorSample? {
+            if (json == null) return null
+            return ColorSample(
+                json.optDouble("hue", 0.0).toFloat(),
+                json.optDouble("sat", 0.5).toFloat(),
+                json.optDouble("lum", 0.5).toFloat(),
+                json.optBoolean("add", true)
+            )
+        }
+    }
+}
+
+/**
+ * Shared refinement parameters for all three content-aware selections. Kept in
+ * one object so "select subject / sky / colour range" expose the same finishing
+ * controls (add/erase brush, edge shift, smoothing, edge-aware alignment).
+ */
+data class SelectionRefine(
+    val strokes: List<RefineStroke> = emptyList(),
+    /** -1..1: negative shrinks the selection, positive expands it. */
+    val edgeShift: Float = 0f,
+    /** 0..1: extra smoothing of the selection boundary. */
+    val smooth: Float = 0.2f,
+    /** Guided-filter edge alignment against the original photo. */
+    val detectEdges: Boolean = true
+) {
+    fun normalized(): SelectionRefine = copy(
+        strokes = strokes.map { it.normalized() }.take(64),
+        edgeShift = edgeShift.coerceIn(-1f, 1f),
+        smooth = smooth.coerceIn(0f, 1f)
+    )
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("strokes", JSONArray().apply { strokes.forEach { put(it.toJson()) } })
+        put("edgeShift", edgeShift.toDouble())
+        put("smooth", smooth.toDouble())
+        put("detectEdges", detectEdges)
+    }
+
+    companion object {
+        val Default = SelectionRefine()
+
+        fun fromJson(json: JSONObject?): SelectionRefine {
+            if (json == null) return Default
+            val array = json.optJSONArray("strokes") ?: JSONArray()
+            val list = ArrayList<RefineStroke>(array.length())
+            for (i in 0 until array.length()) list += RefineStroke.fromJson(array.optJSONObject(i))
+            return SelectionRefine(
+                list,
+                json.optDouble("edgeShift", 0.0).toFloat(),
+                json.optDouble("smooth", 0.2).toFloat(),
+                json.optBoolean("detectEdges", true)
+            ).normalized()
+        }
+    }
+}
+
+internal fun JSONArray.toColorSamples(): List<ColorSample> {
+    val out = ArrayList<ColorSample>(length())
+    for (i in 0 until length()) ColorSample.fromJson(optJSONObject(i))?.let { out += it }
+    return out
+}
+
+internal fun List<ColorSample>.toJsonArray(): JSONArray =
+    JSONArray().apply { forEach { put(it.toJson()) } }
+
+/**
  * The selection shapes supported by the local adjustment editor.
  *
  * Four are GEOMETRIC (a soft shape described by a handful of numbers). Three
@@ -241,7 +362,9 @@ sealed class LocalMask {
         val tolerance: Float = 0.5f,
         /** 0..1: softness of the selection boundary. */
         val feather: Float = 0.35f,
-        val invert: Boolean = false
+        val invert: Boolean = false,
+        /** Manual +/- brush, edge shift and edge-aware alignment. */
+        val refine: SelectionRefine = SelectionRefine.Default
     ) : LocalMask()
 
     /**
@@ -255,7 +378,8 @@ sealed class LocalMask {
         val tolerance: Float = 0.5f,
         /** 0..1: softness of the horizon / cloud boundary. */
         val feather: Float = 0.35f,
-        val invert: Boolean = false
+        val invert: Boolean = false,
+        val refine: SelectionRefine = SelectionRefine.Default
     ) : LocalMask()
 
     /**
@@ -279,7 +403,10 @@ sealed class LocalMask {
         val contiguous: Boolean = true,
         /** 0..1: softness of the selection boundary. */
         val feather: Float = 0.3f,
-        val invert: Boolean = false
+        val invert: Boolean = false,
+        /** Extra eyedropper samples (add / exclude colours). */
+        val samples: List<ColorSample> = emptyList(),
+        val refine: SelectionRefine = SelectionRefine.Default
     ) : LocalMask()
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -315,11 +442,13 @@ sealed class LocalMask {
                 put("seedX", seedX.toDouble()); put("seedY", seedY.toDouble())
                 put("tolerance", tolerance.toDouble()); put("feather", feather.toDouble())
                 put("invert", invert)
+                put("refine", refine.toJson())
             }
             is SkyMask -> {
                 put("type", "sky")
                 put("tolerance", tolerance.toDouble()); put("feather", feather.toDouble())
                 put("invert", invert)
+                put("refine", refine.toJson())
             }
             is ColorRangeMask -> {
                 put("type", "colorRange")
@@ -330,6 +459,8 @@ sealed class LocalMask {
                 put("minSaturation", minSaturation.toDouble())
                 put("contiguous", contiguous)
                 put("feather", feather.toDouble()); put("invert", invert)
+                put("samples", samples.toJsonArray())
+                put("refine", refine.toJson())
             }
         }
     }
@@ -376,12 +507,14 @@ sealed class LocalMask {
                     seedY = json.optDouble("seedY", 0.52).toFloat(),
                     tolerance = json.optDouble("tolerance", 0.5).toFloat(),
                     feather = json.optDouble("feather", 0.35).toFloat(),
-                    invert = json.optBoolean("invert", false)
+                    invert = json.optBoolean("invert", false),
+                    refine = SelectionRefine.fromJson(json.optJSONObject("refine"))
                 )
                 "sky" -> SkyMask(
                     tolerance = json.optDouble("tolerance", 0.5).toFloat(),
                     feather = json.optDouble("feather", 0.35).toFloat(),
-                    invert = json.optBoolean("invert", false)
+                    invert = json.optBoolean("invert", false),
+                    refine = SelectionRefine.fromJson(json.optJSONObject("refine"))
                 )
                 "colorRange" -> ColorRangeMask(
                     seedX = json.optDouble("seedX", 0.5).toFloat(),
@@ -394,7 +527,9 @@ sealed class LocalMask {
                     minSaturation = json.optDouble("minSaturation", 0.08).toFloat(),
                     contiguous = json.optBoolean("contiguous", true),
                     feather = json.optDouble("feather", 0.3).toFloat(),
-                    invert = json.optBoolean("invert", false)
+                    invert = json.optBoolean("invert", false),
+                    samples = (json.optJSONArray("samples") ?: JSONArray()).toColorSamples(),
+                    refine = SelectionRefine.fromJson(json.optJSONObject("refine"))
                 )
                 else -> ControlPoint(
                     json.optDouble("x", 0.5).toFloat(),

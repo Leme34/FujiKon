@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.LocalAdjustments
+import com.fujikon.app.ui.components.RefineMode
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Ink
 import com.fujikon.app.ui.theme.InkElevated
@@ -91,6 +92,12 @@ fun MaskEditorOverlay(
     // Parameters are a first-class part of the editor: visible by default so
     // they can no longer be "missing", and collapsible to free the preview.
     var paramsExpanded by remember { mutableStateOf(true) }
+    // Lightroom-style +/- brush and eyedropper states are shared between the
+    // photo gesture surface and the numeric drawer below it.
+    var refineMode by remember { mutableStateOf(RefineMode.NONE) }
+    var sampleMode by remember { mutableStateOf<Boolean?>(null) }
+    var showOverlay by remember { mutableStateOf(true) }
+    var selectionVersion by remember { mutableStateOf(0) }
 
     val screenHeight = LocalConfiguration.current.screenHeightDp
     val paramsHeight = (screenHeight * 0.26f).dp
@@ -183,6 +190,12 @@ fun MaskEditorOverlay(
                 // Region recognition + colour picking must read the UNEDITED
                 // original, not the graded preview, so the sample never drifts.
                 sourceBitmap = sourceBitmap ?: previewBitmap,
+                refineMode = refineMode,
+                onRefineModeChange = { refineMode = it },
+                showOverlay = showOverlay,
+                selectionVersion = selectionVersion,
+                sampleMode = sampleMode,
+                onSampleTaken = { sampleMode = null },
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -245,7 +258,14 @@ fun MaskEditorOverlay(
                         onChange = { next, field -> onChangeLocal(next, field) },
                         onFinished = { field -> commit(field) },
                         enabled = true,
-                        aspect = aspect
+                        aspect = aspect,
+                        refineMode = refineMode,
+                        onRefineModeChange = { refineMode = it },
+                        sampleMode = sampleMode,
+                        onSampleModeChange = { sampleMode = it },
+                        showOverlay = showOverlay,
+                        onShowOverlayChange = { showOverlay = it },
+                        onRedetect = { selectionVersion++ }
                     )
                 }
             }

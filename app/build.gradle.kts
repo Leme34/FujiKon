@@ -12,8 +12,8 @@ android {
         applicationId = "com.fujikon.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 31
-        versionName = "1.6.22"
+        versionCode = 32
+        versionName = "1.6.23"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -38,6 +38,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    androidResources {
+        // TFLite maps the model from the APK; compression would force a full
+        // in-memory copy (and can break FileDescriptor-based loading).
+        noCompress += "tflite"
     }
     packaging {
         resources {
@@ -98,6 +103,13 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // On-device AI semantic segmentation. Both models are plain TFLite graphs
+    // with built-in ops only (no MediaPipe custom ops), so the stock runtime is
+    // enough. Quantised ADE20K recognises sky / person / scene classes, while
+    // the PASCAL-VOC DeepLab model supplies object-level subject boundaries.
+    // assets are kept uncompressed so Interpreter can mmap them directly.
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")

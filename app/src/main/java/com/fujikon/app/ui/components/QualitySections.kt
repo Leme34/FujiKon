@@ -52,11 +52,15 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.BrushStroke
+import com.fujikon.app.data.ColorSample
 import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.RefineStroke
+import com.fujikon.app.data.SelectionRefine
 import com.fujikon.app.data.isContentAware
+import com.fujikon.app.render.MlSegmentation
 import com.fujikon.app.render.SelectionMaskGenerator
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.CardHigh
@@ -151,6 +155,58 @@ internal fun mostVividSeed(bitmap: Bitmap?): Pair<Float, Float> {
     }
     return bx to by
 }
+
+/** Lightroom-style +/- brush mode for refining an automatic selection. */
+enum class RefineMode { NONE, ADD, ERASE }
+
+/**
+ * Adds an eyedropper sample to a colour-range selection. [add] = true behaves
+ * like Lightroom's "+" dropper (also select this shade), false like the "-"
+ * dropper (exclude this shade). Keeping the tapped colour in the sample list
+ * is what lets a user separate two close hues instead of fighting one slider.
+ */
+internal fun addColorSample(
+    mask: LocalMask.ColorRangeMask, bitmap: Bitmap?, nx: Float, ny: Float, add: Boolean
+): LocalMask.ColorRangeMask {
+    val hsl = sampleHslAt(bitmap, nx, ny) ?: return mask
+    return mask.copy(
+        samples = (mask.samples + ColorSample(hsl[0], hsl[1], hsl[2], add)).take(12)
+    )
+}
+
+/** Appends a painted +/- stroke to any content-aware selection. */
+internal fun appendRefineStroke(mask: LocalMask, points: List<Float>, erase: Boolean): LocalMask {
+    val stroke = RefineStroke(points = points, erase = erase)
+    return when (mask) {
+        is LocalMask.SubjectMask -> mask.copy(refine = mask.refine.copy(strokes = (mask.refine.strokes + stroke).take(64)))
+        is LocalMask.SkyMask -> mask.copy(refine = mask.refine.copy(strokes = (mask.refine.strokes + stroke).take(64)))
+        is LocalMask.ColorRangeMask -> mask.copy(refine = mask.refine.copy(strokes = (mask.refine.strokes + stroke).take(64)))
+        else -> mask
+    }
+}
+
+/** Clears painted refinement strokes (the AI selection itself is untouched). */
+internal fun clearRefineStrokes(mask: LocalMask): LocalMask = when (mask) {
+    is LocalMask.SubjectMask -> mask.copy(refine = mask.refine.copy(strokes = emptyList()))
+    is LocalMask.SkyMask -> mask.copy(refine = mask.refine.copy(strokes = emptyList()))
+    is LocalMask.ColorRangeMask -> mask.copy(refine = mask.refine.copy(strokes = emptyList()))
+    else -> mask
+}
+
+internal fun refineOf(mask: LocalMask): SelectionRefine = when (mask) {
+    is LocalMask.SubjectMask -> mask.refine
+    is LocalMask.SkyMask -> mask.refine
+    is LocalMask.ColorRangeMask -> mask.refine
+    else -> SelectionRefine.Default
+}
+
+internal fun withRefine(mask: LocalMask, transform: (SelectionRefine) -> SelectionRefine): LocalMask =
+    when (mask) {
+        is LocalMask.SubjectMask -> mask.copy(refine = transform(mask.refine))
+        is LocalMask.SkyMask -> mask.copy(refine = transform(mask.refine))
+        is LocalMask.ColorRangeMask -> mask.copy(refine = transform(mask.refine))
+        else -> mask
+    }
 
 /**
  * Builds a semi-transparent overlay that shows the recognised selection. Pure
@@ -684,7 +740,15 @@ fun LocalAdjustmentSection(
     onFinished: (String) -> Unit,
     enabled: Boolean,
     /** Display width / height, so linear-gradient angles match the screen. */
-    aspect: Float = 1f
+    aspect: Float = 1f,
+    /** Shared selection-refinement UI state (owned by MaskEditorOverlay). */
+    refineMode: RefineMode = RefineMode.NONE,
+    onRefineModeChange: (RefineMode) -> Unit = {},
+    sampleMode: Boolean? = null,
+    onSampleModeChange: (Boolean?) -> Unit = {},
+    showOverlay: Boolean = true,
+    onShowOverlayChange: (Boolean) -> Unit = {},
+    onRedetect: () -> Unit = {}
 ) {
     val layers = local.layers
     val index = selectedLayer.coerceIn(0, (layers.size - 1).coerceAtLeast(0))
@@ -856,7 +920,7 @@ fun LocalAdjustmentSection(
                 }
                 is LocalMask.SubjectMask -> {
                     Text(
-                        "本机智能识别（非 AI 模型）：以种子点为中心，按颜色/边缘/肤色自动圈出主体。点照片可重新定位主体。",
+                        "端侧 AI 语义分割：自动识别人物、动物、车辆等主体并对齐真实边缘。点照片可切换选中的对象；用「添加/擦除」笔刷微调。",
                         color = Color.White, style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                             .testTag("mask_subject_hint")
@@ -878,7 +942,7 @@ fun LocalAdjustmentSection(
                 }
                 is LocalMask.SkyMask -> {
                     Text(
-                        "本机智能识别（非 AI 模型）：自动检测地平线，从顶边扩散识别天空，排除水面/蓝色衣物。建议配「压暗亮部」快速效果。",
+                        "端侧 AI 天空分割：语义识别蓝天、晚霞、阴天与云层，自动排除水面和蓝色衣物。建议配「压暗亮部」快速效果。",
                         color = Color.White, style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                             .testTag("mask_sky_hint")
@@ -900,7 +964,7 @@ fun LocalAdjustmentSection(
                 }
                 is LocalMask.ColorRangeMask -> {
                     Text(
-                        "本机颜色识别（非 AI 模型）：点照片取色，自动选中相近颜色的连通区域。可调色相范围/容差精细控制。",
+                        "感知色差取色（OKLab）：点照片取主色，用「+/- 取样」补充或排除相近色；识别范围按人眼感知计算，不再误选邻近色。",
                         color = Color.White, style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                             .testTag("mask_color_hint")
@@ -933,6 +997,148 @@ fun LocalAdjustmentSection(
                         onReset = { update({ it.copy(mask = m.copy(feather = 0.3f)) }); commit() },
                         enabled = enabled
                     )
+                }
+            }
+
+            // ----------------------------------------------------------
+            // Shared "refine selection" panel for the three AI selections.
+            // Mirrors Lightroom's mask panel: +/- brush, edge shift, smooth,
+            // edge-aware alignment, show/hide overlay and re-detect.
+            // ----------------------------------------------------------
+            if (mask.isContentAware) {
+                val refine = refineOf(mask)
+                // Model loading happens off-thread. Poll briefly so the status
+                // line flips from "loading / fallback" to "AI ready" once both
+                // graphs are actually mapped, without a full re-composition.
+                val aiOn by produceState(initialValue = MlSegmentation.available, mask) {
+                    var tries = 0
+                    while (!MlSegmentation.available && tries < 25) {
+                        kotlinx.coroutines.delay(200)
+                        tries++
+                        value = MlSegmentation.available
+                    }
+                    value = MlSegmentation.available
+                }
+                Text(
+                    if (aiOn) "识别引擎：端侧 AI 语义分割（本机运行，不联网）"
+                    else "识别引擎：本机智能识别（AI 模型加载中或不可用，自动降级）",
+                    color = if (aiOn) Amber else TextPrimary,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTag("mask_ai_status")
+                )
+                Text(
+                    "精修选区 · 选一种笔刷后在照片上涂抹",
+                    color = Amber,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    TextButton(
+                        onClick = {
+                            onRefineModeChange(if (refineMode == RefineMode.ADD) RefineMode.NONE else RefineMode.ADD)
+                            onSampleModeChange(null)
+                        },
+                        enabled = enabled,
+                        modifier = Modifier.testTag("mask_refine_add")
+                    ) { Text("＋ 添加", color = if (refineMode == RefineMode.ADD) Amber else TextSecondary) }
+                    TextButton(
+                        onClick = {
+                            onRefineModeChange(if (refineMode == RefineMode.ERASE) RefineMode.NONE else RefineMode.ERASE)
+                            onSampleModeChange(null)
+                        },
+                        enabled = enabled,
+                        modifier = Modifier.testTag("mask_refine_erase")
+                    ) { Text("－ 擦除", color = if (refineMode == RefineMode.ERASE) Amber else TextSecondary) }
+                    TextButton(
+                        onClick = {
+                            update({ it.copy(mask = clearRefineStrokes(it.mask)) }); commit()
+                        },
+                        enabled = enabled && refine.strokes.isNotEmpty(),
+                        modifier = Modifier.testTag("mask_refine_clear")
+                    ) { Text("清除笔刷 (${refine.strokes.size})", color = TextSecondary) }
+                    TextButton(
+                        onClick = onRedetect, enabled = enabled,
+                        modifier = Modifier.testTag("mask_redetect")
+                    ) { Text("重新识别", color = TextSecondary) }
+                    TextButton(
+                        onClick = { onShowOverlayChange(!showOverlay) }, enabled = enabled,
+                        modifier = Modifier.testTag("mask_overlay_toggle")
+                    ) { Text(if (showOverlay) "隐藏选区" else "显示选区", color = TextSecondary) }
+                }
+                AdjustmentSlider(
+                    label = "收缩 / 扩展边缘", value = refine.edgeShift,
+                    valueRange = -1f..1f, step = 0.01f,
+                    onValueChange = { v ->
+                        update({ it.copy(mask = withRefine(it.mask) { r -> r.copy(edgeShift = v) }) })
+                    },
+                    onValueChangeFinished = { commit() },
+                    onReset = {
+                        update({ it.copy(mask = withRefine(it.mask) { r -> r.copy(edgeShift = 0f) }) }); commit()
+                    },
+                    enabled = enabled
+                )
+                AdjustmentSlider(
+                    label = "边缘平滑", value = refine.smooth,
+                    valueRange = 0f..1f, step = 0.01f,
+                    onValueChange = { v ->
+                        update({ it.copy(mask = withRefine(it.mask) { r -> r.copy(smooth = v) }) })
+                    },
+                    onValueChangeFinished = { commit() },
+                    onReset = {
+                        update({ it.copy(mask = withRefine(it.mask) { r -> r.copy(smooth = 0.2f) }) }); commit()
+                    },
+                    enabled = enabled
+                )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = {
+                            update({ it.copy(mask = withRefine(it.mask) { r -> r.copy(detectEdges = !r.detectEdges) }) })
+                            commit()
+                        },
+                        enabled = enabled,
+                        modifier = Modifier.testTag("mask_edge_align_toggle")
+                    ) {
+                        Text(
+                            if (refine.detectEdges) "智能边缘对齐：开" else "智能边缘对齐：关",
+                            color = if (refine.detectEdges) Amber else TextSecondary
+                        )
+                    }
+                }
+                if (mask is LocalMask.ColorRangeMask) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                        TextButton(
+                            onClick = {
+                                onRefineModeChange(RefineMode.NONE)
+                                onSampleModeChange(if (sampleMode == true) null else true)
+                            },
+                            enabled = enabled,
+                            modifier = Modifier.testTag("mask_sample_add")
+                        ) { Text("＋ 取色", color = if (sampleMode == true) Amber else TextSecondary) }
+                        TextButton(
+                            onClick = {
+                                onRefineModeChange(RefineMode.NONE)
+                                onSampleModeChange(if (sampleMode == false) null else false)
+                            },
+                            enabled = enabled,
+                            modifier = Modifier.testTag("mask_sample_sub")
+                        ) { Text("－ 排除色", color = if (sampleMode == false) Amber else TextSecondary) }
+                        TextButton(
+                            onClick = {
+                                update({ it.copy(mask = (it.mask as LocalMask.ColorRangeMask).copy(samples = emptyList())) })
+                                commit()
+                            },
+                            enabled = enabled && mask.samples.isNotEmpty(),
+                            modifier = Modifier.testTag("mask_sample_clear")
+                        ) { Text("清空取样 (${mask.samples.size})", color = TextSecondary) }
+                    }
+                    if (sampleMode != null) {
+                        Text(
+                            "在照片上点一下：${if (sampleMode) "添加该颜色到选区" else "从选区排除该颜色"}",
+                            color = Amber, style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
                 }
             }
             Row(Modifier.fillMaxWidth()) {
@@ -1086,6 +1292,16 @@ fun LocalMaskOverlay(
     displayBitmap: Bitmap?,
     /** Unedited original: colour picks and region recognition read from it. */
     sourceBitmap: Bitmap? = null,
+    /** Lightroom-style +/- brush. When active, dragging paints refinement. */
+    refineMode: RefineMode = RefineMode.NONE,
+    onRefineModeChange: (RefineMode) -> Unit = {},
+    /** Toggle the amber selection wash (purely visual, never changes the mask). */
+    showOverlay: Boolean = true,
+    /** Bumped by "重新识别" to force a fresh AI inference. */
+    selectionVersion: Int = 0,
+    /** Pending colour-range eyedropper: null = off, true = add, false = exclude. */
+    sampleMode: Boolean? = null,
+    onSampleTaken: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val layers = local.layers
@@ -1102,6 +1318,11 @@ fun LocalMaskOverlay(
     // read inside the gesture must come from an updated state.
     val enabledState = rememberUpdatedState(enabled)
     val bitmapState = rememberUpdatedState(displayBitmap)
+    val refineState = rememberUpdatedState(refineMode)
+    val onRefineChangeState = rememberUpdatedState(onRefineModeChange)
+    val versionState = rememberUpdatedState(selectionVersion)
+    val sampleModeState = rememberUpdatedState(sampleMode)
+    val onSampleTakenState = rememberUpdatedState(onSampleTaken)
 
     fun update(transform: (LocalLayer) -> LocalLayer, field: String = "蒙版") {
         val list = layersState.value
@@ -1118,8 +1339,13 @@ fun LocalMaskOverlay(
     // off the main thread so recognising a region never janks a gesture. The
     // keys are the mask (any parameter change re-recognises) and the bitmaps.
     val currentMask = layer?.mask
+    // "重新识别" invalidates the cached inference exactly ONCE per button
+    // press — not on every slider tick (which also recomputes this overlay).
+    androidx.compose.runtime.LaunchedEffect(selectionVersion) {
+        if (selectionVersion > 0) MlSegmentation.invalidate()
+    }
     val selectionOverlay by produceState<ImageBitmap?>(
-        initialValue = null, currentMask, sourceBitmap, displayBitmap
+        initialValue = null, currentMask, sourceBitmap, displayBitmap, selectionVersion
     ) {
         val mask = currentMask
         val src = sourceBitmap ?: displayBitmap
@@ -1167,6 +1393,46 @@ fun LocalMaskOverlay(
                         )
                         val aspect = if (rect.height > 0f) rect.width / rect.height else 1f
                         val baseMask = layersState.value.getOrNull(indexState.value)?.mask
+
+                        // Lightroom-style +/- brush: a single-finger drag paints
+                        // an "add to selection" or "subtract from selection"
+                        // stroke on top of the AI result. It takes priority over
+                        // placement / panning so a mis-tap never moves the mask.
+                        val mode = refineState.value
+                        if (mode != RefineMode.NONE && baseMask != null && baseMask.isContentAware) {
+                            val points = ArrayList<Float>()
+                            val first = rect.normalized(down.position.x, down.position.y)
+                            if (first != null) {
+                                points += first.first; points += first.second
+                                liveBrush = listOf(Offset(first.first, first.second))
+                            }
+                            do {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.pressed }
+                                if (change != null) {
+                                    val p = rect.normalized(change.position.x, change.position.y)
+                                    if (p != null) {
+                                        // Decimate: keep the stroke light.
+                                        if (points.size < 2 ||
+                                            hypot(p.first - points[points.size - 2],
+                                                p.second - points[points.size - 1]) > 0.004f) {
+                                            points += p.first; points += p.second
+                                            liveBrush = liveBrush + Offset(p.first, p.second)
+                                        }
+                                    }
+                                    change.consume()
+                                }
+                            } while (event.changes.any { it.pressed })
+                            if (points.size >= 2) {
+                                update({ l ->
+                                    l.copy(mask = appendRefineStroke(l.mask, points, mode == RefineMode.ERASE))
+                                })
+                                commit()
+                            }
+                            liveBrush = emptyList()
+                            return@awaitEachGesture
+                        }
+
                         val brush = baseMask as? LocalMask.Brush
                         val brushMode = brush != null
 
@@ -1294,17 +1560,23 @@ fun LocalMaskOverlay(
                             !moved && !multiPointer && !rotateMode -> {
                                 val p = rect.normalized(down.position.x, down.position.y)
                                 if (p != null) {
-                                    val sampler = sourceState.value
-                                    update({ l ->
-                                        val m = l.mask
-                                        val next = if (m is LocalMask.ColorRangeMask) {
-                                            // Tap = pick the colour under the finger
-                                            // from the ORIGINAL photo, then re-select.
-                                            tapColorRange(m, sampler, p.first, p.second)
-                                        } else placeMask(m, p.first, p.second)
-                                        l.copy(mask = next)
-                                    })
-                                    commit()
+                                        val sampler = sourceState.value
+                                        val pending = sampleModeState.value
+                                        update({ l ->
+                                            val m = l.mask
+                                            val next = when {
+                                                m is LocalMask.ColorRangeMask && pending != null ->
+                                                    addColorSample(m, sampler, p.first, p.second, pending)
+                                                m is LocalMask.ColorRangeMask ->
+                                                    // Tap = pick the colour under the finger
+                                                    // from the ORIGINAL photo, then re-select.
+                                                    tapColorRange(m, sampler, p.first, p.second)
+                                                else -> placeMask(m, p.first, p.second)
+                                            }
+                                            l.copy(mask = next)
+                                        })
+                                        if (pending != null) onSampleTakenState.value()
+                                        commit()
                                 }
                             }
                             else -> commit()
@@ -1317,7 +1589,7 @@ fun LocalMaskOverlay(
             // Draw the recognised area as a translucent amber wash BEFORE the
             // outline, so the user can see exactly what "选择主体/天空/颜色"
             // selected and re-tap to correct it.
-            selectionOverlay?.let { overlay ->
+            if (showOverlay) selectionOverlay?.let { overlay ->
                 drawImage(
                     image = overlay,
                     dstOffset = IntOffset(rect.left.roundToInt(), rect.top.roundToInt()),
@@ -1340,7 +1612,7 @@ fun LocalMaskOverlay(
                 .testTag("mask_toolbar")
         ) {
             Text(
-                "点按定位 · 拖动移动/涂抹 · 双指缩放旋转 · 「选择主体/天空」自动识别后点图可重定位 · 「颜色范围」点图取色、橙色为选中区域（本机识别，非 AI 模型）",
+                "端侧 AI 识别选区 · 橙色为选中区域 · 点图重定位/取色 · 参数区可用「＋添加 / －擦除」笔刷精修 · 双指缩放旋转",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White
             )

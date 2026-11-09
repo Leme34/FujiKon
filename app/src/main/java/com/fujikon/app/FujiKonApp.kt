@@ -12,7 +12,9 @@ import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.nic.NikonCloudService
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
+import com.fujikon.app.render.MlSegmentation
 import com.fujikon.app.render.PresetThumbnailStore
+import com.fujikon.app.render.SelectionMaskGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,7 +44,15 @@ class AppContainer(context: Context) {
     val aiEditCacheDir: File = File(appContext.cacheDir, "ai_edit").apply { mkdirs() }
 
     init {
-        scope.launch { presetRepository.load() }
+        // On-device semantic segmentation for "select subject / sky". Loading
+        // is lazy and guarded; a missing model or unsupported ABI simply falls
+        // back to the deterministic CV pipeline, never a broken selection.
+        MlSegmentation.attach(appContext)
+        SelectionMaskGenerator.provider = MlSegmentation
+        scope.launch {
+            presetRepository.load()
+            MlSegmentation.warmUp()
+        }
     }
 }
 
