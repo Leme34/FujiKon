@@ -124,6 +124,10 @@ import com.fujikon.app.ui.viewmodel.FujiKonViewModelFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import com.fujikon.app.ui.components.EditorPageTransition
+import com.fujikon.app.ui.components.EditorMoreMenu
+import com.fujikon.app.ui.components.EditorTool
+import com.fujikon.app.ui.components.EditorToolAppearance
+import com.fujikon.app.ui.components.EditorToolsRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -267,6 +271,23 @@ fun EditorScreen(
                             )
                         }
                     }
+                    // 1.6.29: copy / paste effects + export live in the
+                    // top-right overflow menu. Paste is greyed out until a
+                    // look has been copied; export keeps its old guard.
+                    EditorMoreMenu(
+                        canPaste = state.hasCopiedEffect && !exporting,
+                        canExport = !exporting && preset != null && state.photos.isNotEmpty(),
+                        onCopy = {
+                            viewModel.copyEffect()
+                            scope.launch { snackbar.showSnackbar("已复制当前照片的效果") }
+                        },
+                        onPaste = {
+                            if (viewModel.pasteEffect()) {
+                                scope.launch { snackbar.showSnackbar("已粘贴效果到当前照片") }
+                            }
+                        },
+                        onExport = { showExport = true }
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink)
             )
@@ -340,173 +361,64 @@ fun EditorScreen(
                             }
                         }
                     }
-                    Column(
-                        modifier = Modifier
+                    // 1.6.29: all seven tools in ONE horizontally scrollable
+                    // row; export moved to the top-right overflow menu.
+                    Box(
+                        Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { showPicker = true },
-                                enabled = !exporting,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("预设", style = MaterialTheme.typography.labelMedium)
+                        EditorToolsRow(
+                            appearance = { tool ->
+                                val base = !exporting && preset != null
+                                when (tool) {
+                                    EditorTool.PRESET -> EditorToolAppearance(enabled = !exporting)
+                                    EditorTool.ADJUST -> EditorToolAppearance(
+                                        enabled = base,
+                                        highlighted = state.hasAdjustments
+                                    )
+                                    EditorTool.CROP -> EditorToolAppearance(
+                                        enabled = base && state.cropBase != null,
+                                        highlighted = state.hasCrop
+                                    )
+                                    EditorTool.BLUR -> EditorToolAppearance(
+                                        enabled = base && state.cropBase != null,
+                                        highlighted = state.hasLensBlur
+                                    )
+                                    EditorTool.CURVE -> EditorToolAppearance(
+                                        enabled = base,
+                                        highlighted = state.hasToneCurve
+                                    )
+                                    EditorTool.MASK -> EditorToolAppearance(
+                                        enabled = base && state.rendered != null,
+                                        highlighted = state.adjustments.local.layers.isNotEmpty()
+                                    )
+                                    EditorTool.AI -> EditorToolAppearance(
+                                        enabled = base && state.rendered != null,
+                                        accent = true
+                                    )
+                                }
+                            },
+                            onToolClick = { tool ->
+                                when (tool) {
+                                    EditorTool.PRESET -> showPicker = true
+                                    EditorTool.ADJUST -> showAdjustments = true
+                                    EditorTool.CROP -> showCrop = true
+                                    EditorTool.BLUR -> {
+                                        blurInitial = state.adjustments.lensBlur
+                                        showBlur = true
+                                    }
+                                    EditorTool.CURVE -> showCurve = true
+                                    EditorTool.MASK -> {
+                                        maskEditorInitial = state.adjustments
+                                        showMaskEditor = true
+                                    }
+                                    EditorTool.AI -> {
+                                        if (viewModel.requestAiEdit()) showAiDialog = true
+                                    }
+                                }
                             }
-                            OutlinedButton(
-                                onClick = { showAdjustments = true },
-                                enabled = !exporting && preset != null,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (state.hasAdjustments) Amber.copy(alpha = 0.7f) else Outline
-                                ),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (state.hasAdjustments) Amber else TextPrimary
-                                ),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Filled.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("调节", style = MaterialTheme.typography.labelMedium)
-                            }
-                            OutlinedButton(
-                                onClick = { showCrop = true },
-                                enabled = !exporting && preset != null && state.cropBase != null,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (state.hasCrop) Amber.copy(alpha = 0.7f) else Outline
-                                ),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (state.hasCrop) Amber else TextPrimary
-                                ),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Filled.Crop, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("裁剪", style = MaterialTheme.typography.labelMedium)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    blurInitial = state.adjustments.lensBlur
-                                    showBlur = true
-                                },
-                                enabled = !exporting && preset != null && state.cropBase != null,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (state.hasLensBlur) Amber.copy(alpha = 0.7f) else Outline
-                                ),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (state.hasLensBlur) Amber else TextPrimary
-                                ),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Filled.BlurOn, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("模糊", style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { showCurve = true },
-                                enabled = !exporting && preset != null,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (state.hasToneCurve) Amber.copy(alpha = 0.7f) else Outline
-                                ),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (state.hasToneCurve) Amber else TextPrimary
-                                ),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Filled.Timeline, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("曲线", style = MaterialTheme.typography.labelMedium)
-                            }
-                            // Masking is now its own full-screen editor, on the
-                            // same level as crop / blur — not a cramped tab.
-                            OutlinedButton(
-                                onClick = {
-                                    maskEditorInitial = state.adjustments
-                                    showMaskEditor = true
-                                },
-                                enabled = !exporting && preset != null && state.rendered != null,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (state.adjustments.local.layers.isNotEmpty()) Amber.copy(alpha = 0.7f) else Outline
-                                ),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (state.adjustments.local.layers.isNotEmpty()) Amber else TextPrimary
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(50.dp)
-                                    .testTag("mask_editor_button")
-                            ) {
-                                Icon(Icons.Filled.Brush, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("蒙版", style = MaterialTheme.typography.labelMedium)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    if (viewModel.requestAiEdit()) showAiDialog = true
-                                },
-                                enabled = !exporting && preset != null && state.rendered != null,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                border = BorderStroke(1.dp, Amber.copy(alpha = 0.7f)),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(50.dp)
-                                    .testTag("ai_edit_button")
-                            ) {
-                                Icon(
-                                    Icons.Filled.AutoAwesome,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(Modifier.width(3.dp))
-                                Text("AI", style = MaterialTheme.typography.labelMedium)
-                            }
-                            Button(
-                                onClick = { showExport = true },
-                                enabled = !exporting && preset != null && state.photos.isNotEmpty(),
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text(
-                                    "导出",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
+                        )
                     }
                 }
             }

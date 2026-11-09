@@ -659,6 +659,23 @@ class EditorViewModel(
         data class Failed(val message: String) : ExportState
     }
 
+    /**
+     * The look captured by "复制效果" — a photo-independent snapshot of every
+     * editable effect. AI retouch results are deliberately excluded: they are
+     * finished images bound to one source photo, not reusable settings.
+     *
+     * Only ONE copy exists at a time; copying again overwrites the previous
+     * snapshot, so paste always uses the most recent copy ("以最新一次复制为准").
+     * The clipboard survives switching photos, which is exactly how it is
+     * used: copy on photo A, switch, paste onto photo B.
+     */
+    data class CopiedEffect(
+        val presetId: String?,
+        val toneCurveOverride: ToneCurve? = null,
+        val channelCurvesOverride: ChannelToneCurves? = null,
+        val adjustments: EditAdjustments = EditAdjustments.Neutral
+    )
+
     data class UiState(
         val photos: List<PhotoItem> = emptyList(),
         val presets: List<Preset> = emptyList(),
@@ -690,7 +707,9 @@ class EditorViewModel(
         /** State of the Agnes text-model prompt generation. */
         val promptGen: PromptGenState = PromptGenState.Idle,
         /** Whether a key is configured, shown as a hint in the prompt editor. */
-        val hasApiKey: Boolean = false
+        val hasApiKey: Boolean = false,
+        /** Latest "复制效果" snapshot; null until the user copies a look. */
+        val copiedEffect: CopiedEffect? = null
     ) {
         val currentPhoto: PhotoItem? get() = photos.getOrNull(index)
         val selectedPreset: Preset? get() = when (presetId) {
@@ -718,6 +737,8 @@ class EditorViewModel(
         val currentHistoryLabel: String? get() = historyEntries.getOrNull(historyIndex)?.label
         val hasAiResult: Boolean
             get() = currentPhoto?.let { aiResultUris.containsKey(it.id) } ?: false
+        /** "粘贴效果" is only available after at least one successful copy. */
+        val hasCopiedEffect: Boolean get() = copiedEffect != null
     }
 
     private val _state = MutableStateFlow(
@@ -1225,6 +1246,75 @@ class EditorViewModel(
         val history = currentSession()?.history ?: return
         if (index == history.index) return
         jumpHistory(index)
+    }
+
+    /**
+     * Copies the CURRENT photo's complete editable look into the single-slot
+     * clipboard. Copying again overwrites the previous snapshot, so a later
+     * paste always uses the most recent copy.
+     *
+     * AI retouch results are not copied: they are finished, photo-specific
+     * images rather than reusable settings.
+     */
+    fun copyEffect() {
+        val snapshot = _state.value
+        if (snapshot.currentPhoto == null) return
+        _state.update {
+            it.copy(
+                copiedEffect = CopiedEffect(
+                    presetId = snapshot.presetId,
+                    toneCurveOverride = snapshot.toneCurveOverride,
+                    channelCurvesOverride = snapshot.channelCurvesOverride,
+                    adjustments = snapshot.adjustments
+                )
+            )
+        }
+    }
+
+    /**
+     * Applies the copied look to the photo currently being previewed.
+     *
+     * Per 1.6.28 semantics this is an INDIVIDUAL edit: only the current
+     * photo's grade and history change. Other photos, the previewed index and
+     * the clipboard itself are untouched. The step is undoable, and the
+     * clipboard survives switching photos so a look can be carried across the
+     * whole selection one photo at a time.
+     *
+     * @return true when a look was actually applied, false when there is
+     * nothing to paste or the current photo already has exactly that look.
+     */
+    fun pasteEffect(): Boolean {
+        val effect = _state.value.copiedEffect ?: return false
+        val snapshot = _state.value
+        if (snapshot.currentPhoto == null) return false
+
+        // A preset may have been deleted after the copy. Falling back to the
+        // current photo's preset keeps currentPreset non-null so preview and
+        // export never break; the copied curves / adjustments still apply.
+        val targetPresetId = when {
+            effect.presetId == Preset.NONE_ID -> Preset.NONE_ID
+            effect.presetId != null && snapshot.presets.any { it.id == effect.presetId } -> effect.presetId
+            else -> snapshot.presetId
+        }
+        val targetAdjustments = effect.adjustments.normalized()
+        if (snapshot.presetId == targetPresetId &&
+            snapshot.toneCurveOverride == effect.toneCurveOverride &&
+            snapshot.channelCurvesOverride == effect.channelCurvesOverride &&
+            snapshot.adjustments == targetAdjustments
+        ) return false
+
+        _state.update {
+            it.copy(
+                presetId = targetPresetId,
+                toneCurveOverride = effect.toneCurveOverride,
+                channelCurvesOverride = effect.channelCurvesOverride,
+                adjustments = targetAdjustments
+            )
+        }
+        selectionStore.setPreset(targetPresetId)
+        recordHistory("粘贴效果")
+        renderCurrent()
+        return true
     }
 
     fun selectPreset(id: String) {
