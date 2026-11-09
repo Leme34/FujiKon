@@ -425,6 +425,8 @@ FujiKon 接入 Agnes 最新一代图像大模型 `agnes-image-2.5-flash`（图�
 
 > 1.6.29 编辑器操作区重构 + **复制 / 粘贴效果**：右上角新增三点「更多」菜单，内含「复制效果」「粘贴效果」「导出」；未复制任何效果时「粘贴效果」置灰不可点击，复制后粘贴会把**最新一次复制**的完整效果（`presetId` + 主曲线 / 分通道曲线覆盖 + `EditAdjustments` 全部参数，含裁剪、镜头模糊、蒙版图层等）应用到**当前预览的照片**。剪贴板只有一份（`EditorViewModel.CopiedEffect`，新复制覆盖旧值），跨照片切换保留，可连续把同一效果贴到多张照片；粘贴是逐张独立、可撤销的编辑（`recordHistory("粘贴效果")`，只改当前照片会话与历史，不动其它照片和 `index`），AI 修图结果作为照片专属成品图不参与复制。底部原先两行 8 个按钮改为**一行 7 个工具**（预设 / 调节 / 裁剪 / 模糊 / 曲线 / 蒙版 / AI），固定宽度 78dp 并支持左右滑动，导出按钮移入「更多」菜单。新增 `EditorToolRow.kt`（`EditorTool` / `EditorToolsRow` / `EditorMoreMenuItems` / `EditorMoreMenu`）与 `EditorCopyPasteEffectTest` 8 例、`EditorToolsAndMoreMenuTest` 8 例，全量 **411 个测试通过**。
 
+> 1.6.30 修复**左上角「当前照片数」显示不完整**：Material3 小尺寸 `TopAppBar` 只有 64dp 高，右上角五个操作（撤销 / 重做 / 历史 / 预设名 / 更多）把 title 区挤到极窄，旧的内联标题用不限行数的 `titleMedium` 显示 `"1 / 3"`，窄屏下换行成两行使两行 `Column` 变三行、超出顶栏高度后垂直溢出（「1」飘到状态栏、「/」掉到图标下方）。抽出 `EditorTopBarTitle.kt`：计数改为 `titleSmall` + `maxLines = 1` + `softWrap = false` + `wrapContentWidth(unbounded = true)`，按内容固有宽度绘制、任何窄槽下都单行完整显示；文件名单行省略；计数格式下沉为纯函数 `editorPhotoCounter(index, count)`（空选择显示「查看」，其余为 1 基「当前 / 总数」）。同时把顶栏预设名按钮从固定 `width(76.dp)` 改为 `widthIn(max = 56.dp)` 自适应，给 title 腾出宽度。新增 `EditorPhotoCounterTest` 9 例（格式、紧凑单行、文本完整、窄槽内单行渲染），全量 **420 个测试通过**。
+
 ### 隐私与限制
 
 - 只有点击「开始修图」才会上传**当前这一张预览图**（最长边 1800 px 的 JPEG）；不会上传原图文件、其它照片、预设或相册信息。

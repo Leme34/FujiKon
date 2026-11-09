@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -128,6 +130,7 @@ import com.fujikon.app.ui.components.EditorMoreMenu
 import com.fujikon.app.ui.components.EditorTool
 import com.fujikon.app.ui.components.EditorToolAppearance
 import com.fujikon.app.ui.components.EditorToolsRow
+import com.fujikon.app.ui.components.EditorTopBarTitle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -214,20 +217,15 @@ fun EditorScreen(
                     }
                 },
                 title = {
-                    Column {
-                        Text(
-                            if (state.photos.isEmpty()) "查看" else "${state.index + 1} / ${state.photos.size}",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary
-                        )
-                        Text(
-                            current?.displayName ?: "选择照片",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    // 1.6.30: the counter (line 1) is a single, non-wrapping
+                    // line measured at its own width. The old inline Column
+                    // wrapped "1 / 3" when the five actions squeezed this slot,
+                    // overflowing the 64dp bar and clipping the number.
+                    EditorTopBarTitle(
+                        index = state.index,
+                        photoCount = state.photos.size,
+                        photoName = current?.displayName
+                    )
                 },
                 actions = {
                     IconButton(
@@ -261,13 +259,23 @@ fun EditorScreen(
                         )
                     }
                     if (preset != null) {
-                        TextButton(onClick = { showPicker = true }, enabled = !exporting) {
+                        // 1.6.30: no fixed 76dp width. A short preset name now
+                        // takes only the space it needs, leaving room for the
+                        // photo counter in the (narrow) title slot.
+                        TextButton(
+                            onClick = { showPicker = true },
+                            enabled = !exporting,
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 1.dp)
+                                .widthIn(max = 56.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
                             Text(
                                 preset.name,
                                 color = Amber,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.width(76.dp)
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
