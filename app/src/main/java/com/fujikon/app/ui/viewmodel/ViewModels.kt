@@ -1093,24 +1093,39 @@ class EditorViewModel(
         _state.update { it.copy(historyEntries = entries, historyIndex = index) }
     }
 
-    /** Restores one step, including the photo it belonged to. */
+    /**
+     * Restores one history step's LOOK without navigating away from the photo
+     * the user is currently editing.
+     *
+     * History is GLOBAL: one grade is shared by every photo in the session (for
+     * batch export), while AI results are per-photo. Undo / redo / jumpTo must
+     * therefore restore the shared grade (preset / curves / adjustments) and
+     * the AI layer of the photo the step belongs to, but must NEVER change
+     * `index`.
+     *
+     * Bug fixed in 1.6.27: this used to set `index = photoIndex` derived from
+     * [EditSnapshot.photoId]. The initial "打开照片" step always points at the
+     * first photo and switching photos ([show]) records no step, so undoing an
+     * edit made on a non-first photo teleported the user back to photo #1.
+     */
     private fun jumpHistory(target: Int): Boolean {
         val entry = editHistory.entries.getOrNull(target) ?: return false
         val snapshot = entry.snapshot
-        val photoIndex = _state.value.photos.indexOfFirst { it.id == snapshot.photoId }
-        if (photoIndex < 0) return false
 
         val presetStillExists = snapshot.presetId == Preset.NONE_ID ||
             _state.value.presets.any { it.id == snapshot.presetId }
         // Re-attach the AI layer that belonged to this history step, but only
         // when its cached file still exists (a purged cache degrades cleanly).
+        // photoId now only identifies WHICH photo owns that AI layer; it is no
+        // longer a navigation target.
         val restoredAi = snapshot.aiResultUri
             ?.takeIf { snapshot.aiResultVisible && snapshot.aiResultOpacity > 0.001f }
             ?.let { Uri.parse(it) }
             ?.takeIf { it.path?.let { path -> File(path).exists() } == true }
         _state.update { current ->
             current.copy(
-                index = photoIndex,
+                // `index` intentionally left untouched: keep the user on the
+                // photo they are editing. See the KDoc above.
                 presetId = if (presetStillExists) snapshot.presetId else current.presetId,
                 toneCurveOverride = snapshot.toneCurve,
                 channelCurvesOverride = snapshot.channelCurves,
@@ -1124,7 +1139,8 @@ class EditorViewModel(
         }
         editHistory.jumpTo(target)
         selectionStore.setPreset(_state.value.presetId)
-        selectionStore.setCurrentPhoto(_state.value.currentPhoto)
+        // currentPhoto is unchanged because index did not move; [show] is the
+        // only place that re-points selectionStore at a different photo.
         syncHistoryState()
         renderCurrent()
         return true

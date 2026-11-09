@@ -3,8 +3,11 @@ package com.fujikon.app.data
 /**
  * Immutable editor state stored in one history step.
  *
- * The photo id is part of the snapshot so a global undo/redo can return the
- * user to the photo that was being edited when the step was recorded.
+ * The photo id identifies which photo an (optional, per-photo) AI result
+ * belongs to. It is NOT a navigation target: the history is global (one grade
+ * shared by all photos for batch export), so undo / redo / jumpTo restore the
+ * grade on every photo but keep the user on the photo they are currently
+ * editing. Switching photos records no step. See EditorViewModel.jumpHistory.
  */
 data class EditSnapshot(
     val photoId: Long,
