@@ -180,6 +180,9 @@ fun MaskEditorOverlay(
                 onFinished = { field -> commit(field) },
                 enabled = true,
                 displayBitmap = previewBitmap ?: sourceBitmap,
+                // Region recognition + colour picking must read the UNEDITED
+                // original, not the graded preview, so the sample never drifts.
+                sourceBitmap = sourceBitmap ?: previewBitmap,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()

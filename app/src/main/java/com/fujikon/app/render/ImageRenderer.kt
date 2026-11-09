@@ -60,6 +60,13 @@ class ImageRenderer {
         // once, then use the same effective adjustments for every stage below.
         // A stock film look resolves to itself, so its rendering is unchanged.
         val adjustments = preset.adjustments.normalized().withFilterLook()
+        // Content-aware selections (subject / sky / colour range) must be
+        // derived from the UNEDITED photo. Capture the feature grid here,
+        // BEFORE any grade / retouch mutates `pixels`. It is resolution-
+        // independent and shared by all selection layers in this render.
+        val selectionAnalysis = if (adjustments.local.hasContentAwareMasks()) {
+            SelectionMaskGenerator.analyze(pixels, width, height)
+        } else null
         val plan = buildPlan(preset, forExport, width, height, adjustments)
 
         // Skin retouch runs before the grade so the mask sees natural skin
@@ -81,7 +88,7 @@ class ImageRenderer {
         // Colour / zone / finishing operators. All keep float precision until
         // their single final write, so stacking layers cannot cause banding.
         QualityOperators.applyPointColor(pixels, width, height, adjustments.pointColor, job)
-        val localLayers = LocalMaskRenderer.prepare(adjustments.local, width, height, job)
+        val localLayers = LocalMaskRenderer.prepare(adjustments.local, width, height, job, selectionAnalysis)
         LocalMaskRenderer.apply(pixels, width, height, localLayers, job)
         QualityOperators.applyGrain(pixels, width, height, adjustments.grain, job)
         QualityOperators.applyVignette(pixels, width, height, adjustments.vignette, job)

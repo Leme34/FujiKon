@@ -104,7 +104,15 @@ data class BrushStroke(
 }
 
 /**
- * The four selection shapes supported by the local adjustment editor.
+ * The selection shapes supported by the local adjustment editor.
+ *
+ * Four are GEOMETRIC (a soft shape described by a handful of numbers). Three
+ * are CONTENT-AWARE: they store only the generation parameters + an optional
+ * seed point, and the pixel-accurate soft mask is REBUILT from the untouched
+ * original photo at render time by [com.fujikon.app.render.SelectionMaskGenerator].
+ * No FloatArray is ever persisted, so preview and export stay identical and
+ * old presets keep working (unknown "type" falls back to a control point).
+ *
  * All coordinates are normalised to the uncropped frame so preview and export
  * produce the identical mask.
  */
@@ -220,6 +228,60 @@ sealed class LocalMask {
         }
     }
 
+    /**
+     * Select the main subject. Grows a region out of [seedX]/[seedY] using a
+     * foreground/background colour model, edge barriers, skin/centre priors
+     * and a connected-component pass, so the selection follows object edges
+     * instead of being a guessed centre disc. Tap the photo to move the seed.
+     */
+    data class SubjectMask(
+        val seedX: Float = 0.5f,
+        val seedY: Float = 0.52f,
+        /** 0..1: how loose the colour / texture similarity test is. */
+        val tolerance: Float = 0.5f,
+        /** 0..1: softness of the selection boundary. */
+        val feather: Float = 0.35f,
+        val invert: Boolean = false
+    ) : LocalMask()
+
+    /**
+     * Select the sky. Detects a dynamic horizon from row-wise sky likelihood,
+     * then flood-fills from the TOP edge with a colour-distance test and keeps
+     * only the component connected to the top — so blue clothing, water and
+     * reflections are not swept in.
+     */
+    data class SkyMask(
+        /** 0..1: colour tolerance used by the flood fill. */
+        val tolerance: Float = 0.5f,
+        /** 0..1: softness of the horizon / cloud boundary. */
+        val feather: Float = 0.35f,
+        val invert: Boolean = false
+    ) : LocalMask()
+
+    /**
+     * Select a colour range (magic wand). [targetHue]/[targetSat]/[targetLum]
+     * are sampled from the ORIGINAL, unedited photo when the user taps it, so
+     * an already-applied grade cannot drift the picked colour. [contiguous]
+     * restricts the result to the connected region containing the seed.
+     */
+    data class ColorRangeMask(
+        val seedX: Float = 0.5f,
+        val seedY: Float = 0.5f,
+        val targetHue: Float = 210f,
+        val targetSat: Float = 0.5f,
+        val targetLum: Float = 0.5f,
+        /** Hue half-width in degrees (5..90). */
+        val hueRange: Float = 24f,
+        /** 0..1: overall colour-distance tolerance. */
+        val tolerance: Float = 0.5f,
+        /** Grey / near-neutral pixels below this saturation are excluded. */
+        val minSaturation: Float = 0.08f,
+        val contiguous: Boolean = true,
+        /** 0..1: softness of the selection boundary. */
+        val feather: Float = 0.3f,
+        val invert: Boolean = false
+    ) : LocalMask()
+
     fun toJson(): JSONObject = JSONObject().apply {
         when (this@LocalMask) {
             is ControlPoint -> {
@@ -247,6 +309,27 @@ sealed class LocalMask {
                 put("invert", invert)
                 put("offsetX", offsetX.toDouble()); put("offsetY", offsetY.toDouble())
                 put("rotation", rotationDeg.toDouble())
+            }
+            is SubjectMask -> {
+                put("type", "subject")
+                put("seedX", seedX.toDouble()); put("seedY", seedY.toDouble())
+                put("tolerance", tolerance.toDouble()); put("feather", feather.toDouble())
+                put("invert", invert)
+            }
+            is SkyMask -> {
+                put("type", "sky")
+                put("tolerance", tolerance.toDouble()); put("feather", feather.toDouble())
+                put("invert", invert)
+            }
+            is ColorRangeMask -> {
+                put("type", "colorRange")
+                put("seedX", seedX.toDouble()); put("seedY", seedY.toDouble())
+                put("targetHue", targetHue.toDouble()); put("targetSat", targetSat.toDouble())
+                put("targetLum", targetLum.toDouble()); put("hueRange", hueRange.toDouble())
+                put("tolerance", tolerance.toDouble())
+                put("minSaturation", minSaturation.toDouble())
+                put("contiguous", contiguous)
+                put("feather", feather.toDouble()); put("invert", invert)
             }
         }
     }
@@ -288,6 +371,31 @@ sealed class LocalMask {
                         rotationDeg = json.optDouble("rotation", 0.0).toFloat()
                     )
                 }
+                "subject" -> SubjectMask(
+                    seedX = json.optDouble("seedX", 0.5).toFloat(),
+                    seedY = json.optDouble("seedY", 0.52).toFloat(),
+                    tolerance = json.optDouble("tolerance", 0.5).toFloat(),
+                    feather = json.optDouble("feather", 0.35).toFloat(),
+                    invert = json.optBoolean("invert", false)
+                )
+                "sky" -> SkyMask(
+                    tolerance = json.optDouble("tolerance", 0.5).toFloat(),
+                    feather = json.optDouble("feather", 0.35).toFloat(),
+                    invert = json.optBoolean("invert", false)
+                )
+                "colorRange" -> ColorRangeMask(
+                    seedX = json.optDouble("seedX", 0.5).toFloat(),
+                    seedY = json.optDouble("seedY", 0.5).toFloat(),
+                    targetHue = json.optDouble("targetHue", 210.0).toFloat(),
+                    targetSat = json.optDouble("targetSat", 0.5).toFloat(),
+                    targetLum = json.optDouble("targetLum", 0.5).toFloat(),
+                    hueRange = json.optDouble("hueRange", 24.0).toFloat(),
+                    tolerance = json.optDouble("tolerance", 0.5).toFloat(),
+                    minSaturation = json.optDouble("minSaturation", 0.08).toFloat(),
+                    contiguous = json.optBoolean("contiguous", true),
+                    feather = json.optDouble("feather", 0.3).toFloat(),
+                    invert = json.optBoolean("invert", false)
+                )
                 else -> ControlPoint(
                     json.optDouble("x", 0.5).toFloat(),
                     json.optDouble("y", 0.5).toFloat(),
@@ -298,6 +406,12 @@ sealed class LocalMask {
         }
     }
 }
+
+/** True for the three content-aware, pixel-accurate selection tools. */
+val LocalMask.isContentAware: Boolean
+    get() = this is LocalMask.SubjectMask ||
+        this is LocalMask.SkyMask ||
+        this is LocalMask.ColorRangeMask
 
 /** One editable local adjustment layer (mask + its scoped parameters). */
 data class LocalLayer(
@@ -356,6 +470,9 @@ data class LocalAdjustments(
 
     /** Layers that actually affect pixels, in draw order. */
     fun activeLayers(): List<LocalLayer> = layers.filter { it.active() }
+
+    /** Whether any layer needs the original photo to rebuild its selection. */
+    fun hasContentAwareMasks(): Boolean = layers.any { it.mask.isContentAware }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("layers", JSONArray().apply { layers.forEach { put(it.toJson()) } })

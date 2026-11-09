@@ -4,6 +4,7 @@ import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.isContentAware
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlin.math.abs
@@ -45,7 +46,31 @@ object LocalMaskRenderer {
 
     data class PreparedLayer(val grid: MaskGrid, val params: LocalParams, val strength: Float)
 
-    fun buildGrid(mask: LocalMask, frameWidth: Int, frameHeight: Int): MaskGrid {
+    /** Legacy entry point for geometric masks / unit tests (no photo needed). */
+    fun buildGrid(mask: LocalMask, frameWidth: Int, frameHeight: Int): MaskGrid =
+        buildGrid(mask, frameWidth, frameHeight, null, null)
+
+    /**
+     * Rasterises a mask. Content-aware selections are rebuilt from [analysis]
+     * (features of the UNEDITED original photo) at that analysis grid's own
+     * resolution, which is already resolution-independent because [MaskGrid]
+     * samples by normalised coordinates. Geometric masks keep the 384 grid.
+     */
+    fun buildGrid(
+        mask: LocalMask,
+        frameWidth: Int,
+        frameHeight: Int,
+        analysis: SelectionMaskGenerator.Analysis?,
+        job: Job?
+    ): MaskGrid {
+        if (mask.isContentAware) {
+            val gw = analysis?.w ?: 64
+            val gh = analysis?.h ?: 64
+            val built = SelectionMaskGenerator.build(mask, analysis, job, gw, gh)
+            if (built != null && built.size == gw * gh) {
+                return MaskGrid(gw, gh, built)
+            }
+        }
         val long = max(frameWidth, frameHeight).coerceAtLeast(1)
         val scale = min(1f, GRID_SIDE.toFloat() / long)
         val w = (frameWidth * scale).roundToInt().coerceIn(8, GRID_SIDE)
@@ -115,6 +140,18 @@ object LocalMaskRenderer {
                 rasteriseBrush(values, w, h, mask, aspect)
                 if (mask.invert) {
                     for (i in values.indices) values[i] = 1f - values[i]
+                }
+            }
+            // Content-aware masks are returned early above when an analysis is
+            // available. This fallback (a soft disc / top gradient around the
+            // seed) only applies when no photo is supplied, so the grid is
+            // never blank in tests or degraded preview paths.
+            is LocalMask.SubjectMask,
+            is LocalMask.SkyMask,
+            is LocalMask.ColorRangeMask -> {
+                val fallback = SelectionMaskGenerator.build(mask, null, null, w, h)
+                if (fallback != null && fallback.size == values.size) {
+                    System.arraycopy(fallback, 0, values, 0, values.size)
                 }
             }
         }
@@ -202,13 +239,31 @@ object LocalMaskRenderer {
         }
     }
 
-    /** Prepares every active layer once per render. */
-    fun prepare(local: LocalAdjustments, width: Int, height: Int, job: Job?): List<PreparedLayer> {
+    /** Prepares every active layer once per render (geometric-only path). */
+    fun prepare(local: LocalAdjustments, width: Int, height: Int, job: Job?): List<PreparedLayer> =
+        prepare(local, width, height, job, null)
+
+    /**
+     * Full path: [analysis] is computed once from the untouched original
+     * pixels and shared by every content-aware layer, so a preset with several
+     * selections does not re-analyse the photo for each one.
+     */
+    fun prepare(
+        local: LocalAdjustments,
+        width: Int,
+        height: Int,
+        job: Job?,
+        analysis: SelectionMaskGenerator.Analysis?
+    ): List<PreparedLayer> {
         val layers = local.activeLayers()
         if (layers.isEmpty()) return emptyList()
         return layers.map { layer ->
             checkCancelled(job)
-            PreparedLayer(buildGrid(layer.mask, width, height), layer.params, layer.strength / 100f)
+            PreparedLayer(
+                buildGrid(layer.mask, width, height, analysis, job),
+                layer.params,
+                layer.strength / 100f
+            )
         }
     }
 

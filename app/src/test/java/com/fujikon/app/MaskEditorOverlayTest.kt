@@ -88,7 +88,7 @@ class MaskEditorOverlayTest {
         rule.onNodeWithTag("mask_preview_area").assertExists()
         rule.onNodeWithTag("mask_preview_canvas").assertExists()
         rule.onNodeWithTag("mask_toolbar").assertExists()
-        listOf("POINT", "LINEAR", "RADIAL", "BRUSH").forEach {
+        listOf("POINT", "LINEAR", "RADIAL", "BRUSH", "SUBJECT", "SKY", "COLOR_RANGE").forEach {
             rule.onNodeWithTag("mask_kind_$it").assertExists()
         }
         rule.onNodeWithTag("mask_add_layer").assertExists()

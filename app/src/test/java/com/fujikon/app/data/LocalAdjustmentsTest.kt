@@ -31,12 +31,15 @@ class LocalAdjustmentsTest {
     }
 
     @Test
-    fun allFourMaskShapesRoundTrip() {
+    fun allMaskShapesIncludingContentAwareSelectionsRoundTrip() {
         val masks = listOf(
             LocalMask.ControlPoint(0.3f, 0.7f, 0.4f, 0.8f),
             LocalMask.LinearGradient(0.2f, 0.1f, 0.8f, 0.9f, 0.3f, true),
             LocalMask.RadialGradient(0.4f, 0.6f, 0.3f, 0.5f, 0.7f, true),
-            LocalMask.Brush(listOf(BrushStroke(listOf(0.1f, 0.1f, 0.5f, 0.5f), 0.8f)), 0.08f, 0.6f, false)
+            LocalMask.Brush(listOf(BrushStroke(listOf(0.1f, 0.1f, 0.5f, 0.5f), 0.8f)), 0.08f, 0.6f, false),
+            LocalMask.SubjectMask(0.3f, 0.7f, 0.8f, 0.2f, true),
+            LocalMask.SkyMask(0.25f, 0.7f, true),
+            LocalMask.ColorRangeMask(0.2f, 0.6f, 140f, 0.4f, 0.5f, 40f, 0.6f, 0.1f, false, 0.4f, true)
         )
         masks.forEach { original ->
             val json = LocalLayer("id1", mask = original).toJson()

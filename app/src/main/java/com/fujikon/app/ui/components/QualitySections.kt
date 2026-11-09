@@ -31,6 +31,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -39,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -46,20 +48,29 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.BrushStroke
 import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.isContentAware
+import com.fujikon.app.render.SelectionMaskGenerator
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.CardHigh
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -73,6 +84,89 @@ fun saturationFromArgb(argb: Int): Float = hslFromArgb(argb)[1]
 
 /** HSL lightness (0..1) for an ARGB pixel. */
 fun lightnessFromArgb(argb: Int): Float = hslFromArgb(argb)[2]
+
+/**
+ * Samples HSL from the ORIGINAL, unedited photo at a normalised point. Used
+ * by the "选择颜色范围" tool so an already-applied grade cannot drift the
+ * picked colour (same rule as the HSL picker). Returns null when no usable
+ * bitmap is available. Kept `internal` so it can be unit-tested directly.
+ */
+internal fun sampleHslAt(bitmap: Bitmap?, nx: Float, ny: Float): FloatArray? {
+    if (bitmap == null || bitmap.isRecycled || bitmap.width < 1 || bitmap.height < 1) return null
+    val sx = (nx.coerceIn(0f, 1f) * (bitmap.width - 1)).roundToInt().coerceIn(0, bitmap.width - 1)
+    val sy = (ny.coerceIn(0f, 1f) * (bitmap.height - 1)).roundToInt().coerceIn(0, bitmap.height - 1)
+    return hslFromArgb(bitmap.getPixel(sx, sy))
+}
+
+/** Re-seeds a colour-range selection from a tapped point on the source photo. */
+internal fun tapColorRange(
+    mask: LocalMask.ColorRangeMask, bitmap: Bitmap?, nx: Float, ny: Float
+): LocalMask.ColorRangeMask {
+    val hsl = sampleHslAt(bitmap, nx, ny) ?: return mask.copy(seedX = nx, seedY = ny)
+    // The tapped pixel MUST be part of its own selection. If the user taps a
+    // near-grey / low-saturation area, the default "排除灰阶" threshold would
+    // filter it out and the tool would appear dead (nothing gets selected).
+    // Lower the grey-rejection just below the picked saturation on each pick.
+    val minSat = minOf(mask.minSaturation, hsl[1] * 0.5f)
+    return mask.copy(
+        seedX = nx, seedY = ny,
+        targetHue = hsl[0], targetSat = hsl[1], targetLum = hsl[2],
+        minSaturation = minSat.coerceIn(0f, 0.9f)
+    )
+}
+
+/**
+ * Picks the most vivid (highest chroma, mid-lightness) pixel of the original
+ * photo as the initial seed for "选择颜色范围". This keeps the tool useful the
+ * instant it is opened — even when the frame centre is a white dress / grey wall
+ * with no colour — instead of silently selecting nothing. Sampling is coarse
+ * (every 7th pixel) so it stays cheap on the UI thread.
+ */
+internal fun mostVividSeed(bitmap: Bitmap?): Pair<Float, Float> {
+    if (bitmap == null || bitmap.isRecycled || bitmap.width < 1 || bitmap.height < 1) {
+        return 0.5f to 0.5f
+    }
+    val w = bitmap.width
+    val h = bitmap.height
+    var bestHue = 0f
+    var bestSat = 0.08f
+    var bestLum = 0.5f
+    var bestScore = -1f
+    var bx = 0.5f
+    var by = 0.5f
+    val step = max(1, w / 96)
+    for (y in 0 until h step step) {
+        for (x in 0 until w step step) {
+            val hsl = hslFromArgb(bitmap.getPixel(x, y))
+            val sat = hsl[1]
+            val lum = hsl[2]
+            // Prefer colourful, mid-tone pixels; penalise near-black/white/grey.
+            val score = sat * (1f - kotlin.math.abs(lum - 0.5f) * 1.4f)
+            if (score > bestScore) {
+                bestScore = score
+                bestHue = hsl[0]; bestSat = sat; bestLum = lum
+                bx = x / (w - 1).toFloat(); by = y / (h - 1).toFloat()
+            }
+        }
+    }
+    return bx to by
+}
+
+/**
+ * Builds a semi-transparent overlay that shows the recognised selection. Pure
+ * and side-effect free (apart from bitmap allocation) so it can be unit-tested
+ * and safely called from a background dispatcher by the mask editor.
+ */
+internal fun buildSelectionOverlay(mask: LocalMask, bitmap: Bitmap?): ImageBitmap? {
+    if (!mask.isContentAware || !usable(bitmap)) return null
+    val analysis = SelectionMaskGenerator.fromBitmap(bitmap) ?: return null
+    val values = SelectionMaskGenerator.build(mask, analysis, null, analysis.w, analysis.h)
+        ?: return null
+    if (values.size != analysis.w * analysis.h) return null
+    val argb = SelectionMaskGenerator.toOverlay(values, analysis.w, analysis.h)
+    return Bitmap.createBitmap(argb, analysis.w, analysis.h, Bitmap.Config.ARGB_8888)
+        .asImageBitmap()
+}
 
 private fun hslFromArgb(argb: Int): FloatArray {
     val r = ((argb shr 16) and 0xFF) / 255f
@@ -130,7 +224,8 @@ private fun Modifier.qualityCard(): Modifier = this
     .padding(horizontal = 12.dp, vertical = 4.dp)
 
 internal enum class MaskKind(val label: String) {
-    POINT("控制点"), LINEAR("线性"), RADIAL("径向"), BRUSH("画笔")
+    POINT("控制点"), LINEAR("线性"), RADIAL("径向"), BRUSH("画笔"),
+    SUBJECT("选择主体"), SKY("选择天空"), COLOR_RANGE("颜色范围")
 }
 
 internal fun kindOf(mask: LocalMask): MaskKind = when (mask) {
@@ -138,6 +233,9 @@ internal fun kindOf(mask: LocalMask): MaskKind = when (mask) {
     is LocalMask.LinearGradient -> MaskKind.LINEAR
     is LocalMask.RadialGradient -> MaskKind.RADIAL
     is LocalMask.Brush -> MaskKind.BRUSH
+    is LocalMask.SubjectMask -> MaskKind.SUBJECT
+    is LocalMask.SkyMask -> MaskKind.SKY
+    is LocalMask.ColorRangeMask -> MaskKind.COLOR_RANGE
 }
 
 internal fun defaultMask(kind: MaskKind): LocalMask = when (kind) {
@@ -145,6 +243,9 @@ internal fun defaultMask(kind: MaskKind): LocalMask = when (kind) {
     MaskKind.LINEAR -> LocalMask.LinearGradient()
     MaskKind.RADIAL -> LocalMask.RadialGradient()
     MaskKind.BRUSH -> LocalMask.Brush()
+    MaskKind.SUBJECT -> LocalMask.SubjectMask()
+    MaskKind.SKY -> LocalMask.SkyMask()
+    MaskKind.COLOR_RANGE -> LocalMask.ColorRangeMask()
 }
 
 private data class QuickEffect(val label: String, val params: LocalParams)
@@ -286,6 +387,11 @@ internal fun transformMask(
         val span = (linearSpan(base, aspect) * scale).coerceIn(0.05f, 2.5f)
         buildLinear(base, cx, cy, angle, span, aspect)
     }
+    // Content-aware selections are derived from the photo, not a shape: a
+    // pinch/rotate must not warp the recognised region.
+    is LocalMask.SubjectMask,
+    is LocalMask.SkyMask,
+    is LocalMask.ColorRangeMask -> base
 }
 
 /**
@@ -308,6 +414,11 @@ internal fun placeMask(mask: LocalMask, nx: Float, ny: Float): LocalMask = when 
         )
     }
     is LocalMask.Brush -> mask
+    // For a content-aware selection a tap RE-SEEDS the region growing: tap the
+    // subject / the colour you want and the mask re-recognises around it.
+    is LocalMask.SubjectMask -> mask.copy(seedX = nx, seedY = ny)
+    is LocalMask.SkyMask -> mask
+    is LocalMask.ColorRangeMask -> mask.copy(seedX = nx, seedY = ny)
 }
 
 /** Increment a mask's rotation (a single finger dragging its handle). */
@@ -335,6 +446,10 @@ internal fun panMask(mask: LocalMask, dx: Float, dy: Float): LocalMask = when (m
     // Brush uses a screen-space offset applied AFTER rotation, so a drag
     // always follows the finger even when the strokes are rotated.
     is LocalMask.Brush -> mask.copy(offsetX = mask.offsetX + dx, offsetY = mask.offsetY + dy)
+    // A recognised region is not a draggable shape; re-seed it with a tap instead.
+    is LocalMask.SubjectMask,
+    is LocalMask.SkyMask,
+    is LocalMask.ColorRangeMask -> mask
 }
 
 /**
@@ -522,6 +637,21 @@ private fun DrawScope.drawMaskOutline(
                     drawCircle(Amber, 4.dp.toPx(), handle)
                 }
             }
+        }
+        // Content-aware selections: mark the seed / region hint. The actual
+        // recognised area is drawn as a semi-transparent overlay in the Canvas
+        // above, so this ring only shows WHERE the user tapped.
+        is LocalMask.SubjectMask,
+        is LocalMask.ColorRangeMask -> {
+            val sx = if (mask is LocalMask.SubjectMask) mask.seedX else (mask as LocalMask.ColorRangeMask).seedX
+            val sy = if (mask is LocalMask.SubjectMask) mask.seedY else (mask as LocalMask.ColorRangeMask).seedY
+            val c = Offset(px(sx), py(sy))
+            drawCircle(Amber.copy(alpha = 0.9f), 9.dp.toPx(), c, style = Stroke(2.dp.toPx()))
+            drawCircle(Amber, 3.dp.toPx(), c)
+        }
+        is LocalMask.SkyMask -> {
+            // Sky grows down from the top edge; a hairline marks that edge.
+            drawLine(Amber.copy(alpha = 0.8f), Offset(l, t + 2.dp.toPx()), Offset(l + w, t + 2.dp.toPx()), 2.dp.toPx())
         }
     }
     for (i in 1 until liveBrush.size) {
@@ -724,6 +854,86 @@ fun LocalAdjustmentSection(
                         enabled = enabled
                     )
                 }
+                is LocalMask.SubjectMask -> {
+                    Text(
+                        "本机智能识别（非 AI 模型）：以种子点为中心，按颜色/边缘/肤色自动圈出主体。点照片可重新定位主体。",
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            .testTag("mask_subject_hint")
+                    )
+                    AdjustmentSlider(
+                        label = "识别范围", value = m.tolerance, valueRange = 0f..1f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(tolerance = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(tolerance = 0.5f)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "边缘羽化", value = m.feather, valueRange = 0f..1f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(feather = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(feather = 0.35f)) }); commit() },
+                        enabled = enabled
+                    )
+                }
+                is LocalMask.SkyMask -> {
+                    Text(
+                        "本机智能识别（非 AI 模型）：自动检测地平线，从顶边扩散识别天空，排除水面/蓝色衣物。建议配「压暗亮部」快速效果。",
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            .testTag("mask_sky_hint")
+                    )
+                    AdjustmentSlider(
+                        label = "识别范围", value = m.tolerance, valueRange = 0f..1f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(tolerance = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(tolerance = 0.5f)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "边缘羽化", value = m.feather, valueRange = 0f..1f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(feather = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(feather = 0.35f)) }); commit() },
+                        enabled = enabled
+                    )
+                }
+                is LocalMask.ColorRangeMask -> {
+                    Text(
+                        "本机颜色识别（非 AI 模型）：点照片取色，自动选中相近颜色的连通区域。可调色相范围/容差精细控制。",
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            .testTag("mask_color_hint")
+                    )
+                    AdjustmentSlider(
+                        label = "色相范围", value = m.hueRange, valueRange = 5f..90f, step = 1f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(hueRange = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(hueRange = 24f)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "颜色容差", value = m.tolerance, valueRange = 0f..1f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(tolerance = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(tolerance = 0.5f)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "排除灰阶", value = m.minSaturation, valueRange = 0f..0.6f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(minSaturation = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(minSaturation = 0.08f)) }); commit() },
+                        enabled = enabled
+                    )
+                    AdjustmentSlider(
+                        label = "边缘羽化", value = m.feather, valueRange = 0f..1f, step = 0.01f,
+                        onValueChange = { v -> update({ it.copy(mask = m.copy(feather = v)) }) },
+                        onValueChangeFinished = { commit() },
+                        onReset = { update({ it.copy(mask = m.copy(feather = 0.3f)) }); commit() },
+                        enabled = enabled
+                    )
+                }
             }
             Row(Modifier.fillMaxWidth()) {
                 TextButton(onClick = {
@@ -731,11 +941,22 @@ fun LocalAdjustmentSection(
                         is LocalMask.LinearGradient -> m.copy(invert = !m.invert)
                         is LocalMask.RadialGradient -> m.copy(invert = !m.invert)
                         is LocalMask.Brush -> m.copy(invert = !m.invert)
+                        is LocalMask.SubjectMask -> m.copy(invert = !m.invert)
+                        is LocalMask.SkyMask -> m.copy(invert = !m.invert)
+                        is LocalMask.ColorRangeMask -> m.copy(invert = !m.invert)
                         is LocalMask.ControlPoint -> m
                     }
                     update({ it.copy(mask = inverted) })
                     commit()
                 }, enabled = enabled) { Text("反转选区", color = TextSecondary) }
+                if (mask is LocalMask.ColorRangeMask) {
+                    TextButton(onClick = {
+                        update({ it.copy(mask = mask.copy(contiguous = !mask.contiguous)) })
+                        commit()
+                    }, enabled = enabled, modifier = Modifier.testTag("mask_contiguous_toggle")) {
+                        Text(if (mask.contiguous) "仅连通区域" else "全图同色", color = TextSecondary)
+                    }
+                }
                 if (mask is LocalMask.Brush && mask.strokes.isNotEmpty()) {
                     TextButton(onClick = {
                         update({ it.copy(mask = LocalMask.Brush(radius = mask.radius, feather = mask.feather)) })
@@ -863,12 +1084,15 @@ fun LocalMaskOverlay(
     onFinished: (String) -> Unit,
     enabled: Boolean,
     displayBitmap: Bitmap?,
+    /** Unedited original: colour picks and region recognition read from it. */
+    sourceBitmap: Bitmap? = null,
     modifier: Modifier = Modifier
 ) {
     val layers = local.layers
     val index = selectedLayer.coerceIn(0, (layers.size - 1).coerceAtLeast(0))
     val layer = layers.getOrNull(index)
     var liveBrush by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    val sourceState = rememberUpdatedState(sourceBitmap ?: displayBitmap)
 
     val layersState = rememberUpdatedState(layers)
     val indexState = rememberUpdatedState(index)
@@ -889,6 +1113,20 @@ fun LocalMaskOverlay(
     }
 
     fun commit(field: String = "蒙版") = onFinishedState.value(field)
+
+    // Semi-transparent visualisation of a content-aware selection, computed
+    // off the main thread so recognising a region never janks a gesture. The
+    // keys are the mask (any parameter change re-recognises) and the bitmaps.
+    val currentMask = layer?.mask
+    val selectionOverlay by produceState<ImageBitmap?>(
+        initialValue = null, currentMask, sourceBitmap, displayBitmap
+    ) {
+        val mask = currentMask
+        val src = sourceBitmap ?: displayBitmap
+        value = if (mask != null && mask.isContentAware) {
+            withContext(Dispatchers.Default) { buildSelectionOverlay(mask, src) }
+        } else null
+    }
 
     Column(modifier.background(Color.Black)) {
         // Photo + interaction canvas occupy all the space ABOVE the toolbar.
@@ -1056,7 +1294,16 @@ fun LocalMaskOverlay(
                             !moved && !multiPointer && !rotateMode -> {
                                 val p = rect.normalized(down.position.x, down.position.y)
                                 if (p != null) {
-                                    update({ l -> l.copy(mask = placeMask(l.mask, p.first, p.second)) })
+                                    val sampler = sourceState.value
+                                    update({ l ->
+                                        val m = l.mask
+                                        val next = if (m is LocalMask.ColorRangeMask) {
+                                            // Tap = pick the colour under the finger
+                                            // from the ORIGINAL photo, then re-select.
+                                            tapColorRange(m, sampler, p.first, p.second)
+                                        } else placeMask(m, p.first, p.second)
+                                        l.copy(mask = next)
+                                    })
                                     commit()
                                 }
                             }
@@ -1067,6 +1314,19 @@ fun LocalMaskOverlay(
         ) {
             val rect = rectFor(size.width, size.height, displayBitmap)
             val aspect = if (rect.height > 0f) rect.width / rect.height else 1f
+            // Draw the recognised area as a translucent amber wash BEFORE the
+            // outline, so the user can see exactly what "选择主体/天空/颜色"
+            // selected and re-tap to correct it.
+            selectionOverlay?.let { overlay ->
+                drawImage(
+                    image = overlay,
+                    dstOffset = IntOffset(rect.left.roundToInt(), rect.top.roundToInt()),
+                    dstSize = IntSize(
+                        rect.width.roundToInt().coerceAtLeast(1),
+                        rect.height.roundToInt().coerceAtLeast(1)
+                    )
+                )
+            }
             layer?.let { drawMaskOutline(it.mask, rect, liveBrush, aspect) }
         }
         }
@@ -1080,7 +1340,7 @@ fun LocalMaskOverlay(
                 .testTag("mask_toolbar")
         ) {
             Text(
-                "点按定位 · 拖动移动/涂抹 · 按住白色旋转点单指旋转 · 双指缩放/旋转/平移 · 线性作用范围在两条端点线之间（橙色为受影响区域）",
+                "点按定位 · 拖动移动/涂抹 · 双指缩放旋转 · 「选择主体/天空」自动识别后点图可重定位 · 「颜色范围」点图取色、橙色为选中区域（本机识别，非 AI 模型）",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White
             )
@@ -1093,7 +1353,20 @@ fun LocalMaskOverlay(
                 MaskKind.entries.forEach { kind ->
                     TextButton(
                         onClick = {
-                            update({ l -> l.copy(mask = defaultMask(kind)) })
+                            // Switching to 颜色范围 auto-picks the most vivid
+                            // colour from the original photo (not the dead-centre
+                            // pixel, which is often a white dress / grey wall), so
+                            // the tool works out of the box. Tapping the photo
+                            // re-picks the colour under the finger.
+                            val sampler = sourceBitmap ?: displayBitmap
+                            update({ l ->
+                                val base = defaultMask(kind)
+                                val seeded = if (base is LocalMask.ColorRangeMask) {
+                                    val (sx, sy) = mostVividSeed(sampler)
+                                    tapColorRange(base, sampler, sx, sy)
+                                } else base
+                                l.copy(mask = seeded)
+                            })
                             commit()
                         },
                         enabled = enabled && layer != null,
