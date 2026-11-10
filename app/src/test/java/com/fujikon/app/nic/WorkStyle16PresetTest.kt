@@ -24,7 +24,7 @@ class WorkStyle16PresetTest {
     fun identityIsStableAndIndependent() {
         assertEquals("workstyle16_tonal", WorkStyle16Preset.ID)
         assertEquals("local:workstyle16_tonal_v1", WorkStyle16Preset.CONTENT_HASH)
-        assertTrue(preset.name.contains("16 张作品"))
+        assertTrue(preset.name.contains("通透胶片"))
         assertTrue(preset.description?.contains("统计风格拟合") == true)
 
         val listed = builtInWorkStylePresets()

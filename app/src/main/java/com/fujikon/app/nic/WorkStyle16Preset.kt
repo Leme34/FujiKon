@@ -40,7 +40,7 @@ import com.fujikon.app.ncp.PictureControlFormat
  */
 object WorkStyle16Preset {
     const val ID = "workstyle16_tonal"
-    const val NAME = "16 张作品 · 通透胶片"
+    const val NAME = "通透胶片"
     const val CONTENT_HASH = "local:workstyle16_tonal_v1"
     const val SOURCE_NAME = "16 张作品影调拟合"
 
