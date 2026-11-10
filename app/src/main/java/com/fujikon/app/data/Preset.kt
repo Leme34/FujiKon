@@ -52,7 +52,15 @@ data class Preset(
     val favorite: Boolean,
     val importedAt: Long,
     val isSample: Boolean,
-    val contentHash: String = ""
+    val contentHash: String = "",
+    /**
+     * 保色影调 LUT（256 点，0..255 的 luma 域）。渲染时按像素亮度查表，
+     * 三通道按同一 scale + lift 缩放，且高光触顶时等比回缩，RGB 比例严格
+     * 不变 —— 只改变亮度与层次，不改变色相/饱和度。逐通道 curve 会拉伸
+     * 彩色像素的 RGB 比例而引入色偏，这里从根上规避。仅内置影调预置使用，
+     * 其余预置为 null，行为完全不变。
+     */
+    val lumaToneLut: IntArray? = null
 ) {
     val hasCurve: Boolean get() = curve != null && curve.size >= 256
 
@@ -144,6 +152,10 @@ data class Preset(
         put("importedAt", importedAt)
         put("isSample", isSample)
         put("contentHash", contentHash)
+        // 保色影调 LUT：旧版本忽略该键，仍能正常读取其余字段。
+        if (lumaToneLut != null && lumaToneLut.size >= 256) {
+            put("lumaToneLut", JSONArray().apply { lumaToneLut.forEach { put(it) } })
+        }
     }
 
     companion object {
@@ -270,7 +282,11 @@ data class Preset(
             favorite = json.optBoolean("favorite", false),
             importedAt = json.optLong("importedAt", 0L),
             isSample = json.optBoolean("isSample", false),
-            contentHash = json.optString("contentHash", "")
+            contentHash = json.optString("contentHash", ""),
+            lumaToneLut = json.optJSONArray("lumaToneLut")?.let { array ->
+                if (array.length() >= 256) IntArray(256) { array.optInt(it).coerceIn(0, 255) }
+                else null
+            }
         )
 
         private fun encodeCurve(curve: IntArray): String {

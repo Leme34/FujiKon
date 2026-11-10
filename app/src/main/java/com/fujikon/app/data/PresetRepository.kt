@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.fujikon.app.ncp.PictureControlParser
+import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.nic.builtInCloudPresets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +78,10 @@ class PresetRepository(private val context: Context) {
                         // An existing install keeps its own index, so a sample
                         // removed from assets would otherwise survive upgrades.
                         list = dropRetiredSamplesLocked(list)
+                        // Built-in presets ship in code, not assets: an app update
+                        // that changes their render recipe would otherwise never
+                        // reach users who launched a previous version once.
+                        list = upgradeBuiltInSamplesLocked(list)
                     }
                     publish(list)
                     loaded = true
@@ -110,6 +115,48 @@ class PresetRepository(private val context: Context) {
         val kept = list.filterNot { it.id in retiredIds }
         writeIndex(kept)
         return kept
+    }
+
+    /**
+     * Replaces a seeded built-in preset whose recipe changed between app
+     * versions (e.g. 「通透胶片」v1 逐通道 curve -> v2 保色亮度耦合 LUT).
+     * Only app-seeded, file-less entries are touched, so an imported preset
+     * with the same name is never replaced. User state (id / favourite /
+     * note / importedAt) is preserved. Idempotent: once the old hash is gone
+     * nothing matches and the index is left untouched.
+     */
+    private fun upgradeBuiltInSamplesLocked(list: List<Preset>): List<Preset> {
+        // old content hash -> the new template that replaces it
+        val upgrades = mapOf(
+            "local:workstyle16_tonal_v1" to WorkStyle16Preset.CONTENT_HASH
+        )
+        if (list.none { it.isSample && it.fileName.isBlank() && it.contentHash in upgrades }) {
+            return list
+        }
+        val templates = builtInCloudPresets().associateBy { it.contentHash }
+        // If the new template is somehow already present, just drop the stale one.
+        val present = list.map { it.contentHash }.toMutableSet()
+        val result = list.mapNotNull { stored ->
+            if (!stored.isSample || stored.fileName.isNotBlank()) return@mapNotNull stored
+            val newHash = upgrades[stored.contentHash] ?: return@mapNotNull stored
+            val template = templates[newHash] ?: return@mapNotNull stored
+            if (newHash in present) null else {
+                present.add(newHash)
+                template.copy(
+                    id = stored.id,
+                    favorite = stored.favorite,
+                    note = stored.note,
+                    importedAt = stored.importedAt,
+                    isSample = true,
+                    fileName = "",
+                    fileSize = 0
+                )
+            }
+        }
+        if (result.size != list.size || result.zip(list).any { (a, b) -> a !== b }) {
+            writeIndex(result)
+        }
+        return result
     }
 
     fun find(id: String?): Preset? = _presets.value.firstOrNull { it.id == id }

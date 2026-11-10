@@ -438,7 +438,17 @@ class ImageRenderer {
                 abs(adjustments.blacks) > 0.001f ||
                 abs(adjustments.dehaze) > 0.001f ||
                 (adjustments.toneCurve != null && !adjustments.toneCurve.isLinear())
-        val adjustToneLut = if (hasToneAdjustment) buildAdjustmentToneLut(adjustments) else null
+        // 保色影调预置自带 LUT：与用户调节串联（先预置、后用户），共用同一条
+        // 亮度耦合路径。逐通道 curve 会拉伸彩色像素的 RGB 比例而引入色偏；
+        // 这条路径按 luma 查表、三通道同 scale + lift，色相/饱和度严格不变。
+        val userToneLut = if (hasToneAdjustment) buildAdjustmentToneLut(adjustments) else null
+        val presetToneLut = preset.lumaToneLut?.takeIf { it.size >= 256 }
+        val adjustToneLut = when {
+            presetToneLut != null && userToneLut != null ->
+                IntArray(256) { i -> userToneLut[presetToneLut[i].coerceIn(0, 255)] }
+            presetToneLut != null -> presetToneLut
+            else -> userToneLut
+        }
         val vibrance = adjustments.vibrance / EditAdjustments.TONE_RANGE +
             adjustments.dehaze / EditAdjustments.TONE_RANGE * 0.18f
         val texture = adjustments.texture / EditAdjustments.TONE_RANGE
@@ -810,18 +820,25 @@ class ImageRenderer {
                     b = (b * whiteBalance[2]).roundToInt()
                 }
 
-                // Apply the extra exposure / contrast / zone adjustments through
-                // luminance so hue and saturation stay close to the preset look.
+                // Apply the preset / user tone LUT through luminance so hue and
+                // saturation stay EXACTLY unchanged. Three channels share the same
+                // scale + lift; when the brightest channel would clip, rescale all
+                // three by the same factor instead of clipping per channel — a
+                // per-channel clamp is what stretched RGB ratios and caused the
+                // notorious colour cast in 1.6.33.
                 if (adjustToneLut != null) {
                     val luma = r * 0.299f + g * 0.587f + b * 0.114f
                     val toneIndex = luma.roundToInt().coerceIn(0, 255)
                     val mapped = adjustToneLut[toneIndex].toFloat()
                     if (abs(mapped - luma) > 0.01f) {
-                        val scale = if (luma > 8f) mapped / luma else 1f
+                        var scale = if (luma > 8f) mapped / luma else 1f
                         val lift = mapped - luma * scale
-                        r = (r * scale + lift).roundToInt()
-                        g = (g * scale + lift).roundToInt()
-                        b = (b * scale + lift).roundToInt()
+                        val maxc = max(r, max(g, b)).toFloat()
+                        val top = maxc * scale + lift
+                        if (top > 255f) scale = (255f - lift) / maxc.coerceAtLeast(1f)
+                        r = (r * scale + lift).roundToInt().coerceIn(0, 255)
+                        g = (g * scale + lift).roundToInt().coerceIn(0, 255)
+                        b = (b * scale + lift).roundToInt().coerceIn(0, 255)
                     }
                 }
 
