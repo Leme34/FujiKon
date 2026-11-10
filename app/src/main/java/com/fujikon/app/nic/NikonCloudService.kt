@@ -194,7 +194,7 @@ val PENG_MANGO_VITALITY_FILM_DETAIL: NikonCloudDetail = NikonCloudDetail(
 /** 首次启动或恢复内置示例时写入预置列表的云创条目。 */
 fun builtInCloudPresets(): List<Preset> = listOf(
     PENG_MANGO_VITALITY_FILM.toPreset(PENG_MANGO_VITALITY_FILM_DETAIL)
-) + builtInCommunityPresets()
+) + builtInCommunityPresets() + builtInWorkStylePresets()
 
 /**
  * 云创锐化整体缩放（对所有云创 recipe 生效，不是 4 条专属）。

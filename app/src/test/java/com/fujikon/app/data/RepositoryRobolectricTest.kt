@@ -47,7 +47,7 @@ class RepositoryRobolectricTest {
         repository.load()
 
         assertTrue(repository.ready.value)
-        assertEquals(6, repository.presets.value.size)
+        assertEquals(7, repository.presets.value.size)
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400" })
         assertFalse(repository.presets.value.any { it.name == "NC 400 MATCH" })
@@ -88,7 +88,7 @@ class RepositoryRobolectricTest {
         assertTrue("重命名过的内置条目也应被清理", reopened.presets.value.none { it.id == "legacy-renamed-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-same-bytes" })
-        assertEquals(8, reopened.presets.value.size)
+        assertEquals(9, reopened.presets.value.size)
     }
 
     @Test
@@ -156,9 +156,13 @@ class RepositoryRobolectricTest {
         val first = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
         val second = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
         assertEquals(first, second)
-        assertEquals(2, first.size)
+        assertEquals(3, first.size)
         assertEquals(
-            listOf("nic:01JSBM30XWQ6GG4XK0KSZ3FQEK", "local:pmango_style_approx"),
+            listOf(
+                "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK",
+                "local:pmango_style_approx",
+                "local:workstyle16_tonal_v1"
+            ),
             first
         )
     }
@@ -172,7 +176,7 @@ class RepositoryRobolectricTest {
         reopened.load()
 
         assertEquals(firstIds, reopened.presets.value.map { it.id }.sorted())
-        assertEquals(6, reopened.presets.value.size)
+        assertEquals(7, reopened.presets.value.size)
     }
 
     @Test
@@ -212,7 +216,7 @@ class RepositoryRobolectricTest {
         val imported = (first as PresetRepository.BinaryImportResult.Imported).preset
         assertEquals("Remote Test", imported.name)
         assertEquals("B&W/PICCON16.NCP", imported.sourceName)
-        assertEquals(7, repository.presets.value.size)
+        assertEquals(8, repository.presets.value.size)
         assertTrue(repository.fileFor(imported).exists())
 
         assertTrue(results["second"] is PresetRepository.BinaryImportResult.Duplicate)
