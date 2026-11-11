@@ -183,6 +183,13 @@ object OptimizationStandard {
     const val MIN_WHITES = -26f
     const val MIN_HIGHLIGHTS = -28f
     const val MAX_ITERATIONS = 6
+    // ---- 一键优化的「亮度锚定」上界（相对原片，防正常曝光照片被推过曝） ----
+    /** 成片整体亮度最多比原片高这么多；正常曝光照片必须基本保持原亮度。 */
+    const val MAX_MEAN_RISE = 0.045f
+    /** 成片中间调最多比原片高这么多，防止中间调整体发白。 */
+    const val MAX_P50_RISE = 0.070f
+    /** 原片死黑越多，允许的亮度上升越大 —— 修死黑本身就会提亮画面。 */
+    const val MAX_REPAIR_RISE = 0.13f
 }
 
 /** What the closed loop actually did and measured on the final render. */
@@ -1176,22 +1183,68 @@ object AutoEnhance {
     }
 
     /**
+     * 「通透胶片」基底 LUT 的近似反函数（256 点，值域 0..1）。
+     *
+     * v2 的 LUT 是**提亮型**的：中间调 128 → 171（+0.17），暗部也显著抬亮。
+     * 一键优化强制切到这个基底，若不补偿，正常曝光的照片会被整体推亮过曝。
+     * 这里按「找到最小的 x 使 LUT[x] >= y」反演，得到一条把基底提亮抵消回
+     * 原片亮度的曲线。它作用在 luma 域（渲染器按 luma 查表、三通道同
+     * scale+lift），因此天然保色，绝不触碰色相/饱和度。
+     */
+    private val WORKSTYLE_INVERSE: FloatArray by lazy {
+        val lut = WorkStyle16Preset.toPreset().lumaToneLut
+        if (lut == null || lut.size < 256) {
+            FloatArray(256) { it / 255f }
+        } else {
+            FloatArray(256) { y ->
+                var x = 0
+                while (x < 255 && lut[x] < y) x++
+                x / 255f
+            }
+        }
+    }
+
+    /**
+     * 原片越「已经正常曝光」，锚定越强：一键优化只贡献清透质感与分区影调，
+     * 不额外整体提亮。欠曝或死黑成片的锚定自动放松，让提亮修复仍可生效。
+     */
+    private fun workStyleAnchor(stats: ImageStats): Float =
+        (ramp(stats.meanLuma, 0.33f, 0.47f) *
+            (1f - ramp(stats.shadowClip, 0.025f, 0.12f))).coerceIn(0f, 1f)
+
+    /** 允许的亮度上升：正常曝光严格，死黑/缺陷片留出修复空间。 */
+    private fun meanRiseAllowance(ref: ImageStats): Float =
+        OptimizationStandard.MAX_MEAN_RISE +
+            ramp(ref.shadowClip, 0.03f, 0.24f) * OptimizationStandard.MAX_REPAIR_RISE
+
+    private fun p50RiseAllowance(ref: ImageStats): Float =
+        OptimizationStandard.MAX_P50_RISE +
+            ramp(ref.shadowClip, 0.03f, 0.24f) * OptimizationStandard.MAX_REPAIR_RISE
+
+    /**
      * Luma-domain master curve (the renderer applies it with the same
      * scale + lift to all three channels, so hue/saturation stay EXACT).
      *
-     * Unlike a generic S-curve, the toe is ZERO both at x=0 and x=0.5:
-     * pure black stays black (不死黑 / 不发灰), mid-tones stay put, and only
-     * the quarter-tone shadows are lifted. The shoulder compresses the top
-     * end smoothly (不过曝) without collapsing it into a dead-white plateau.
+     * The curve's input axis is the brightness AFTER the 通透胶片 LUT (the
+     * renderer chains them as userToneLut[presetLut[i]]). [anchor] therefore
+     * blends it toward the LUT inverse, cancelling the base look's built-in
+     * brightening; 0 keeps the old behaviour, 1 restores the original exposure.
+     * On top of that, the toe is ZERO both at x=0 and x=0.5: pure black stays
+     * black (不死黑 / 不发灰), mid-tones stay put, and only the quarter-tone
+     * shadows are lifted. The shoulder compresses the top end smoothly (不过曝).
      */
-    private fun workStyleCurve(toe: Float, roll: Float, s: Float): ToneCurve {
-        if (toe < 0.002f && roll < 0.002f && s < 0.002f) return ToneCurve()
+    private fun workStyleCurve(toe: Float, roll: Float, s: Float, anchor: Float): ToneCurve {
+        if (anchor < 0.002f && toe < 0.002f && roll < 0.002f && s < 0.002f) return ToneCurve()
+        val inverse = WORKSTYLE_INVERSE
         val points = ArrayList<ToneCurvePoint>(25)
         var prevY = 0f
         val n = 24
         for (i in 0..n) {
             val x = i / n.toFloat()
-            var y = x
+            // Convex combination of identity and the monotone LUT inverse:
+            // both are monotone, so the result is monotone too.
+            var y = x + anchor *
+                (inverse[(x * 255f).roundToInt().coerceIn(0, 255)] - x)
             if (toe > 0f && x < 0.5f) {
                 val t = 1f - x / 0.5f
                 y += toe * 4f * t * t * (1f - t)
@@ -1226,6 +1279,11 @@ object AutoEnhance {
         val rgb = rgbTone(stats)
         val base = WorkStyle16Preset.toPreset().adjustments
 
+        // 亮度锚定：已经正常曝光的照片不再叠加任何整体提亮。通透胶片基底
+        // 自带的提亮 LUT 由主曲线反演抵消，只保留它的清透质感/人像层。
+        val anchor = workStyleAnchor(stats)
+        val lift = 1f - anchor * 0.88f
+
         val shadowDeficit =
             ramp(0.16f - rgb.p5, 0f, 0.16f) * 0.50f +
                 ramp(rgb.darkFraction, 0.05f, 0.30f) * 0.30f +
@@ -1236,16 +1294,17 @@ object AutoEnhance {
                 ramp(stats.blownWhiteClip, 0.002f, 0.04f) * 0.35f
         val flatness = ramp(0.54f - rgb.spread, 0f, 0.30f)
 
-        val toe = (shadowDeficit * 0.055f).coerceIn(0f, 0.055f)
+        val toe = (shadowDeficit * 0.055f * lift).coerceIn(0f, 0.055f)
+        // 压高光/白点永远保留：它是「不过曝」的正向修正，不受锚定抑制。
         val roll = (highlightExcess * 0.060f).coerceIn(0f, 0.060f)
-        val s = (flatness * 0.075f).coerceIn(0f, 0.075f)
-        val curve = workStyleCurve(toe, roll, s)
+        val s = (flatness * 0.075f * lift).coerceIn(0f, 0.075f)
+        val curve = workStyleCurve(toe, roll, s, anchor)
 
         val next = base.copy(
             exposure = 0f,
-            contrast = (flatness * 12f).coerceIn(0f, 12f),
+            contrast = (flatness * 12f * (1f - anchor * 0.6f)).coerceIn(0f, 12f),
             highlights = -(highlightExcess * 15f).coerceIn(0f, 15f),
-            shadows = (shadowDeficit * 15f).coerceIn(0f, 15f),
+            shadows = (shadowDeficit * 15f * lift).coerceIn(0f, 15f),
             whites = -(highlightExcess * 9f).coerceIn(0f, 9f),
             blacks = 0f,
             texture = base.texture + 3f + flatness * 6f,
@@ -1320,7 +1379,7 @@ object AutoEnhance {
                 forExport = false
             )
             val measured = analyse(rendered) ?: break
-            val d = defect(measured, stats)
+            val d = workStyleDefect(measured, stats)
             trail.add(d)
             if (meetsWorkStyleStandard(measured, stats)) {
                 best = candidate
@@ -1336,10 +1395,10 @@ object AutoEnhance {
             }
             if (i >= 2 && d > previousDefect + 0.10f) break
             if (i == OptimizationStandard.MAX_ITERATIONS - 1) break
-            candidate = refineWorkStyle(candidate, measured, i)
+            candidate = refineWorkStyle(candidate, measured, stats, i)
         }
 
-        val report = reportOf(iterations, converged, bestMeasured, stats, trail)
+        val report = reportOf(iterations, converged, bestMeasured, stats, trail, ::workStyleDefect)
         val loopTag = if (converged) "闭环${iterations}轮达标" else "闭环${iterations}轮取最优"
         return AutoEnhanceResult(
             adjustments = best,
@@ -1350,22 +1409,54 @@ object AutoEnhance {
         )
     }
 
-    /** Adds an explicit anti-grey floor on top of the shared hard standard. */
+    /** Adds an explicit anti-grey floor AND a relative over-exposure ceiling on
+     *  top of the shared hard standard. The old ceiling only rejected colourless
+     *  dead whites / an absolute 0.70 mean, so a well-exposed frame could be
+     *  brightened wholesale and still "pass". Here the render may never be
+     *  measurably brighter than the ORIGINAL (with extra room for dark frames
+     *  that genuinely need lifting). */
     private fun meetsWorkStyleStandard(m: ImageStats, ref: ImageStats): Boolean =
         meetsStandard(m, ref) &&
             m.stdLuma >= ref.stdLuma * 0.78f &&
-            m.p5 <= ref.p5 + 0.22f
+            m.p5 <= ref.p5 + 0.22f &&
+            m.meanLuma <= ref.meanLuma + meanRiseAllowance(ref) &&
+            m.p50 <= ref.p50 + p50RiseAllowance(ref)
 
-    /** Tone-only correction; never lets the loop brighten the whole frame. */
+    /** Scalar score for the work-style loop: shared endpoint defects plus a
+     *  heavy penalty for brightening the frame beyond the original. */
+    private fun workStyleDefect(m: ImageStats, ref: ImageStats): Float {
+        val overBright =
+            max(0f, m.meanLuma - (ref.meanLuma + meanRiseAllowance(ref))) / 0.05f
+        val overMid =
+            max(0f, m.p50 - (ref.p50 + p50RiseAllowance(ref))) / 0.08f
+        return defect(m, ref) + overBright * 3.5f + overMid * 1.5f
+    }
+
+    /** Tone-only correction; never lets the loop brighten the whole frame, and
+     *  actively pulls it back down when the render came out over-exposed. */
     private fun refineWorkStyle(
         candidate: EditAdjustments,
         m: ImageStats,
+        ref: ImageStats,
         round: Int
     ): EditAdjustments {
         val refined = refine(candidate, m, round)
-        return refined.copy(
-            exposure = min(refined.exposure, candidate.exposure).coerceAtMost(0f),
-            blacks = refined.blacks.coerceAtLeast(0f)
+        val over = m.meanLuma - (ref.meanLuma + meanRiseAllowance(ref))
+        val pulled = if (over > 0.008f) {
+            // Overall brightening = over-exposure. A small negative exposure
+            // (linear-light domain) restores the original level, and the
+            // lift-type sliders are reined in so the next round cannot relift.
+            val ev = -(over * 1.8f).coerceIn(0f, 0.5f)
+            refined.copy(
+                exposure = (refined.exposure + ev).coerceIn(-1.2f, 0f),
+                shadows = (refined.shadows - over * 40f).coerceAtLeast(0f),
+                whites = (refined.whites - over * 15f)
+                    .coerceIn(OptimizationStandard.MIN_WHITES, 0f)
+            )
+        } else refined
+        return pulled.copy(
+            exposure = min(pulled.exposure, candidate.exposure).coerceAtMost(0f),
+            blacks = pulled.blacks.coerceAtLeast(0f)
         ).normalized()
     }
 
@@ -1474,7 +1565,8 @@ object AutoEnhance {
         converged: Boolean,
         m: ImageStats?,
         ref: ImageStats,
-        trail: List<Float> = emptyList()
+        trail: List<Float> = emptyList(),
+        score: (ImageStats, ImageStats) -> Float = { a, b -> defect(a, b) }
     ): OptimizationReport = OptimizationReport(
         iterations = iterations,
         converged = converged,
@@ -1483,7 +1575,7 @@ object AutoEnhance {
         blownWhiteClip = m?.blownWhiteClip ?: 0f,
         meanLuma = m?.meanLuma ?: 0f,
         spread = m?.spread ?: 0f,
-        defect = m?.let { defect(it, ref) } ?: 0f,
+        defect = m?.let { score(it, ref) } ?: 0f,
         trail = trail
     )
 

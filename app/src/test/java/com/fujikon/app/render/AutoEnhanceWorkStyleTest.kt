@@ -62,6 +62,21 @@ class AutoEnhanceWorkStyleTest {
         return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
     }
 
+    /** 正常曝光：中间调为主、有完整明暗层次，无死黑、无无色死白、带轻微色彩。 */
+    private fun wellExposed(): Bitmap {
+        val w = 96
+        val h = 72
+        val px = IntArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            val v = (58 + x * 1.55f + y * 0.35f).toInt().coerceIn(0, 255)
+            val r = (v + 10).coerceAtMost(255)
+            val b = (v - 10).coerceAtLeast(0)
+            (0xFF shl 24) or (r shl 16) or (v shl 8) or b
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+    }
+
     @Test
     fun workStylePresetIsDiscoverableByContentHash() {
         // 一键优化按 contentHash 找「通透胶片」的真实 id（内置预置入库时
@@ -188,5 +203,81 @@ class AutoEnhanceWorkStyleTest {
         assertEquals(current.crop, result.adjustments.crop)
         // 闭环渲染时清 crop 只影响探针，返回的仍应是用户的构图。
         assertTrue(result.summary.isNotBlank())
+    }
+
+    // ---- 正常曝光照片不得被一键优化推过曝（用户反馈回归） -------------------
+
+    @Test
+    fun baseLookAloneBrightensAWellExposedPhoto() = runBlocking {
+        // 修复前提：通透胶片 v2 的 LUT 是提亮型的，单独套用就会明显抬高中间调。
+        val src = wellExposed()
+        val before = AutoEnhance.analyse(src)!!
+        val graded = ImageRenderer().render(src, WorkStyle16Preset.toPreset(), forExport = false)
+        val after = AutoEnhance.analyse(graded)!!
+        assertTrue(
+            "通透胶片基底本身确实会提亮中间调: ${after.p50} vs ${before.p50}",
+            after.p50 > before.p50 + 0.05f
+        )
+    }
+
+    @Test
+    fun anchorCurveCancelsTheBaseLutBrightening() {
+        val stats = AutoEnhance.analyse(wellExposed())!!
+        val a = AutoEnhance.suggestWorkStyle(stats).adjustments
+        val curve = a.toneCurve ?: throw AssertionError("正常曝光照片应产出亮度锚定曲线")
+        val pts = curve.normalizedPoints
+        assertEquals("纯黑仍是黑", 0f, pts.first().y, 0.0001f)
+        assertTrue("白点不塌成死白平台", pts.last().y > 0.85f)
+        assertTrue("曲线必须单调", (1 until pts.size).all { pts[it].y >= pts[it - 1].y - 1e-6f })
+        val mid = pts.firstOrNull { it.x >= 0.6f }
+            ?: throw AssertionError("曲线应覆盖中间调")
+        assertTrue(
+            "锚定曲线必须在中间调压回基底提亮: y=${mid.y} @ x=${mid.x}",
+            mid.y < mid.x - 0.05f
+        )
+        assertTrue("正常曝光照片不应再大幅提暗部: ${a.shadows}", a.shadows < 3f)
+        assertEquals("不整体改变曝光", 0f, a.exposure, 0f)
+        assertEquals("不抬黑位", 0f, a.blacks, 0f)
+        assertTrue("色彩层恒等", a.temperature == 0f && a.tint == 0f &&
+            a.vibrance == 0f && a.hsl.isNeutral())
+    }
+
+    @Test
+    fun oneTapDoesNotOverexposeAWellExposedPhoto() = runBlocking {
+        val src = wellExposed()
+        val before = AutoEnhance.analyse(src)!!
+        val result = AutoEnhance.optimizeWorkStyle(src)
+        val final = ImageRenderer().render(
+            src,
+            WorkStyle16Preset.toPreset().copy(adjustments = result.adjustments),
+            forExport = false
+        )
+        val after = AutoEnhance.analyse(final)!!
+        val bare = ImageRenderer().render(src, WorkStyle16Preset.toPreset(), forExport = false)
+        val bareStats = AutoEnhance.analyse(bare)!!
+
+        assertTrue(
+            "正常曝光照片优化后不得整体变亮过曝: ${after.meanLuma} vs ${before.meanLuma}",
+            after.meanLuma <= before.meanLuma + 0.05f
+        )
+        assertTrue(
+            "一键优化必须显著抵消通透胶片基底的提亮: ${after.meanLuma} vs 裸基底 ${bareStats.meanLuma}",
+            after.meanLuma < bareStats.meanLuma - 0.08f
+        )
+        assertTrue(
+            "中间调不得被整体抬高: ${after.p50} vs ${before.p50}",
+            after.p50 <= before.p50 + 0.075f
+        )
+        assertTrue(
+            "不得产生新的无色死白: ${after.blownWhiteClip} vs ${before.blownWhiteClip}",
+            after.blownWhiteClip <= before.blownWhiteClip + 0.01f
+        )
+        assertTrue(
+            "画面仍须保留亮度层次: ${after.spread} vs ${before.spread}",
+            after.spread >= before.spread * 0.75f
+        )
+        assertTrue("色彩层必须恒等", result.adjustments.temperature == 0f &&
+            result.adjustments.tint == 0f && result.adjustments.vibrance == 0f &&
+            result.adjustments.hsl.isNeutral())
     }
 }
