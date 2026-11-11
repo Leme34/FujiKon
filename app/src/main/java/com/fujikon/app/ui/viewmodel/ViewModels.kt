@@ -39,6 +39,7 @@ import com.fujikon.app.render.BitmapLoader
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -624,7 +625,13 @@ class EditorViewModel(
     private val settings: AppSettings,
     private val agnesImageService: AgnesImageService,
     private val aiCacheDir: File,
-    private val agnesTextService: AgnesTextService = AgnesTextService()
+    private val agnesTextService: AgnesTextService = AgnesTextService(),
+    /**
+     * 1.6.38: preview decoding AND every full-frame pixel pass run here
+     * instead of inline on Main.immediate. Injectable so the off-main-thread
+     * contract can be verified in tests.
+     */
+    private val renderDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
 
     sealed interface AiEditState {
@@ -1508,6 +1515,12 @@ class EditorViewModel(
 
     fun previous() = show(_state.value.index - 1)
 
+    /** Result of one off-main-thread preview render; all state writes stay on Main. */
+    private sealed interface RenderOutcome {
+        data class Ai(val original: Bitmap, val finalImage: Bitmap, val aiUri: Uri) : RenderOutcome
+        data class Frame(val original: Bitmap, val shown: Bitmap, val fullFrame: Bitmap) : RenderOutcome
+    }
+
     private fun renderCurrent() {
         val snapshot = _state.value
         val photo = snapshot.currentPhoto ?: run {
@@ -1522,61 +1535,71 @@ class EditorViewModel(
             return
         }
         val crop = snapshot.adjustments.crop
+        val aiUri = snapshot.aiResultUris[photo.id]
         renderJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
-                val original = originalCache.get(photo.id) ?: run {
-                    val decoded = BitmapLoader.decodePreview(context, photo.uri, 1800)
-                        ?: throw IllegalStateException("无法读取这张照片")
-                    originalCache.put(photo.id, decoded)
-                    decoded
-                }
-                // A finished AI edit is the final photo: show and export it
-                // as-is instead of applying the local preset a second time.
-                val aiUri = snapshot.aiResultUris[photo.id]
-                if (aiUri != null) {
-                    val finalImage = BitmapLoader.decodePreview(context, aiUri, 1800)
-                        ?: throw IllegalStateException("无法读取 AI 修图结果")
-                    _state.update { current ->
-                        if (generation == renderGeneration &&
-                            current.currentPhoto?.id == photo.id &&
-                            current.aiResultUris[photo.id] == aiUri
-                        ) {
-                            current.copy(
-                                original = original,
-                                rendered = finalImage,
-                                cropBase = finalImage,
-                                loading = false,
-                                error = null
-                            )
-                        } else {
-                            current
-                        }
+                // 1.6.38 performance fix: decoding AND every full-frame pixel
+                // pass run on the background dispatcher. They used to execute
+                // inline on Main.immediate, which froze the UI, delayed the
+                // cancellation of superseded renders and left the "渲染中"
+                // chip spinning for seconds after each adjustment.
+                // Export is untouched: ExportManager decodes full-res and
+                // already renders under Dispatchers.Default.
+                val outcome = withContext<RenderOutcome>(renderDispatcher) {
+                    ensureActive()
+                    val original = originalCache.get(photo.id) ?: run {
+                        val decoded = BitmapLoader.decodePreview(
+                            context, photo.uri, PREVIEW_MAX_DIMENSION
+                        ) ?: throw IllegalStateException("无法读取这张照片")
+                        originalCache.put(photo.id, decoded)
+                        decoded
                     }
-                    return@launch
-                }
-                // Render the uncropped frame once: it is both the base for the
-                // interactive crop editor and the source for the visible crop.
-                val basePreset = if (crop.isFull()) {
-                    preset
-                } else {
-                    preset.copy(adjustments = preset.adjustments.copy(crop = EditCrop.Full))
-                }
-                val fullFrame = renderer.render(original, basePreset, forExport = false)
-                val shown = if (crop.isFull()) fullFrame else renderer.crop(fullFrame, crop)
-                _state.update { current ->
-                    if (generation == renderGeneration &&
-                        current.currentPhoto?.id == photo.id &&
-                        current.presetId == preset.id
-                    ) {
-                        current.copy(
-                            original = original,
-                            rendered = shown,
-                            cropBase = fullFrame,
-                            loading = false
-                        )
+                    ensureActive()
+                    // A finished AI edit is the final photo: show and export it
+                    // as-is instead of applying the local preset a second time.
+                    if (aiUri != null) {
+                        val finalImage = BitmapLoader.decodePreview(
+                            context, aiUri, PREVIEW_MAX_DIMENSION
+                        ) ?: throw IllegalStateException("无法读取 AI 修图结果")
+                        return@withContext RenderOutcome.Ai(original, finalImage, aiUri)
+                    }
+                    // Render the uncropped frame once: it is both the base for
+                    // the interactive crop editor and the source of the crop.
+                    val basePreset = if (crop.isFull()) {
+                        preset
                     } else {
-                        current
+                        preset.copy(adjustments = preset.adjustments.copy(crop = EditCrop.Full))
+                    }
+                    val fullFrame = renderer.render(original, basePreset, forExport = false)
+                    ensureActive()
+                    val shown = if (crop.isFull()) fullFrame else renderer.crop(fullFrame, crop)
+                    RenderOutcome.Frame(original, shown, fullFrame)
+                }
+                _state.update { current ->
+                    if (generation != renderGeneration ||
+                        current.currentPhoto?.id != photo.id
+                    ) return@update current
+                    when (outcome) {
+                        is RenderOutcome.Ai ->
+                            if (current.aiResultUris[photo.id] == outcome.aiUri) {
+                                current.copy(
+                                    original = outcome.original,
+                                    rendered = outcome.finalImage,
+                                    cropBase = outcome.finalImage,
+                                    loading = false,
+                                    error = null
+                                )
+                            } else current
+                        is RenderOutcome.Frame ->
+                            if (current.presetId == preset.id) {
+                                current.copy(
+                                    original = outcome.original,
+                                    rendered = outcome.shown,
+                                    cropBase = outcome.fullFrame,
+                                    loading = false
+                                )
+                            } else current
                     }
                 }
             } catch (e: CancellationException) {
@@ -1694,6 +1717,16 @@ class EditorViewModel(
     }
 
     companion object {
+        /**
+         * Longest edge of the interactive preview. 1800 px made every
+         * full-frame pass (portrait, detail, denoise, point colour, local
+         * masks, grain, vignette, lens blur, crop) about twice as expensive
+         * as a phone screen needs; 1280 px keeps the preview crisp while
+         * halving the work. Export is unaffected: ExportManager decodes at
+         * full resolution via BitmapLoader.decodeFull + forExport = true.
+         */
+        const val PREVIEW_MAX_DIMENSION = 1280
+
         private val SUPPORTED_RATIOS = listOf(
             "1:1" to 1f,
             "3:4" to 0.75f,

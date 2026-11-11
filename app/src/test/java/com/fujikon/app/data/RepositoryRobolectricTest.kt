@@ -47,12 +47,17 @@ class RepositoryRobolectricTest {
         repository.load()
 
         assertTrue(repository.ready.value)
-        assertEquals(7, repository.presets.value.size)
+        // 4 sample assets + 10 内置（云创 / 社区近似 / 通透胶片 / 7 个 nikonpc 官方）。
+        assertEquals(14, repository.presets.value.size)
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400" })
         assertFalse(repository.presets.value.any { it.name == "NC 400 MATCH" })
         assertTrue(repository.presets.value.any { it.format == "NP3" })
         assertTrue(repository.presets.value.all { it.isSample })
+        // 新增的 7 个官方预置随首次启动一起播种。
+        assertTrue(repository.presets.value.any { it.name == "Canon 5d M2" })
+        assertTrue(repository.presets.value.any { it.name == "Kodak Portra 160NC" })
+        assertTrue(repository.presets.value.any { it.name == "st_g1.47" })
     }
 
     @Test
@@ -88,7 +93,8 @@ class RepositoryRobolectricTest {
         assertTrue("重命名过的内置条目也应被清理", reopened.presets.value.none { it.id == "legacy-renamed-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-same-bytes" })
-        assertEquals(9, reopened.presets.value.size)
+        // 14 内置/示例 + 4 伪造 - 2 退役 = 16
+        assertEquals(16, reopened.presets.value.size)
     }
 
     @Test
@@ -156,12 +162,19 @@ class RepositoryRobolectricTest {
         val first = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
         val second = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
         assertEquals(first, second)
-        assertEquals(3, first.size)
+        assertEquals(10, first.size)
         assertEquals(
             listOf(
                 "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK",
                 "local:pmango_style_approx",
-                "local:workstyle16_tonal_v2"
+                "local:workstyle16_tonal_v2",
+                "nikonpc:canon_5d_m2",
+                "nikonpc:fuji_provia",
+                "nikonpc:fuji_sreala_skin",
+                "nikonpc:fuji_velvia_neutral",
+                "nikonpc:kodak_portra_160nc",
+                "nikonpc:pt_mode2",
+                "nikonpc:st_g1_47"
             ),
             first
         )
@@ -199,7 +212,39 @@ class RepositoryRobolectricTest {
         assertNull("v2 不应再有逐通道 curve", upgraded.curve)
         assertTrue("用户收藏应保留", upgraded.favorite)
         assertEquals("我最爱的滤镜", upgraded.note)
-        assertEquals("条目总数不应变化", 7, reopened.presets.value.size)
+        assertEquals("条目总数不应变化", 14, reopened.presets.value.size)
+    }
+
+    @Test
+    fun upgradeSeedsNewlyAddedNikonPcPresetsOnExistingInstall() = runBlocking {
+        repository.load()
+        // 模拟从「还没有 7 个 nikonpc 官方预置」的旧版本覆盖安装：
+        // 把 index 里这 7 个条目删掉，留下一份旧版索引。
+        val index = java.io.File(context.filesDir, "presets/index.json")
+        val root = org.json.JSONObject(index.readText())
+        val array = root.getJSONArray("presets")
+        val kept = org.json.JSONArray()
+        for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            if (!item.optString("contentHash").startsWith("nikonpc:")) kept.put(item)
+        }
+        root.put("presets", kept)
+        index.writeText(root.toString())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+
+        // 升级后 7 个新预置应被补齐，且总数回到 14（与全新安装一致）。
+        val nikonpc = reopened.presets.value.filter { it.contentHash.startsWith("nikonpc:") }
+        assertEquals(7, nikonpc.size)
+        assertEquals(14, reopened.presets.value.size)
+        assertTrue(nikonpc.all { it.isSample })
+
+        // 幂等：再开一次不会重复播种。
+        val third = PresetRepository(context)
+        third.load()
+        assertEquals(14, third.presets.value.size)
+        assertEquals(7, third.presets.value.count { it.contentHash.startsWith("nikonpc:") })
     }
 
     @Test
@@ -211,7 +256,7 @@ class RepositoryRobolectricTest {
         reopened.load()
 
         assertEquals(firstIds, reopened.presets.value.map { it.id }.sorted())
-        assertEquals(7, reopened.presets.value.size)
+        assertEquals(14, reopened.presets.value.size)
     }
 
     @Test
@@ -251,7 +296,8 @@ class RepositoryRobolectricTest {
         val imported = (first as PresetRepository.BinaryImportResult.Imported).preset
         assertEquals("Remote Test", imported.name)
         assertEquals("B&W/PICCON16.NCP", imported.sourceName)
-        assertEquals(8, repository.presets.value.size)
+        // 14 内置/示例 + 1 成功导入 = 15
+        assertEquals(15, repository.presets.value.size)
         assertTrue(repository.fileFor(imported).exists())
 
         assertTrue(results["second"] is PresetRepository.BinaryImportResult.Duplicate)

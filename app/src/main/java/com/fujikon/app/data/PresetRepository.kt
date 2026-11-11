@@ -82,6 +82,12 @@ class PresetRepository(private val context: Context) {
                         // that changes their render recipe would otherwise never
                         // reach users who launched a previous version once.
                         list = upgradeBuiltInSamplesLocked(list)
+                        // Presets ADDED in a newer app version (e.g. the seven
+                        // nikonpc.com official presets) must also be seeded on an
+                        // existing install, otherwise users who already launched
+                        // once would never see them. Content-hash de-dup keeps
+                        // this idempotent and never overwrites user state.
+                        list = ensureBuiltInsLocked(list)
                     }
                     publish(list)
                     loaded = true
@@ -428,6 +434,33 @@ class PresetRepository(private val context: Context) {
             added++
         }
         return added
+    }
+
+    /**
+     * Seeds any built-in preset that a newer app version added but an existing
+     * install's index is still missing. Matching by content hash makes it
+     * idempotent and keeps user edits (id / favourite / note) on presets that
+     * are already present untouched.
+     */
+    private fun ensureBuiltInsLocked(list: List<Preset>): List<Preset> {
+        val present = list.map { it.contentHash }.toMutableSet()
+        val missing = builtInCloudPresets().filter { present.add(it.contentHash) }
+        if (missing.isEmpty()) return list
+        val now = System.currentTimeMillis()
+        val result = list.toMutableList()
+        missing.forEach { preset ->
+            result.add(
+                preset.copy(
+                    id = UUID.randomUUID().toString(),
+                    fileName = "",
+                    fileSize = 0,
+                    isSample = true,
+                    importedAt = now
+                )
+            )
+        }
+        writeIndex(result)
+        return result
     }
 
     private fun sampleAssets(): List<String> {

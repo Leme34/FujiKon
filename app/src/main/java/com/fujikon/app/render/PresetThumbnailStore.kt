@@ -301,6 +301,54 @@ object SamplePhoto {
         }
         canvas.drawRect(w * 0.62f, h * 0.78f, w * 0.82f, h * 0.88f, reflection)
 
+        // Canvas + Shader drawing is a no-op on Robolectric's shadow bitmaps
+        // (and on any device where hardware drawing silently fails). The scene
+        // then stays fully transparent, and presets whose tone curve starts at
+        // 0 — e.g. the nikonpc.com film simulations added in 1.6.38 — render a
+        // pure-black thumbnail that ThumbnailVisibility rejects, leaving empty
+        // tiles in the preset list. Keep the canvas artwork on real devices but
+        // guarantee a visible scene everywhere with a computed colour ramp.
+        ensureVisible(bitmap)
         return bitmap
+    }
+
+    private fun ensureVisible(bitmap: Bitmap) {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (bitmap.getPixel(w / 2, h / 2) != 0) return
+        val pixels = IntArray(w * h)
+        val rgb = FloatArray(3)
+        for (y in 0 until h) {
+            val t = y.toFloat() / h.coerceAtLeast(1)
+            when {
+                t < 0.55f -> {
+                    val k = t / 0.55f
+                    rgb[0] = 28f + 120f * k
+                    rgb[1] = 48f + 90f * k
+                    rgb[2] = 92f - 10f * k
+                }
+                t < 0.78f -> {
+                    val k = (t - 0.55f) / 0.23f
+                    rgb[0] = 148f + 97f * k
+                    rgb[1] = 138f + 64f * k
+                    rgb[2] = 82f + 64f * k
+                }
+                else -> {
+                    val k = (t - 0.78f) / 0.22f
+                    rgb[0] = 245f - 200f * k
+                    rgb[1] = 202f - 170f * k
+                    rgb[2] = 146f - 120f * k
+                }
+            }
+            for (x in 0 until w) {
+                val jitter = ((x * 7) % 23) - 11
+                pixels[y * w + x] = Color.rgb(
+                    (rgb[0].toInt() + jitter).coerceIn(1, 255),
+                    (rgb[1].toInt() + jitter).coerceIn(1, 255),
+                    (rgb[2].toInt() + jitter).coerceIn(1, 255)
+                )
+            }
+        }
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 }
