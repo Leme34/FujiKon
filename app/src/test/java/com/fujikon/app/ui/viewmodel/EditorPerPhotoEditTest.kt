@@ -21,7 +21,6 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -73,8 +72,7 @@ class EditorPerPhotoEditTest {
         context.getSharedPreferences("fujikon_settings", Context.MODE_PRIVATE)
             .edit().clear().commit()
         val settings = AppSettings(context)
-        // No explicit preset: the editor picks the first available preset as
-        // the batch baseline, exactly like the gallery's "下一步" flow.
+        // No explicit preset: the editor now defaults to 「无（保留原图）」.
         val selection = SelectionStore().apply { setPhotos(testPhotos) }
         cacheDir = File(context.cacheDir, "per_photo_test").apply { mkdirs() }
         vm = EditorViewModel(
@@ -234,22 +232,38 @@ class EditorPerPhotoEditTest {
         assertEquals(0.7f, vm.state.value.adjustments.exposure, 0.001f)
     }
 
+    /** 不选预设时默认「无（保留原图）」，绝不擅自套上列表里的第一个滤镜。 */
+    @Test
+    fun noPresetSelectedDefaultsToNone() = runBlocking {
+        awaitInit()
+        assertEquals(Preset.NONE_ID, vm.state.value.presetId)
+        assertTrue("选中的应是「无」", vm.state.value.selectedPreset?.isNone == true)
+        assertTrue("原图不应带任何调节", vm.state.value.adjustments.isNeutral())
+        // 每张照片的批量基线也必须是「无」，而不是某个随机滤镜。
+        repeat(3) { i ->
+            vm.show(i)
+            assertEquals("第 ${i + 1} 张应保持原图", Preset.NONE_ID, vm.state.value.presetId)
+        }
+    }
+
     /** Changing the preset in the editor is an individual edit, not batch. */
     @Test
     fun selectingPresetOnOnePhotoDoesNotChangeOthers() = runBlocking {
         awaitInit()
         val baselineId = vm.state.value.presetId
-        assertNotEquals("基线不应恰好是「无」", Preset.NONE_ID, baselineId)
+        assertEquals("未选预设时基线应为「无」", Preset.NONE_ID, baselineId)
+        val other = vm.state.value.presets.firstOrNull { !it.isNone }?.id
+            ?: throw AssertionError("需要一个真实预设来验证切换")
 
         vm.show(1)
-        vm.selectPreset(Preset.NONE_ID)
-        assertEquals(Preset.NONE_ID, vm.state.value.presetId)
+        vm.selectPreset(other)
+        assertEquals(other, vm.state.value.presetId)
 
         vm.show(2)
         assertEquals("第三张预设不应被第二张改动", baselineId, vm.state.value.presetId)
 
         vm.show(1)
-        assertEquals(Preset.NONE_ID, vm.state.value.presetId)
+        assertEquals(other, vm.state.value.presetId)
     }
 
     /** Batch export still covers all photos, but with each photo's own look. */

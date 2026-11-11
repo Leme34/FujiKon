@@ -12,8 +12,8 @@ android {
         applicationId = "com.fujikon.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 47
-        versionName = "1.6.40"
+        versionCode = 48
+        versionName = "1.6.41"
         vectorDrawables { useSupportLibrary = true }
     }
 

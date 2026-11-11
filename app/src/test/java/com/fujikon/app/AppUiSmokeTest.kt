@@ -38,6 +38,13 @@ class AppUiSmokeTest {
             composeRule.onAllNodesWithText("选照片套用").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText("选照片套用").performClick()
+        // 不选预设时默认就是「无（保留原图）」，不再强制弹出选择器。
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("预设：无（原图）").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("预设：无（原图）").assertExists()
+        // 但用户仍可主动点击预设入口打开选择器换滤镜。
+        composeRule.onNodeWithText("无（原图）").performClick()
         composeRule.waitUntil(5_000) {
             composeRule.onAllNodesWithText("选择预设").fetchSemanticsNodes().isNotEmpty()
         }

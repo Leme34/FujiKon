@@ -1185,11 +1185,11 @@ object AutoEnhance {
     /**
      * 「通透胶片」基底 LUT 的近似反函数（256 点，值域 0..1）。
      *
-     * v2 的 LUT 是**提亮型**的：中间调 128 → 171（+0.17），暗部也显著抬亮。
-     * 一键优化强制切到这个基底，若不补偿，正常曝光的照片会被整体推亮过曝。
-     * 这里按「找到最小的 x 使 LUT[x] >= y」反演，得到一条把基底提亮抵消回
-     * 原片亮度的曲线。它作用在 luma 域（渲染器按 luma 查表、三通道同
-     * scale+lift），因此天然保色，绝不触碰色相/饱和度。
+     * 一键优化**默认完整保留**这条提亮型 LUT（中间调 128 → 171）—— 那正是
+     * 通透胶片的效果本身。只有当原片本身已经过亮或已有大面积死白时，才用
+     * 这条反函数做**部分**收敛，避免通透胶片让一张本就过曝的照片雪上加霜；
+     * 正常曝光的原片 anchor=0，这条曲线完全不启用。反演方式：找到最小的 x
+     * 使 LUT[x] >= y。作用在 luma 域、三通道同 scale+lift，天然保色。
      */
     private val WORKSTYLE_INVERSE: FloatArray by lazy {
         val lut = WorkStyle16Preset.toPreset().lumaToneLut
@@ -1205,14 +1205,17 @@ object AutoEnhance {
     }
 
     /**
-     * 原片越「已经正常曝光」，锚定越强：一键优化只贡献清透质感与分区影调，
-     * 不额外整体提亮。欠曝或死黑成片的锚定自动放松，让提亮修复仍可生效。
+     * 只针对「原片本身已经过亮 / 已有死白」的自适应保护，返回 0..0.9。
+     * 正常曝光或偏暗的原片返回 0 —— 通透胶片完整生效（用户要的就是这个
+     * 效果）。原片越亮、死白越多，才越用力把通透胶片的提亮收敛一部分。
      */
-    private fun workStyleAnchor(stats: ImageStats): Float =
-        (ramp(stats.meanLuma, 0.33f, 0.47f) *
-            (1f - ramp(stats.shadowClip, 0.025f, 0.12f))).coerceIn(0f, 1f)
+    private fun workStyleAnchor(original: ImageStats): Float =
+        (ramp(original.meanLuma, 0.62f, 0.80f) * 0.75f +
+            ramp(original.blownWhiteClip, 0.008f, 0.05f) * 0.85f)
+            .coerceIn(0f, 0.9f)
 
-    /** 允许的亮度上升：正常曝光严格，死黑/缺陷片留出修复空间。 */
+    /** 相对「已套用通透胶片的效果图」允许的亮度上升：优化只修缺陷，
+     *  绝不在这张已经提亮过的图上再叠一轮提亮。死黑多的效果图留修复空间。 */
     private fun meanRiseAllowance(ref: ImageStats): Float =
         OptimizationStandard.MAX_MEAN_RISE +
             ramp(ref.shadowClip, 0.03f, 0.24f) * OptimizationStandard.MAX_REPAIR_RISE
@@ -1226,9 +1229,10 @@ object AutoEnhance {
      * scale + lift to all three channels, so hue/saturation stay EXACT).
      *
      * The curve's input axis is the brightness AFTER the 通透胶片 LUT (the
-     * renderer chains them as userToneLut[presetLut[i]]). [anchor] therefore
-     * blends it toward the LUT inverse, cancelling the base look's built-in
-     * brightening; 0 keeps the old behaviour, 1 restores the original exposure.
+     * renderer chains them as userToneLut[presetLut[i]]). One-tap keeps
+     * [anchor] = 0 for normal originals, so the base LUT's effect is preserved
+     * in full; a non-zero anchor only kicks in for an already-overexposed
+     * original, blending toward the LUT inverse to avoid piling on brightness.
      * On top of that, the toe is ZERO both at x=0 and x=0.5: pure black stays
      * black (不死黑 / 不发灰), mid-tones stay put, and only the quarter-tone
      * shadows are lifted. The shoulder compresses the top end smoothly (不过曝).
@@ -1263,26 +1267,30 @@ object AutoEnhance {
     }
 
     /**
-     * One-tap recipe on top of the built-in 「通透胶片」 look.
+     * One-tap correction recipe that runs ON TOP of the 「通透胶片」 look.
      *
-     * The base look supplies its colour-neutral luma LUT and portrait finish;
-     * everything added here is driven by the measured RGB histogram and is
-     * TONE ONLY. temperature / tint / vibrance / HSL / split-tone are forced
-     * to exactly zero, so the "绝不偏色" red line cannot be crossed. Exposure
-     * stays at 0 and blacks stay put: the frame is never washed towards grey.
+     * [stats] must describe the frame AFTER the base look has been applied
+     * (阶段 1 的产物), not the raw original — this is what makes the one-tap
+     * genuinely "先套用通透胶片，再优化". [original] is the untouched source,
+     * used only for the already-overexposed safeguard. Everything added here is
+     * driven by the measured RGB histogram and is TONE ONLY: temperature /
+     * tint / vibrance / HSL / split-tone are forced to exactly zero, so the
+     * "绝不偏色" red line cannot be crossed. Exposure stays 0, blacks stay put.
      */
     fun suggestWorkStyle(
         stats: ImageStats,
-        current: EditAdjustments = EditAdjustments.Neutral
+        current: EditAdjustments = EditAdjustments.Neutral,
+        original: ImageStats? = null
     ): AutoEnhanceResult {
         val findings = describe(stats)
         val rgb = rgbTone(stats)
         val base = WorkStyle16Preset.toPreset().adjustments
 
-        // 亮度锚定：已经正常曝光的照片不再叠加任何整体提亮。通透胶片基底
-        // 自带的提亮 LUT 由主曲线反演抵消，只保留它的清透质感/人像层。
-        val anchor = workStyleAnchor(stats)
-        val lift = 1f - anchor * 0.88f
+        // 正常情况下 anchor=0，通透胶片的 LUT 完整生效；只有原片本身已经
+        // 过亮/死白时才部分收敛。优化对象已经套过通透胶片（暗部已被抬亮），
+        // 提亮型修正再减半，杜绝「基底提亮 + 优化又提亮」的双重过曝。
+        val anchor = original?.let { workStyleAnchor(it) } ?: 0f
+        val lift = (1f - anchor * 0.88f) * 0.5f
 
         val shadowDeficit =
             ramp(0.16f - rgb.p5, 0f, 0.16f) * 0.50f +
@@ -1338,17 +1346,23 @@ object AutoEnhance {
         return AutoEnhanceResult(
             adjustments = next,
             findings = findings,
-            summary = if (parts.isEmpty()) "通透胶片 · 画面已均衡" else "通透胶片 · " + parts.joinToString(" · "),
+            summary = if (parts.isEmpty()) "先套通透胶片 · 画面已均衡" else "先套通透胶片 · " + parts.joinToString(" · "),
             changed = next != current
         )
     }
 
     /**
-     * TRUE closed loop for the 通透胶片 one-tap: render every candidate on the
-     * original (downscaled) WITH the work-style preset as base, measure the
-     * real pixels, and refine only tone parameters until 不死黑 / 不发灰 /
-     * 不过曝 is met — or keep the best measured round. Repeated taps are
-     * byte-identical because all amounts are recomputed from the original.
+     * 一键优化 = 真正的两阶段管线。
+     *
+     * 阶段 1：把「通透胶片」完整渲染到原图（LUT + 自带 adjustments + 用户的
+     *   预设强度），得到 graded。这一步就是「先套用通透胶片的效果」。
+     * 阶段 2：在 graded 上量 RGB 直方图，生成提暗部 / 压高光 / 理顺层次的
+     *   修正，并在真实渲染像素上闭环验证不死黑 / 不发灰 / 不过曝。
+     *
+     * 闭环基准是 graded 而不是原图：成片必须看得出通透胶片的效果，但绝不
+     * 允许比「单纯套通透胶片」更亮、也不许新增无色死白。这样既保住通透
+     * 胶片，又修掉「基底提亮 + 优化又提亮」的双重过曝。重复点击结果一致：
+     * 所有量都从原图重新计算。
      */
     suspend fun optimizeWorkStyle(
         source: Bitmap?,
@@ -1358,11 +1372,26 @@ object AutoEnhance {
         if (source == null || source.isRecycled || source.width <= 0 || source.height <= 0) {
             return AutoEnhanceResult(current, emptyList(), "无预览，无法优化", false)
         }
-        val stats = analyse(source)
+        val originalStats = analyse(source)
             ?: return AutoEnhanceResult(current, emptyList(), "无法分析画面", false)
-        val seed = suggestWorkStyle(stats, current)
         val basePreset = WorkStyle16Preset.toPreset()
         val probe = probeBitmap(source)
+
+        // ---- 阶段 1：真正先把通透胶片套上去 ------------------------------
+        // 完整保留基底的 lumaToneLut、自带 adjustments 与用户设定的预设强度；
+        // 这张 graded 才是阶段 2 的优化对象（不再是原图）。
+        val gradedPreset = basePreset.copy(
+            adjustments = basePreset.adjustments.copy(
+                presetStrength = current.presetStrength,
+                crop = EditCrop.Full
+            )
+        )
+        val graded = renderer.render(probe, gradedPreset, forExport = false)
+        val gradedStats = analyse(graded)
+            ?: return AutoEnhanceResult(current, emptyList(), "无法分析通透胶片效果", false)
+
+        // ---- 阶段 2：在已套用的效果图上做 RGB 直方图优化 ------------------
+        val seed = suggestWorkStyle(gradedStats, current, originalStats)
         var candidate = seed.adjustments
         var best = candidate
         var bestDefect = Float.POSITIVE_INFINITY
@@ -1379,9 +1408,9 @@ object AutoEnhance {
                 forExport = false
             )
             val measured = analyse(rendered) ?: break
-            val d = workStyleDefect(measured, stats)
+            val d = workStyleDefect(measured, gradedStats)
             trail.add(d)
-            if (meetsWorkStyleStandard(measured, stats)) {
+            if (meetsWorkStyleStandard(measured, gradedStats, originalStats)) {
                 best = candidate
                 bestMeasured = measured
                 converged = true
@@ -1395,10 +1424,12 @@ object AutoEnhance {
             }
             if (i >= 2 && d > previousDefect + 0.10f) break
             if (i == OptimizationStandard.MAX_ITERATIONS - 1) break
-            candidate = refineWorkStyle(candidate, measured, stats, i)
+            candidate = refineWorkStyle(candidate, measured, gradedStats, i)
         }
 
-        val report = reportOf(iterations, converged, bestMeasured, stats, trail, ::workStyleDefect)
+        val report = reportOf(
+            iterations, converged, bestMeasured, gradedStats, trail, ::workStyleDefect
+        )
         val loopTag = if (converged) "闭环${iterations}轮达标" else "闭环${iterations}轮取最优"
         return AutoEnhanceResult(
             adjustments = best,
@@ -1409,18 +1440,22 @@ object AutoEnhance {
         )
     }
 
-    /** Adds an explicit anti-grey floor AND a relative over-exposure ceiling on
-     *  top of the shared hard standard. The old ceiling only rejected colourless
-     *  dead whites / an absolute 0.70 mean, so a well-exposed frame could be
-     *  brightened wholesale and still "pass". Here the render may never be
-     *  measurably brighter than the ORIGINAL (with extra room for dark frames
-     *  that genuinely need lifting). */
-    private fun meetsWorkStyleStandard(m: ImageStats, ref: ImageStats): Boolean =
+    /** Hard standard for the two-stage loop. [ref] is the frame WITH the base
+     *  look applied, so the render must visibly keep that look while never
+     *  getting brighter than it. [original] guards the real over-exposure
+     *  signal: the one-tap may not create colourless dead whites that were
+     *  absent from the source. */
+    private fun meetsWorkStyleStandard(
+        m: ImageStats,
+        ref: ImageStats,
+        original: ImageStats
+    ): Boolean =
         meetsStandard(m, ref) &&
             m.stdLuma >= ref.stdLuma * 0.78f &&
             m.p5 <= ref.p5 + 0.22f &&
             m.meanLuma <= ref.meanLuma + meanRiseAllowance(ref) &&
-            m.p50 <= ref.p50 + p50RiseAllowance(ref)
+            m.p50 <= ref.p50 + p50RiseAllowance(ref) &&
+            m.blownWhiteClip <= original.blownWhiteClip + 0.012f
 
     /** Scalar score for the work-style loop: shared endpoint defects plus a
      *  heavy penalty for brightening the frame beyond the original. */

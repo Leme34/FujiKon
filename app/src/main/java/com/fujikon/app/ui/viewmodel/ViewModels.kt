@@ -802,7 +802,9 @@ class EditorViewModel(
             val selectedId = when {
                 requestedId == Preset.NONE_ID -> Preset.NONE_ID
                 requestedId != null && loaded.any { it.id == requestedId } -> requestedId
-                else -> loaded.firstOrNull()?.id
+                // 用户没有选择预设时默认「无（保留原图）」，绝不擅自套上
+                // 列表里的第一个滤镜。
+                else -> Preset.NONE_ID
             }
             val selected = if (selectedId == Preset.NONE_ID) {
                 Preset.none()
@@ -850,14 +852,12 @@ class EditorViewModel(
         }
         viewModelScope.launch {
             presetRepository.presets.collect { list ->
-                val fallbackId = list.firstOrNull()?.id
-                val fallbackAdjustments = if (fallbackId == Preset.NONE_ID) {
-                    Preset.none().adjustments
-                } else {
-                    list.firstOrNull { it.id == fallbackId }?.adjustments ?: EditAdjustments.Neutral
-                }
                 // A preset deleted from the repository would otherwise leave a
-                // stale id in a session and break that photo's export.
+                // stale id in a session and break that photo's export. Falling
+                // back to 「无」 keeps the original instead of silently grading
+                // the photo with an unrelated filter.
+                val fallbackId = Preset.NONE_ID
+                val fallbackAdjustments = Preset.none().adjustments
                 photoSessions.values.forEach { session ->
                     val valid = session.presetId == Preset.NONE_ID ||
                         list.any { it.id == session.presetId }

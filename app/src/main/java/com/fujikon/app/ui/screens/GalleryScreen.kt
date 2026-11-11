@@ -104,8 +104,12 @@ fun GalleryScreen(
     val presetId by app.container.selectionStore.presetId.collectAsStateWithLifecycle()
     val currentPhoto by app.container.selectionStore.currentPhoto.collectAsStateWithLifecycle()
     val preset = presets.firstOrNull { it.id == presetId }
-    val hasPresetChoice = preset != null || presetId == Preset.NONE_ID
-    val presetLabel = preset?.name ?: if (presetId == Preset.NONE_ID) "无（原图）" else null
+    // 不选预设（presetId == null）一律视为「无（保留原图）」，不强制用户
+    // 必须挑一个滤镜才能进入编辑器；只有 presetId 指向一个已失效的预设时才
+    // 重新弹出选择器。
+    val noPresetSelected = presetId == null || presetId == Preset.NONE_ID
+    val hasPresetChoice = preset != null || noPresetSelected
+    val presetLabel = preset?.name ?: if (noPresetSelected) "无（原图）" else null
 
     var showPicker by remember { mutableStateOf(false) }
     var albumMenuOpen by remember { mutableStateOf(false) }
