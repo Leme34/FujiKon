@@ -90,14 +90,14 @@ class WorkStyleV2RendererTest {
     }
 
     @Test
-    fun realRenderActuallyBrightensMidtonesWithoutClippingHighlights() {
-        // 中间调应被提亮（通透感）
+    fun realRenderActuallyDimsMidtonesWithoutClippingHighlights() {
+        // v4 方向由「日系提亮」扳回「去雾降亮」：中间调应被略压降亮（不再发灰发亮）
         val mid = rgb(render(96, 96, 96))[0]
-        assertTrue("中间调 96 应被提亮，实际 $mid", mid > 110)
+        assertTrue("中间调 96 应被略压降亮，实际 $mid", mid < 100)
         // 高光不能被推成死白
         val hi = rgb(render(240, 240, 240))[0]
         assertTrue("高光 240 不应死白，实际 $hi", hi < 255)
-        // 黑位被柔化但不抬成灰
+        // 黑位被柔化但不抬成灰（v4 黑位 5，去雾去亮）
         val black = rgb(render(0, 0, 0))[0]
         assertTrue("黑位应柔化但不发灰，实际 $black", black in 1..20)
     }
@@ -109,7 +109,7 @@ class WorkStyleV2RendererTest {
         val src = intArrayOf(120, 120, 120)
         val a = rgb(render(src[0], src[1], src[2], none))[0]
         val b = rgb(render(src[0], src[1], src[2], preset))[0]
-        assertTrue("通透胶片应对画面产生实际作用 (none=$a, v2=$b)", abs(b - a) > 10)
+        assertTrue("通透胶片应对画面产生实际作用 (none=$a, v2=$b)", abs(b - a) > 5)
     }
 
     @Test

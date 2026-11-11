@@ -19,8 +19,8 @@ import kotlin.math.roundToInt
  * 里的测试锁死四件事：
  *  ① 保色：灰阶探针 a/b=0；彩色像素三通道同 scale，色相/彩度零漂移；
  *     高光触顶时三通道等比回缩，绝不逐通道裁剪（1.6.33 偏色的根因）。
- *  ② 影调 LUT 形态：单调、平滑、黑位柔化（日系雾感）、中间调不压暗、白点平滑
- *     肩部收敛、范围合法。
+ *  ② 影调 LUT 形态：单调、平滑、黑位低（去雾去亮）、暗部与中段略压降亮增对比、
+ *     白点平滑肩部收敛、范围合法。
  *  ③ 高光控制：高光区不得出现死白平台，顶端必须有梯度以保留高光层次。
  *  ④ 复合效果层克制：色彩层恒等，无任何全局调色；人像/质感/美感参数有上限。
  */
@@ -31,7 +31,7 @@ class WorkStyle16PresetTest {
     @Test
     fun identityIsStableAndIndependent() {
         assertEquals("workstyle16_tonal", WorkStyle16Preset.ID)
-        assertEquals("local:workstyle16_tonal_v3", WorkStyle16Preset.CONTENT_HASH)
+        assertEquals("local:workstyle16_tonal_v4", WorkStyle16Preset.CONTENT_HASH)
         assertEquals("通透胶片", preset.name)
         assertTrue(preset.description?.contains("统计风格拟合") == true)
 
@@ -70,18 +70,22 @@ class WorkStyle16PresetTest {
     }
 
     @Test
-    fun lumaToneLutLiftsShadowsAndMidsButProtectsHighlights() {
+    fun lumaToneLutDropsShadowsMidsAndProtectsHighlights() {
         val t = preset.lumaToneLut!!
-        // 暗部到中间调提亮（通透感来源）
-        assertTrue("p32 应被提亮，实际 ${t[32]}", t[32] > 32 + 8)
-        assertTrue("p64 应被提亮，实际 ${t[64]}", t[64] > 64 + 20)
-        assertTrue("p128 应被提亮，实际 ${t[128]}", t[128] > 128 + 20)
-        // 高光区不压低（避免发灰、丢失通透）
+        // 黑位低（去雾去亮）：不再把黑抬成灰发亮
+        assertTrue("黑位 ${t[0]} 应去雾、不过度抬亮", t[0] in 3..10)
+        // 暗部与中段不抬亮（通透来自干净暗部，而非发灰发亮）
+        assertTrue("p32 不应被抬亮，实际 ${t[32]}", t[32] <= 32 + 3)
+        assertTrue("p64 不应被抬亮，实际 ${t[64]}", t[64] <= 64 + 2)
+        assertTrue("p128 不应被抬亮，实际 ${t[128]}", t[128] <= 128 + 2)
+        assertTrue("p192 不应被抬亮，实际 ${t[192]}", t[192] <= 192 + 2)
+        // 高光区不压低（保留通透与高光层次）
         assertTrue("p224 不应被压低，实际 ${t[224]}", t[224] >= 224 - 2)
-        // 整体是提亮曲线
+        assertTrue("p236 不应被压低，实际 ${t[236]}", t[236] >= 236 - 2)
+        // 整体不是提亮曲线：多数采样点不高于输入（降亮去雾方向）
         var lifted = 0
         for (i in 0..255) if (t[i] >= i - 1) lifted++
-        assertTrue("绝大多数采样点应 >= 输入，实际 $lifted", lifted >= 240)
+        assertTrue("提亮采样点不应占多数，实际 $lifted", lifted <= 170)
     }
 
     @Test
@@ -145,10 +149,10 @@ class WorkStyle16PresetTest {
         assertEquals(0f, a.denoise, 0.0001f)
         assertTrue("HSL 必须中性", a.hsl.isNeutral())
         assertTrue("不得叠加创意滤镜", a.creativeFilter == "none")
-        // 光感/质感/美感：克制取值
-        assertTrue("clarity 应极轻负", a.clarity in -6f..-1f)
-        assertTrue("texture 应轻正回补", a.texture in 1f..8f)
-        assertTrue("vignette 应极轻正", a.vignette in 0f..5f)
+        // 光感/质感/美感：克制取值（v4 把 clarity 转正增质感、vignette 转负压暗角）
+        assertTrue("clarity 应正向增强局部对比（质感）", a.clarity in 1f..14f)
+        assertTrue("texture 应正向回补（质感）", a.texture in 4f..12f)
+        assertTrue("vignette 应极轻负压暗角（聚焦/质感）", a.vignette in -12f..-1f)
         // 人像美颜：开启但克制（远低于「写真」滤镜，避免塑料脸）
         val p = a.portrait
         assertFalse(p.isOff())

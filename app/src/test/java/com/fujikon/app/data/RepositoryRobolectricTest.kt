@@ -162,7 +162,7 @@ class RepositoryRobolectricTest {
             listOf(
                 "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK",
                 "local:pmango_style_approx",
-                "local:workstyle16_tonal_v3"
+                "local:workstyle16_tonal_v4"
             ),
             first
         )
