@@ -60,6 +60,10 @@ class ImageRenderer {
         // once, then use the same effective adjustments for every stage below.
         // A stock film look resolves to itself, so its rendering is unchanged.
         val adjustments = preset.adjustments.normalized().withFilterLook()
+        // 预设强度：满强度（默认 100）走原有零开销路径；低于 100 时保留一份
+        // 未编辑像素，最后按强度把成片与原图线性混合。
+        val strength = (adjustments.presetStrength / 100f).coerceIn(0f, 1f)
+        val originalPixels = if (strength < 0.999f) pixels.copyOf() else null
         // Content-aware selections (subject / sky / colour range) must be
         // derived from the UNEDITED photo. Capture the feature grid here,
         // BEFORE any grade / retouch mutates `pixels`. It is resolution-
@@ -96,7 +100,50 @@ class ImageRenderer {
         applyLensBlur(pixels, width, height, adjustments.lensBlur, job)
         checkCancelled(job)
 
+        // Blend toward the untouched original last, so every tone / colour /
+        // quality stage is faded uniformly and the crop still uses full-frame
+        // coordinates. Linear RGB interpolation at the same pixel cannot
+        // stretch channel ratios, so strength never introduces a colour cast.
+        if (originalPixels != null) {
+            blendWithSource(pixels, originalPixels, strength, job)
+        }
         return cropPixels(pixels, width, height, adjustments.crop, job)
+    }
+
+    /**
+     * Fades the fully graded frame back toward the original.
+     * 0 -> exact original, 1 -> unchanged full look, in between linear.
+     * Alpha is taken from the source; only RGB is interpolated.
+     */
+    private fun blendWithSource(
+        pixels: IntArray,
+        original: IntArray,
+        strength: Float,
+        job: Job?
+    ) {
+        if (strength <= 0f) {
+            original.copyInto(pixels)
+            return
+        }
+        val effect = strength
+        val base = 1f - effect
+        var from = 0
+        while (from < pixels.size) {
+            val to = min(pixels.size, from + 65_536)
+            for (i in from until to) {
+                val a = original[i]
+                val b = pixels[i]
+                val r = (((a shr 16) and 0xFF) * base + ((b shr 16) and 0xFF) * effect)
+                    .roundToInt().coerceIn(0, 255)
+                val g = (((a shr 8) and 0xFF) * base + ((b shr 8) and 0xFF) * effect)
+                    .roundToInt().coerceIn(0, 255)
+                val bl = ((a and 0xFF) * base + (b and 0xFF) * effect)
+                    .roundToInt().coerceIn(0, 255)
+                pixels[i] = (a and -0x1000000) or (r shl 16) or (g shl 8) or bl
+            }
+            from = to
+            if (from < pixels.size) checkCancelled(job)
+        }
     }
 
     /**

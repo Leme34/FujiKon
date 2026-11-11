@@ -6,6 +6,7 @@ import com.fujikon.app.data.EditCrop
 import com.fujikon.app.data.Preset
 import com.fujikon.app.data.HslAdjustments
 import com.fujikon.app.data.HslBand
+import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
@@ -89,7 +90,17 @@ class ImageStats internal constructor(
      * are deliberately NOT counted — 不过曝 means "no dead white", not "no
      * bright highlights". Keeping them is what preserves 光感 / 色彩 / 层次.
      */
-    val blownWhiteClip: Float = 0f
+    val blownWhiteClip: Float = 0f,
+    /**
+     * Raw 64-bin per-channel histograms (counts, before the sqrt normalisation
+     * used by the chart). The RGB-histogram tone solver reads these to measure
+     * dark / bright mass in EACH channel instead of guessing from one luma
+     * histogram. Empty on hand-built stats (unit tests), which then fall back
+     * to the luma histogram. Defaults keep every existing constructor valid.
+     */
+    val redHistogram: IntArray = IntArray(0),
+    val greenHistogram: IntArray = IntArray(0),
+    val blueHistogram: IntArray = IntArray(0)
 ) {
     val spread: Float get() = p95 - p5
     val dynamicRange: Float get() = p99 - p1
@@ -407,7 +418,10 @@ object AutoEnhance {
             shadowWarmth = shadowWarmth,
             shadowFraction = shadowFraction,
             brightFraction = brightFraction,
-            blownWhiteClip = blownWhite / total
+            blownWhiteClip = blownWhite / total,
+            redHistogram = r,
+            greenHistogram = g,
+            blueHistogram = b
         )
     }
 
@@ -538,7 +552,10 @@ object AutoEnhance {
             grain = current.grain,
             vignette = current.vignette,
             pointColor = current.pointColor,
-            local = current.local
+            local = current.local,
+            // Preset strength is a per-photo editing choice, not a tone
+            // parameter: one-tap must never silently reset the user's blend.
+            presetStrength = current.presetStrength
         ).normalized()
 
         val changed = next != current
@@ -1091,6 +1108,265 @@ object AutoEnhance {
             providerLabel = seed.providerLabel,
             report = report
         )
+    }
+
+    // ------------------------------- 通透胶片 + RGB 直方图一键优化 (1.6.39)
+
+    private data class RgbTone(
+        val p5: Float,
+        val p95: Float,
+        val spread: Float,
+        val darkFraction: Float,
+        val brightFraction: Float
+    )
+
+    /**
+     * Measures dark / bright mass from the RAW R, G and B histograms rather
+     * than from the single luma histogram. A channel-separated view matters:
+     * a blue sky or a warm sunset can clip one channel while luma still looks
+     * fine, and that is exactly the 光感/层次 the one-tap pass must protect.
+     * Hand-built stats (unit tests) have no raw bins and fall back to luma.
+     */
+    private fun rgbTone(stats: ImageStats): RgbTone {
+        val channels = listOf(stats.redHistogram, stats.greenHistogram, stats.blueHistogram)
+            .filter { it.isNotEmpty() }
+        if (channels.isEmpty()) {
+            return RgbTone(
+                p5 = stats.p5,
+                p95 = stats.p95,
+                spread = stats.spread,
+                darkFraction = stats.shadowFraction,
+                brightFraction = stats.brightFraction
+            )
+        }
+        var sumP5 = 0f
+        var sumP95 = 0f
+        var sumDark = 0f
+        var sumBright = 0f
+        channels.forEach { h ->
+            val total = h.sum().toFloat().coerceAtLeast(1f)
+            var acc = 0
+            var lo = -1f
+            var hi = -1f
+            var dark = 0
+            var bright = 0
+            for (i in h.indices) {
+                val x = (i + 0.5f) / h.size
+                acc += h[i]
+                if (lo < 0f && acc >= total * 0.05f) lo = x
+                if (hi < 0f && acc >= total * 0.95f) hi = x
+                if (x < 0.14f) dark += h[i]
+                if (x > 0.88f) bright += h[i]
+            }
+            sumP5 += if (lo < 0f) 1f else lo
+            sumP95 += if (hi < 0f) 1f else hi
+            sumDark += dark / total
+            sumBright += bright / total
+        }
+        val n = channels.size.toFloat()
+        val lo = sumP5 / n
+        val hi = sumP95 / n
+        return RgbTone(
+            p5 = lo,
+            p95 = hi,
+            spread = (hi - lo).coerceIn(0f, 1f),
+            darkFraction = sumDark / n,
+            brightFraction = sumBright / n
+        )
+    }
+
+    /**
+     * Luma-domain master curve (the renderer applies it with the same
+     * scale + lift to all three channels, so hue/saturation stay EXACT).
+     *
+     * Unlike a generic S-curve, the toe is ZERO both at x=0 and x=0.5:
+     * pure black stays black (不死黑 / 不发灰), mid-tones stay put, and only
+     * the quarter-tone shadows are lifted. The shoulder compresses the top
+     * end smoothly (不过曝) without collapsing it into a dead-white plateau.
+     */
+    private fun workStyleCurve(toe: Float, roll: Float, s: Float): ToneCurve {
+        if (toe < 0.002f && roll < 0.002f && s < 0.002f) return ToneCurve()
+        val points = ArrayList<ToneCurvePoint>(25)
+        var prevY = 0f
+        val n = 24
+        for (i in 0..n) {
+            val x = i / n.toFloat()
+            var y = x
+            if (toe > 0f && x < 0.5f) {
+                val t = 1f - x / 0.5f
+                y += toe * 4f * t * t * (1f - t)
+            }
+            if (roll > 0f && x > 0.5f) {
+                val t = (x - 0.5f) / 0.5f
+                y -= roll * t * t
+            }
+            if (s > 0f) y -= (s * sin(2.0 * PI * x.toDouble())).toFloat()
+            y = y.coerceIn(0f, 1f)
+            if (y < prevY) y = prevY // monotonic: no tone reversal
+            points.add(ToneCurvePoint(x, y))
+            prevY = y
+        }
+        return ToneCurve(points)
+    }
+
+    /**
+     * One-tap recipe on top of the built-in 「通透胶片」 look.
+     *
+     * The base look supplies its colour-neutral luma LUT and portrait finish;
+     * everything added here is driven by the measured RGB histogram and is
+     * TONE ONLY. temperature / tint / vibrance / HSL / split-tone are forced
+     * to exactly zero, so the "绝不偏色" red line cannot be crossed. Exposure
+     * stays at 0 and blacks stay put: the frame is never washed towards grey.
+     */
+    fun suggestWorkStyle(
+        stats: ImageStats,
+        current: EditAdjustments = EditAdjustments.Neutral
+    ): AutoEnhanceResult {
+        val findings = describe(stats)
+        val rgb = rgbTone(stats)
+        val base = WorkStyle16Preset.toPreset().adjustments
+
+        val shadowDeficit =
+            ramp(0.16f - rgb.p5, 0f, 0.16f) * 0.50f +
+                ramp(rgb.darkFraction, 0.05f, 0.30f) * 0.30f +
+                ramp(stats.shadowClip, 0.004f, 0.05f) * 0.20f
+        val highlightExcess =
+            ramp(rgb.p95 - 0.86f, 0f, 0.12f) * 0.40f +
+                ramp(rgb.brightFraction, 0.03f, 0.22f) * 0.25f +
+                ramp(stats.blownWhiteClip, 0.002f, 0.04f) * 0.35f
+        val flatness = ramp(0.54f - rgb.spread, 0f, 0.30f)
+
+        val toe = (shadowDeficit * 0.055f).coerceIn(0f, 0.055f)
+        val roll = (highlightExcess * 0.060f).coerceIn(0f, 0.060f)
+        val s = (flatness * 0.075f).coerceIn(0f, 0.075f)
+        val curve = workStyleCurve(toe, roll, s)
+
+        val next = base.copy(
+            exposure = 0f,
+            contrast = (flatness * 12f).coerceIn(0f, 12f),
+            highlights = -(highlightExcess * 15f).coerceIn(0f, 15f),
+            shadows = (shadowDeficit * 15f).coerceIn(0f, 15f),
+            whites = -(highlightExcess * 9f).coerceIn(0f, 9f),
+            blacks = 0f,
+            texture = base.texture + 3f + flatness * 6f,
+            clarity = base.clarity + 2f + flatness * 6f,
+            dehaze = 0f,
+            toneCurve = if (curve.isLinear()) null else curve,
+            // Colour layers stay EXACTLY neutral — no cast, ever.
+            temperature = 0f,
+            tint = 0f,
+            vibrance = 0f,
+            shadowTint = 0f,
+            hsl = HslAdjustments.Neutral,
+            // Structural user edits survive the one-tap.
+            crop = current.crop,
+            lensBlur = current.lensBlur,
+            creativeFilter = current.creativeFilter,
+            filterStrength = current.filterStrength,
+            denoise = current.denoise,
+            grain = current.grain,
+            pointColor = current.pointColor,
+            local = current.local,
+            presetStrength = current.presetStrength
+        ).normalized()
+
+        val parts = buildList {
+            if (!curve.isLinear()) add("RGB 直方图理顺光感层次")
+            if (next.shadows > 2f) add("提暗部")
+            if (next.highlights < -2f) add("压高光")
+            if (next.contrast > 2f) add("增强质感")
+        }
+        return AutoEnhanceResult(
+            adjustments = next,
+            findings = findings,
+            summary = if (parts.isEmpty()) "通透胶片 · 画面已均衡" else "通透胶片 · " + parts.joinToString(" · "),
+            changed = next != current
+        )
+    }
+
+    /**
+     * TRUE closed loop for the 通透胶片 one-tap: render every candidate on the
+     * original (downscaled) WITH the work-style preset as base, measure the
+     * real pixels, and refine only tone parameters until 不死黑 / 不发灰 /
+     * 不过曝 is met — or keep the best measured round. Repeated taps are
+     * byte-identical because all amounts are recomputed from the original.
+     */
+    suspend fun optimizeWorkStyle(
+        source: Bitmap?,
+        current: EditAdjustments = EditAdjustments.Neutral,
+        renderer: ImageRenderer = ImageRenderer()
+    ): AutoEnhanceResult {
+        if (source == null || source.isRecycled || source.width <= 0 || source.height <= 0) {
+            return AutoEnhanceResult(current, emptyList(), "无预览，无法优化", false)
+        }
+        val stats = analyse(source)
+            ?: return AutoEnhanceResult(current, emptyList(), "无法分析画面", false)
+        val seed = suggestWorkStyle(stats, current)
+        val basePreset = WorkStyle16Preset.toPreset()
+        val probe = probeBitmap(source)
+        var candidate = seed.adjustments
+        var best = candidate
+        var bestDefect = Float.POSITIVE_INFINITY
+        var bestMeasured: ImageStats? = null
+        var iterations = 0
+        var converged = false
+        val trail = ArrayList<Float>(OptimizationStandard.MAX_ITERATIONS)
+
+        for (i in 0 until OptimizationStandard.MAX_ITERATIONS) {
+            iterations = i + 1
+            val rendered = renderer.render(
+                probe,
+                basePreset.copy(adjustments = candidate.copy(crop = EditCrop.Full)),
+                forExport = false
+            )
+            val measured = analyse(rendered) ?: break
+            val d = defect(measured, stats)
+            trail.add(d)
+            if (meetsWorkStyleStandard(measured, stats)) {
+                best = candidate
+                bestMeasured = measured
+                converged = true
+                break
+            }
+            val previousDefect = bestDefect
+            if (d < bestDefect) {
+                bestDefect = d
+                best = candidate
+                bestMeasured = measured
+            }
+            if (i >= 2 && d > previousDefect + 0.10f) break
+            if (i == OptimizationStandard.MAX_ITERATIONS - 1) break
+            candidate = refineWorkStyle(candidate, measured, i)
+        }
+
+        val report = reportOf(iterations, converged, bestMeasured, stats, trail)
+        val loopTag = if (converged) "闭环${iterations}轮达标" else "闭环${iterations}轮取最优"
+        return AutoEnhanceResult(
+            adjustments = best,
+            findings = seed.findings,
+            summary = if (seed.summary.isBlank()) loopTag else seed.summary + " · " + loopTag,
+            changed = best != current,
+            report = report
+        )
+    }
+
+    /** Adds an explicit anti-grey floor on top of the shared hard standard. */
+    private fun meetsWorkStyleStandard(m: ImageStats, ref: ImageStats): Boolean =
+        meetsStandard(m, ref) &&
+            m.stdLuma >= ref.stdLuma * 0.78f &&
+            m.p5 <= ref.p5 + 0.22f
+
+    /** Tone-only correction; never lets the loop brighten the whole frame. */
+    private fun refineWorkStyle(
+        candidate: EditAdjustments,
+        m: ImageStats,
+        round: Int
+    ): EditAdjustments {
+        val refined = refine(candidate, m, round)
+        return refined.copy(
+            exposure = min(refined.exposure, candidate.exposure).coerceAtMost(0f),
+            blacks = refined.blacks.coerceAtLeast(0f)
+        ).normalized()
     }
 
     private fun probeBitmap(source: Bitmap): Bitmap {

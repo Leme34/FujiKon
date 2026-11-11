@@ -342,7 +342,9 @@ fun AdjustmentsSheet(
     /** Unedited source used by the colour picker. */
     sourceBitmap: Bitmap? = null,
     /** Current rendered preview, shown while picking a colour. */
-    previewBitmap: Bitmap? = null
+    previewBitmap: Bitmap? = null,
+    /** Hide the strength control when "无（保留原图）" is selected. */
+    presetStrengthEnabled: Boolean = true
 ) {
     val screenHeight = LocalConfiguration.current.screenHeightDp
     val sheetHeight = (screenHeight * 0.56f).dp
@@ -549,6 +551,56 @@ fun AdjustmentsSheet(
                 when (tab) {
                     AdjustTab.LIGHT, AdjustTab.COLOR, AdjustTab.DETAIL, AdjustTab.QUALITY -> {
                         val group = AdjustmentGroups[tab.groupIndex!!]
+                        // Preset strength sits at the top of the four basic
+                        // adjustment pages (the default LIGHT page shows it
+                        // immediately). It lives INSIDE the scrollable area so
+                        // small screens never lose the tab content, and the
+                        // HSL / portrait / tone / filter / mask pages keep
+                        // their original, uncluttered layout.
+                        if (presetStrengthEnabled) {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp)
+                                    .background(
+                                        CardHigh.copy(alpha = 0.16f),
+                                        RoundedCornerShape(14.dp)
+                                    )
+                                    .border(
+                                        1.dp,
+                                        Color.White.copy(alpha = 0.07f),
+                                        RoundedCornerShape(14.dp)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 2.dp)
+                            ) {
+                                AdjustmentSlider(
+                                    label = "预设强度",
+                                    value = draft.presetStrength,
+                                    valueRange = 0f..100f,
+                                    step = 1f,
+                                    onValueChange = { value ->
+                                        updateDraft("预设强度") { it.copy(presetStrength = value) }
+                                    },
+                                    onValueChangeFinished = { previewNow("预设强度") },
+                                    // Double-tap resets to the full look, not to zero.
+                                    onReset = {
+                                        draft = draft.copy(presetStrength = 100f).normalized()
+                                        previewNow("预设强度")
+                                    },
+                                    formattedValue = "${draft.presetStrength.roundToInt()}%",
+                                    enabled = !saving,
+                                    fillFromStart = true
+                                )
+                                Text(
+                                    "预设强度：100% 为完整效果，0% 回到原图；只调浓淡，不改变色相。",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary,
+                                    modifier = Modifier.padding(
+                                        start = 2.dp, end = 2.dp, bottom = 6.dp
+                                    )
+                                )
+                            }
+                        }
                         Column(
                             Modifier
                                 .fillMaxWidth()

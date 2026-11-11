@@ -494,7 +494,7 @@ private fun RemotePresetRow(
         ) {
             Box(
                 Modifier
-                    .size(64.dp)
+                    .size(104.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(CardHigh),
                 contentAlignment = Alignment.Center
@@ -506,7 +506,7 @@ private fun RemotePresetRow(
                         preset = ready.preset,
                         store = thumbnailStore,
                         modifier = Modifier.fillMaxSize(),
-                        targetSize = 180,
+                        targetSize = 360,
                         sourceBitmap = previewPhoto,
                         sourceKeyOverride = "nikonpc-preview"
                     )

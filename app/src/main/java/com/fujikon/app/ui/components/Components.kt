@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
+import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card as CardColor
 import com.fujikon.app.ui.theme.CardHigh
@@ -123,7 +124,9 @@ fun PresetCard(
     preset: Preset,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onFavoriteClick: (() -> Unit)? = null
+    onFavoriteClick: (() -> Unit)? = null,
+    /** Shows the preset applied to the sample scene instead of only its curve. */
+    thumbnailStore: PresetThumbnailStore? = null
 ) {
     Card(
         modifier = modifier.clickable(onClick = onClick),
@@ -134,17 +137,32 @@ fun PresetCard(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(112.dp)
+                    .height(150.dp)
                     .clip(RoundedCornerShape(14.dp))
             ) {
-                // 仅显示曲线图，不再渲染缩略图
-                CurveChart(
-                    points = preset.effectiveCurvePoints(32),
-                    modifier = Modifier.fillMaxSize(),
-                    showSpectrum = false,
-                    showDiagonal = false,
-                    gridAlpha = 0.3f
-                )
+                // A real effect preview is far easier to read than a curve;
+                // the curve stays as the placeholder / fallback tile.
+                val curveChart: @Composable () -> Unit = {
+                    CurveChart(
+                        points = preset.effectiveCurvePoints(32),
+                        modifier = Modifier.fillMaxSize(),
+                        showSpectrum = false,
+                        showDiagonal = false,
+                        gridAlpha = 0.3f
+                    )
+                }
+                if (thumbnailStore != null) {
+                    PresetThumbnail(
+                        photo = null,
+                        preset = preset,
+                        store = thumbnailStore,
+                        modifier = Modifier.fillMaxSize(),
+                        targetSize = 480,
+                        placeholder = curveChart
+                    )
+                } else {
+                    curveChart()
+                }
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {

@@ -737,6 +737,7 @@ fun EditorScreen(
             initialToneCurve = state.effectiveToneCurve,
             presetToneCurve = state.selectedPreset?.toneCurve ?: ToneCurve.linear(),
             baseCurve = p.baseCurvePoints(),
+            presetStrengthEnabled = !p.isNone,
             rendering = state.loading,
             saving = savingAdjustments,
             onPreview = { adjustments, field ->

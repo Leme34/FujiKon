@@ -184,7 +184,7 @@ fun PresetsScreen(
                 )
 
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Adaptive(168.dp),
+                    columns = GridCells.Adaptive(200.dp),
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -226,6 +226,7 @@ fun PresetsScreen(
                         PresetCard(
                             preset = preset,
                             modifier = Modifier.fillMaxWidth(),
+                            thumbnailStore = app.container.presetThumbnailStore,
                             onClick = { navController.navigate(Routes.presetDetail(preset.id)) }
                         )
                     }

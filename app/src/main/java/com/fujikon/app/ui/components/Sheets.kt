@@ -103,7 +103,7 @@ fun PresetPickerSheet(
             )
             Spacer(Modifier.height(16.dp))
             LazyColumn(
-                modifier = Modifier.heightIn(max = 480.dp),
+                modifier = Modifier.heightIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(options, key = { it.id }) { preset ->
@@ -121,7 +121,7 @@ fun PresetPickerSheet(
                     ) {
                         Box(
                             Modifier
-                                .size(56.dp)
+                                .size(104.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(Card)
                         ) {
@@ -152,7 +152,7 @@ fun PresetPickerSheet(
                                     preset = preset,
                                     store = thumbnailStore,
                                     modifier = Modifier.fillMaxSize(),
-                                    targetSize = 180,
+                                    targetSize = 360,
                                     placeholder = fallback
                                 )
                             } else {

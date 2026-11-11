@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.Preset
+import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.AutoEnhanceResult
 import com.fujikon.app.render.ImageStats
@@ -86,9 +87,10 @@ private fun reportLine(r: OptimizationReport): String {
  * always visible while a preview is rendered. Below the chart it shows the
  * problems actually measured in the pixels and a one-tap "一键优化" button.
  *
- * The button is a TRUE one-tap closed loop: on tap it renders candidate
- * parameters on the original (downscaled), measures the real pixels, and keeps
- * refining until 不过曝 / 不死黑 is met — see [AutoEnhance.optimize]. The
+ * The button is a TRUE one-tap closed loop on top of 「通透胶片」: on tap it
+ * renders candidate parameters on the original (downscaled) with the work-style
+ * preset as base, measures the real RGB histograms, and keeps refining until
+ * 不过曝 / 不死黑 / 不发灰 is met — see [AutoEnhance.optimizeWorkStyle]. The
  * zone description, the convergence report and the offline preset picks form
  * one collapsible white-on-photo panel with a chevron toggle.
  */
@@ -103,7 +105,8 @@ fun HistogramCard(
     /** Unedited original: the closed loop must verify against this, not the
      *  already-graded preview, or repeated taps would drift. */
     sourceBitmap: Bitmap? = null,
-    /** Current preset (incl. its tone/channel curves) used as render base. */
+    /** Kept for API compatibility; the closed loop now always verifies with
+     *  the built-in 「通透胶片」 look as its base. */
     basePreset: Preset? = null,
     modifier: Modifier = Modifier,
     width: Dp = 190.dp
@@ -325,15 +328,21 @@ fun HistogramCard(
                     scope.launch {
                         optimizing = true
                         try {
-                            // TRUE one-tap: render → measure → refine on the
-                            // ORIGINAL until 不过曝 / 不死黑 is met.
+                            // 一键优化固定以「通透胶片」为基底，再按 RGB
+                            // 直方图做提暗部 / 压高光 / 理顺光感层次，并在
+                            // 真实渲染像素上闭环验证不死黑、不发灰、不过曝。
                             val result = withContext(Dispatchers.Default) {
-                                AutoEnhance.optimize(
+                                AutoEnhance.optimizeWorkStyle(
                                     source = sourceBitmap ?: bitmap,
-                                    basePreset = basePreset ?: Preset.none(),
                                     current = currentAdjustments
                                 )
                             }
+                            // 内置预置入库时 id 会被替换成 UUID，不能用
+                            // WorkStyle16Preset.ID 常量；按 contentHash 找真身。
+                            val workStyleId = presets.firstOrNull {
+                                it.contentHash == WorkStyle16Preset.CONTENT_HASH
+                            }?.id
+                            if (workStyleId != null) onSelectPreset(workStyleId)
                             appliedSummary = result.summary
                             report = result.report
                             onApplyAdjustments(result.adjustments)

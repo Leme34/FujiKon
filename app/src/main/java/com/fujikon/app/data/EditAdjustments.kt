@@ -57,10 +57,19 @@ data class EditAdjustments(
     val grain: Float = 0f,
     /** Vignette, -100 (darken corners) .. 100 (brighten corners). */
     val vignette: Float = 0f,
-    /** Lightroom-style Point Color: shift one selected colour only. */
+    /** Point Color / zone-scoped adjustments. */
     val pointColor: PointColor = PointColor.Neutral,
     /** Zone-scoped adjustments (control point / linear / radial / brush). */
-    val local: LocalAdjustments = LocalAdjustments.Neutral
+    val local: LocalAdjustments = LocalAdjustments.Neutral,
+    /**
+     * 当前所选预设的效果强度，0..100（默认 100 = 完整套用）。
+     *
+     * 渲染器在全部像素处理完成后，把「完整效果」与「原图」按该比例做逐像素
+     * 线性混合：0 = 原图、100 = 现有行为、中间值平滑过渡。因为只是对同一
+     * 像素位置的 RGB 做插值，色相与饱和度不会被拉伸，天然不引入色偏。
+     * 它属于当前照片的编辑状态，因此会随历史、复制效果与导出一起生效。
+     */
+    val presetStrength: Float = 100f
 ) {
     fun normalized(): EditAdjustments = copy(
         temperature = temperature.coerceIn(-TONE_RANGE, TONE_RANGE),
@@ -87,7 +96,8 @@ data class EditAdjustments(
         grain = grain.coerceIn(0f, TONE_RANGE),
         vignette = vignette.coerceIn(-TONE_RANGE, TONE_RANGE),
         pointColor = pointColor.normalized(),
-        local = local.normalized()
+        local = local.normalized(),
+        presetStrength = presetStrength.coerceIn(0f, 100f)
     )
 
     fun isNeutral(tolerance: Float = 0.005f): Boolean =
@@ -114,7 +124,8 @@ data class EditAdjustments(
             grain <= tolerance &&
             abs(vignette) <= tolerance &&
             pointColor.isNeutral(tolerance) &&
-            local.isNeutral()
+            local.isNeutral() &&
+            presetStrength >= 100f - tolerance
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("temperature", temperature.toDouble())
@@ -142,6 +153,7 @@ data class EditAdjustments(
         put("vignette", vignette.toDouble())
         put("pointColor", pointColor.toJson())
         put("local", local.toJson())
+        put("presetStrength", presetStrength.toDouble())
     }
 
     companion object {
@@ -177,7 +189,9 @@ data class EditAdjustments(
                 grain = json.optDouble("grain", 0.0).toFloat(),
                 vignette = json.optDouble("vignette", 0.0).toFloat(),
                 pointColor = PointColor.fromJson(json.optJSONObject("pointColor")),
-                local = LocalAdjustments.fromJson(json.optJSONObject("local"))
+                local = LocalAdjustments.fromJson(json.optJSONObject("local")),
+                // Older app versions ignore this key; default keeps the full look.
+                presetStrength = json.optDouble("presetStrength", 100.0).toFloat()
             ).normalized()
         }
     }
