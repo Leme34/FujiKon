@@ -128,7 +128,8 @@ class PresetRepository(private val context: Context) {
     private fun upgradeBuiltInSamplesLocked(list: List<Preset>): List<Preset> {
         // old content hash -> the new template that replaces it
         val upgrades = mapOf(
-            "local:workstyle16_tonal_v1" to WorkStyle16Preset.CONTENT_HASH
+            "local:workstyle16_tonal_v1" to WorkStyle16Preset.CONTENT_HASH,
+            "local:workstyle16_tonal_v2" to WorkStyle16Preset.CONTENT_HASH
         )
         if (list.none { it.isSample && it.fileName.isBlank() && it.contentHash in upgrades }) {
             return list

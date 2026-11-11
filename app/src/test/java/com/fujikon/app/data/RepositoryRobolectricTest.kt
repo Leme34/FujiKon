@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.test.core.app.ApplicationProvider
+import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -161,24 +162,24 @@ class RepositoryRobolectricTest {
             listOf(
                 "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK",
                 "local:pmango_style_approx",
-                "local:workstyle16_tonal_v2"
+                "local:workstyle16_tonal_v3"
             ),
             first
         )
     }
 
     @Test
-    fun upgradeReplacesLegacyWorkStylePresetWithV2() = runBlocking {
+    fun upgradeReplacesLegacyWorkStylePresetWithV3() = runBlocking {
         repository.load()
-        // 伪造旧版索引：把内置的「通透胶片」改回 v1 的 hash 与「无 lumaToneLut」
-        // 形态，并保留用户态（收藏 + 备注），模拟从 1.6.32 覆盖安装上来的用户。
+        // 伪造旧版索引：把内置的「通透胶片」改回 v2 的 hash 与「无 lumaToneLut」
+        // 形态，并保留用户态（收藏 + 备注），模拟从 1.6.35 覆盖安装上来的用户。
         val index = java.io.File(context.filesDir, "presets/index.json")
         val root = org.json.JSONObject(index.readText())
         val array = root.getJSONArray("presets")
         for (i in 0 until array.length()) {
             val item = array.getJSONObject(i)
-            if (item.optString("contentHash") == "local:workstyle16_tonal_v2") {
-                item.put("contentHash", "local:workstyle16_tonal_v1")
+            if (item.optString("name") == "通透胶片") {
+                item.put("contentHash", "local:workstyle16_tonal_v2")
                 item.put("favorite", true)
                 item.put("note", "我最爱的滤镜")
                 item.remove("lumaToneLut")
@@ -190,13 +191,13 @@ class RepositoryRobolectricTest {
         reopened.load()
 
         val upgraded = reopened.presets.value.firstOrNull {
-            it.contentHash == "local:workstyle16_tonal_v2"
+            it.contentHash == WorkStyle16Preset.CONTENT_HASH
         }
-        assertNotNull("升级后应存在 v2 通透胶片", upgraded)
-        assertTrue("旧 v1 hash 应被清除",
-            reopened.presets.value.none { it.contentHash == "local:workstyle16_tonal_v1" })
-        assertNotNull("v2 必须带保色 LUT", upgraded!!.lumaToneLut)
-        assertNull("v2 不应再有逐通道 curve", upgraded.curve)
+        assertNotNull("升级后应存在最新版通透胶片", upgraded)
+        assertTrue("旧 v2 hash 应被清除",
+            reopened.presets.value.none { it.contentHash == "local:workstyle16_tonal_v2" })
+        assertNotNull("最新版必须带保色 LUT", upgraded!!.lumaToneLut)
+        assertNull("最新版不应再有逐通道 curve", upgraded.curve)
         assertTrue("用户收藏应保留", upgraded.favorite)
         assertEquals("我最爱的滤镜", upgraded.note)
         assertEquals("条目总数不应变化", 7, reopened.presets.value.size)

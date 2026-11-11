@@ -12,15 +12,17 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * 「通透胶片」v2 预置的参数边界与色彩学不变量。
+ * 「通透胶片」v3 预置的参数边界与色彩学不变量。
  *
- * 相对 1.6.32（逐通道 curve）与 1.6.33（严重偏色）最关键的改变：
- * 影调全部走 [lumaToneLut] 亮度耦合路径，curve 明确为 null。这里的测试锁死
- * 三件事：
+ * 相对 1.6.32（逐通道 curve）与 1.6.33（严重偏色）、以及 1.6.35（高光死白平台）
+ * 最关键的改变：影调全部走 [lumaToneLut] 亮度耦合路径，curve 明确为 null。这
+ * 里的测试锁死四件事：
  *  ① 保色：灰阶探针 a/b=0；彩色像素三通道同 scale，色相/彩度零漂移；
  *     高光触顶时三通道等比回缩，绝不逐通道裁剪（1.6.33 偏色的根因）。
- *  ② 影调 LUT 形态：单调、平滑、黑位柔化、中间调提亮、白点收敛、范围合法。
- *  ③ 复合效果层克制：色彩层恒等，无任何全局调色；人像/质感/美感参数有上限。
+ *  ② 影调 LUT 形态：单调、平滑、黑位柔化（日系雾感）、中间调不压暗、白点平滑
+ *     肩部收敛、范围合法。
+ *  ③ 高光控制：高光区不得出现死白平台，顶端必须有梯度以保留高光层次。
+ *  ④ 复合效果层克制：色彩层恒等，无任何全局调色；人像/质感/美感参数有上限。
  */
 class WorkStyle16PresetTest {
 
@@ -29,7 +31,7 @@ class WorkStyle16PresetTest {
     @Test
     fun identityIsStableAndIndependent() {
         assertEquals("workstyle16_tonal", WorkStyle16Preset.ID)
-        assertEquals("local:workstyle16_tonal_v2", WorkStyle16Preset.CONTENT_HASH)
+        assertEquals("local:workstyle16_tonal_v3", WorkStyle16Preset.CONTENT_HASH)
         assertEquals("通透胶片", preset.name)
         assertTrue(preset.description?.contains("统计风格拟合") == true)
 
@@ -59,8 +61,8 @@ class WorkStyle16PresetTest {
         assertTrue("LUT 值域必须 0..255", t.all { it in 0..255 })
         // 黑位柔化：不死黑，但也不把黑抬成灰
         assertTrue("黑位 ${t[0]} 应柔化在 4..20", t[0] in 4..20)
-        // 白点柔和收敛，不推到纯白 255（避免死白）
-        assertTrue("白点应收敛 <255，实际 ${t[255]}", t[255] in 240..252)
+        // 白点柔和收敛，不推到纯白 255（避免死白），日系 v3 到 254 平滑肩部
+        assertTrue("白点应收敛 <255，实际 ${t[255]}", t[255] in 240..254)
         // 平滑：二阶差分均值不能太大，避免色阶断层
         var curv = 0.0
         for (i in 2 until 256) curv += abs(t[i] - 2 * t[i - 1] + t[i - 2])
@@ -80,6 +82,31 @@ class WorkStyle16PresetTest {
         var lifted = 0
         for (i in 0..255) if (t[i] >= i - 1) lifted++
         assertTrue("绝大多数采样点应 >= 输入，实际 $lifted", lifted >= 240)
+    }
+
+    @Test
+    fun lumaToneLutControlsHighlightsWithGradation() {
+        // 日系 v3 的关键修复：高光不能再被压成「死白平台」（多级输入塌成 1 级、
+        // 丢失高光层次），改为平滑肩部、保留层次。这条断言锁死该回归。
+        val t = preset.lumaToneLut!!
+        var maxRun = 1
+        var run = 1
+        for (i in 1 until t.size) {
+            if (t[i] == t[i - 1]) {
+                run += 1
+                maxRun = max(maxRun, run)
+            } else {
+                run = 1
+            }
+        }
+        assertTrue("高光区不得出现死白平台（最长相等连续段 ${maxRun}）", maxRun <= 3)
+        // 高光顶端 [220,255] 必须仍有梯度，保住高光层次
+        var slope = 0.0
+        for (i in 221..255) slope += (t[i] - t[i - 1])
+        slope /= 35.0
+        assertTrue("高光顶端梯度必须 >0.4（保留层次），实际 $slope", slope > 0.4)
+        // 高光区不压低：p236 应 >= 输入（柔光而非发灰）
+        assertTrue("p236 不应被压低，实际 ${t[236]}", t[236] >= 236 - 2)
     }
 
     @Test
