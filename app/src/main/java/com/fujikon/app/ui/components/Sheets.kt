@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,7 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
-import com.fujikon.app.data.PresetSearch
+import com.fujikon.app.data.PresetFilter
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
@@ -72,12 +73,11 @@ fun PresetPickerSheet(
     thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null,
     onOpenDetail: ((Preset) -> Unit)? = null
 ) {
-    val options = remember(presets) { listOf(Preset.none()) + presets }
     var searchQuery by remember { mutableStateOf("") }
-    // 「无（保留原图）」始终保留，搜索只过滤真实预设，随时能退回原图。
-    val visibleOptions = remember(options, searchQuery) {
-        if (searchQuery.isBlank()) options
-        else listOf(options.first()) + options.drop(1).filter { PresetSearch.matches(it, searchQuery) }
+    var onlyFavorite by remember { mutableStateOf(false) }
+    // 「无（保留原图）」不参与筛选，始终保留；搜索与「仅看已收藏」叠加。
+    val visibleOptions = remember(presets, searchQuery, onlyFavorite) {
+        listOf(Preset.none()) + PresetFilter.forPicker(presets, searchQuery, onlyFavorite)
     }
     EditorBottomPanel(
         onDismiss = onDismiss,
@@ -140,6 +140,24 @@ fun PresetPickerSheet(
                     focusedTextColor = TextPrimary,
                     unfocusedTextColor = TextPrimary,
                     cursorColor = Amber
+                )
+            )
+            Spacer(Modifier.height(8.dp))
+            FilterChip(
+                selected = onlyFavorite,
+                onClick = { onlyFavorite = !onlyFavorite },
+                label = { Text("仅看已收藏") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                modifier = Modifier.testTag("preset_picker_favorite_filter"),
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = Amber,
+                    selectedLabelColor = Ink
                 )
             )
             Spacer(Modifier.height(8.dp))
@@ -265,8 +283,18 @@ fun PresetPickerSheet(
                     color = TextSecondary,
                     modifier = Modifier.padding(top = 10.dp)
                 )
+                onlyFavorite && presets.none { it.favorite } -> Text(
+                    "还没有已收藏的预设，关闭「仅看已收藏」可查看全部。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
                 searchQuery.isNotBlank() && visibleOptions.size <= 1 -> Text(
-                    "没有匹配「$searchQuery」的预设，试试名称或说明里的其他关键词。",
+                    if (onlyFavorite) {
+                        "没有匹配「$searchQuery」的已收藏预设，试试其他关键词或关闭收藏筛选。"
+                    } else {
+                        "没有匹配「$searchQuery」的预设，试试名称或说明里的其他关键词。"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     modifier = Modifier.padding(top = 10.dp)

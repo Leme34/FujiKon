@@ -55,8 +55,20 @@ class PresetRepository(private val context: Context) {
     private val filesDir = File(rootDir, "files")
     private val indexFile = File(rootDir, "index.json")
 
+    /**
+     * 全量索引（含软删除条目）。只在 [mutex] 保护下读写；`publish` 是唯一
+     * 写入口，保证「活跃列表」「已删除列表」「磁盘 index」三者永远同源。
+     */
+    @Volatile
+    private var all: List<Preset> = emptyList()
+
+    /** 对外只暴露未删除的预设：编辑器、相册、设置、选择预设列表语义不变。 */
     private val _presets = MutableStateFlow<List<Preset>>(emptyList())
     val presets: StateFlow<List<Preset>> = _presets.asStateFlow()
+
+    /** 「已删除」列表，按删除时间倒序。 */
+    private val _deletedPresets = MutableStateFlow<List<Preset>>(emptyList())
+    val deletedPresets: StateFlow<List<Preset>> = _deletedPresets.asStateFlow()
 
     private val _ready = MutableStateFlow(false)
     val ready: StateFlow<Boolean> = _ready.asStateFlow()
@@ -156,7 +168,10 @@ class PresetRepository(private val context: Context) {
                     importedAt = stored.importedAt,
                     isSample = true,
                     fileName = "",
-                    fileSize = 0
+                    fileSize = 0,
+                    // 升级配方不能把用户已软删除的预置「复活」。
+                    deleted = stored.deleted,
+                    deletedAt = stored.deletedAt
                 )
             }
         }
@@ -166,7 +181,8 @@ class PresetRepository(private val context: Context) {
         return result
     }
 
-    fun find(id: String?): Preset? = _presets.value.firstOrNull { it.id == id }
+    /** 已删除的预设不应对外可查（详情页、编辑器都不该再用到它）。 */
+    fun find(id: String?): Preset? = all.firstOrNull { !it.deleted && it.id == id }
 
     suspend fun importUris(uris: List<Uri>): ImportResult {
         load()
@@ -175,8 +191,11 @@ class PresetRepository(private val context: Context) {
         val errors = mutableListOf<String>()
         mutex.withLock {
             withContext(Dispatchers.IO) {
-                val existingHashes = _presets.value.map { it.contentHash }.filter { it.isNotBlank() }.toMutableSet()
-                val list = _presets.value.toMutableList()
+                // 已删除条目不参与去重：删掉一个导入预设后重新导入同一文件
+                // 仍应成功（旧条目留在「已删除」列表里，可随时恢复）。
+                val existingHashes = all.filterNot { it.deleted }
+                    .map { it.contentHash }.filter { it.isNotBlank() }.toMutableSet()
+                val list = all.toMutableList()
                 uris.forEach { uri ->
                     val displayName = displayName(uri) ?: "preset_${System.currentTimeMillis()}"
                     try {
@@ -229,11 +248,11 @@ class PresetRepository(private val context: Context) {
         val results = linkedMapOf<String, BinaryImportResult>()
         mutex.withLock {
             withContext(Dispatchers.IO) {
-                val existingHashes = _presets.value
+                val existingHashes = all.filterNot { it.deleted }
                     .map { it.contentHash }
                     .filter { it.isNotBlank() }
                     .toMutableSet()
-                val list = _presets.value.toMutableList()
+                val list = all.toMutableList()
                 var changed = false
 
                 files.forEach { file ->
@@ -296,7 +315,7 @@ class PresetRepository(private val context: Context) {
         load()
         return mutex.withLock {
             withContext(Dispatchers.IO) {
-                val list = _presets.value.toMutableList()
+                val list = all.toMutableList()
                 val saved = preset.copy(
                     id = UUID.randomUUID().toString(),
                     name = uniqueName(preset.name, list)
@@ -313,7 +332,7 @@ class PresetRepository(private val context: Context) {
         load()
         mutex.withLock {
             withContext(Dispatchers.IO) {
-                val list = _presets.value.toMutableList()
+                val list = all.toMutableList()
                 val index = list.indexOfFirst { it.id == preset.id }
                 if (index >= 0) {
                     list[index] = preset
@@ -324,15 +343,54 @@ class PresetRepository(private val context: Context) {
         }
     }
 
+    /**
+     * 软删除：预设从「我的预设」消失并进入「已删除」列表，可随时 [restore]。
+     * 索引与二进制文件都保留，因此恢复后参数、收藏、备注、曲线完全不变；
+     * 条目仍留在全量索引中，覆盖安装的 `ensureBuiltInsLocked` 不会把一个被
+     * 用户删掉的内置预置重新播种回来。
+     */
     suspend fun delete(id: String) {
         load()
         mutex.withLock {
             withContext(Dispatchers.IO) {
-                val preset = _presets.value.firstOrNull { it.id == id } ?: return@withContext
+                val target = all.firstOrNull { it.id == id } ?: return@withContext
+                if (target.deleted) return@withContext
+                val now = System.currentTimeMillis()
+                val list = all.map { stored ->
+                    if (stored.id == id) stored.copy(deleted = true, deletedAt = now) else stored
+                }
+                publish(list)
+                writeIndex(list)
+            }
+        }
+    }
+
+    /** 从「已删除」列表恢复，回到「我的预设」，用户态完整保留。 */
+    suspend fun restore(id: String) {
+        load()
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val target = all.firstOrNull { it.id == id } ?: return@withContext
+                if (!target.deleted) return@withContext
+                val list = all.map { stored ->
+                    if (stored.id == id) stored.copy(deleted = false, deletedAt = 0L) else stored
+                }
+                publish(list)
+                writeIndex(list)
+            }
+        }
+    }
+
+    /** 彻底删除：仅「已删除」列表里的该操作会真正移除索引与二进制文件。 */
+    suspend fun deletePermanently(id: String) {
+        load()
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val preset = all.firstOrNull { it.id == id } ?: return@withContext
                 if (preset.fileName.isNotBlank()) {
                     File(filesDir, preset.fileName).delete()
                 }
-                val list = _presets.value.filterNot { it.id == id }
+                val list = all.filterNot { it.id == id }
                 publish(list)
                 writeIndex(list)
             }
@@ -344,7 +402,9 @@ class PresetRepository(private val context: Context) {
         var count = 0
         mutex.withLock {
             withContext(Dispatchers.IO) {
-                val list = _presets.value.toMutableList()
+                val list = all.toMutableList()
+                // 用全量索引去重：被软删除的内置/示例仍在 index 里，不应被
+                // 「加载示例预设」重新播种成第二条（要恢复请走 restore）。
                 val existing = list.map { it.contentHash }.toMutableSet()
                 sampleAssets().forEach { assetName ->
                     val bytes = runCatching { context.assets.open(assetName).use { it.readBytes() } }.getOrNull()
@@ -480,12 +540,24 @@ class PresetRepository(private val context: Context) {
             .map { "samples/$it" }
     }
 
+    /**
+     * 单一写入口：全量索引、活跃列表、已删除列表同步更新，三者不会漂移。
+     */
     private fun publish(list: List<Preset>) {
-        _presets.value = sort(list)
+        all = list
+        _presets.value = sortActive(list.filterNot { it.deleted })
+        _deletedPresets.value = sortDeleted(list.filter { it.deleted })
     }
 
-    private fun sort(list: List<Preset>): List<Preset> = list.sortedWith(
+    /** 活跃列表：收藏优先，其余按名称。 */
+    private fun sortActive(list: List<Preset>): List<Preset> = list.sortedWith(
         compareByDescending<Preset> { it.favorite }
+            .thenBy { it.name.lowercase() }
+    )
+
+    /** 已删除列表：最近删除的排在最前，便于恢复。 */
+    private fun sortDeleted(list: List<Preset>): List<Preset> = list.sortedWith(
+        compareByDescending<Preset> { it.deletedAt }
             .thenBy { it.name.lowercase() }
     )
 

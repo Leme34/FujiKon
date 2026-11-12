@@ -482,8 +482,143 @@ class RepositoryRobolectricTest {
         assertNotNull(persisted)
         assertEquals(curve.normalizedPoints, persisted!!.toneCurve?.normalizedPoints)
 
-        reopened.delete(saved.id)
+        reopened.deletePermanently(saved.id)
         assertTrue("deleting a curve copy must not delete the source NCP", originalFile.exists())
         assertTrue(reopened.presets.value.none { it.id == saved.id })
+    }
+
+    // ---------------------------------------------------------- 软删除 / 恢复
+
+    @Test
+    fun softDeleteMovesPresetToDeletedListAndKeepsEverything() = runBlocking {
+        repository.load()
+        val base = repository.presets.value.first { it.fileName.isNotBlank() }
+        val originalFile = repository.fileFor(base)
+        assertTrue(originalFile.exists())
+        repository.update(base.copy(favorite = true, note = "别删错"))
+
+        repository.delete(base.id)
+
+        assertTrue("软删除后不应再出现在活跃列表",
+            repository.presets.value.none { it.id == base.id })
+        val deleted = repository.deletedPresets.value
+        assertEquals(1, deleted.size)
+        assertEquals(base.id, deleted.first().id)
+        assertTrue("软删除必须保留二进制文件以便恢复", originalFile.exists())
+        assertTrue("用户收藏不能丢", deleted.first().favorite)
+        assertEquals("别删错", deleted.first().note)
+        assertTrue(deleted.first().deletedAt > 0)
+        assertNull("已删除的预设不应对外可查", repository.find(base.id))
+    }
+
+    @Test
+    fun restoreBringsDeletedPresetBackWithUserState() = runBlocking {
+        repository.load()
+        val base = repository.presets.value.first()
+        repository.update(base.copy(favorite = true, note = "留着"))
+        repository.delete(base.id)
+        repository.restore(base.id)
+
+        assertTrue(repository.deletedPresets.value.isEmpty())
+        val restored = repository.presets.value.firstOrNull { it.id == base.id }
+        assertNotNull(restored)
+        assertTrue(restored!!.favorite)
+        assertEquals("留着", restored.note)
+        assertFalse(restored.deleted)
+        assertEquals(0L, restored.deletedAt)
+        assertEquals(seededCount(), repository.presets.value.size)
+    }
+
+    @Test
+    fun deletePermanentlyRemovesIndexAndFile() = runBlocking {
+        repository.load()
+        val base = repository.presets.value.first { it.fileName.isNotBlank() }
+        val originalFile = repository.fileFor(base)
+        repository.delete(base.id)
+        repository.deletePermanently(base.id)
+
+        assertTrue(repository.deletedPresets.value.none { it.id == base.id })
+        assertTrue(repository.presets.value.none { it.id == base.id })
+        assertFalse("彻底删除应移除二进制文件", originalFile.exists())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+        assertTrue("彻底删除后重启也不能回来",
+            reopened.deletedPresets.value.none { it.id == base.id } &&
+                reopened.presets.value.none { it.id == base.id })
+    }
+
+    @Test
+    fun deletedStateSurvivesRepositoryReopenAndLegacyJsonIsActive() = runBlocking {
+        repository.load()
+        val base = repository.presets.value.first()
+        // 旧版本索引没有 deleted 键，读取时按未删除处理。
+        assertFalse(Preset.fromJson(base.toJson().apply {
+            remove("deleted")
+            remove("deletedAt")
+        }).deleted)
+        // 未删除的预置不往 JSON 里写软删除键，保持旧版形状。
+        assertFalse(base.toJson().has("deleted"))
+
+        repository.delete(base.id)
+        val json = repository.deletedPresets.value.first().toJson()
+        assertTrue(json.optBoolean("deleted"))
+        assertTrue(json.optLong("deletedAt") > 0)
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+        assertTrue("重启后已删除列表必须仍在",
+            reopened.deletedPresets.value.any { it.id == base.id })
+        assertTrue("重启后活跃列表不应复活已删除项",
+            reopened.presets.value.none { it.id == base.id })
+        assertEquals(seededCount() - 1, reopened.presets.value.size)
+    }
+
+    @Test
+    fun softDeletedBuiltInIsNotReseededOnUpgrade() = runBlocking {
+        repository.load()
+        val builtIn = repository.presets.value.first { it.contentHash.startsWith("nikonpc:") }
+        repository.delete(builtIn.id)
+
+        // 模拟覆盖安装：删掉一批内置触发 ensureBuiltInsLocked 补齐。
+        val index = java.io.File(context.filesDir, "presets/index.json")
+        val root = org.json.JSONObject(index.readText())
+        val array = root.getJSONArray("presets")
+        val kept = org.json.JSONArray()
+        for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            if (!item.optString("contentHash").startsWith("cloudlut:")) kept.put(item)
+        }
+        root.put("presets", kept)
+        index.writeText(root.toString())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+        assertTrue("用户删掉的内置预置不能被升级重新播种",
+            reopened.presets.value.none { it.id == builtIn.id })
+        assertEquals(0, reopened.presets.value.count { it.contentHash == builtIn.contentHash })
+        assertTrue("它应仍在已删除列表里等待恢复",
+            reopened.deletedPresets.value.any { it.id == builtIn.id })
+    }
+
+    @Test
+    fun reimportAfterSoftDeleteIsNotTreatedAsDuplicate() = runBlocking {
+        repository.load()
+        val bytes = javaClass.classLoader!!.getResourceAsStream("nc400.ncp")!!.readBytes()
+            .copyOf().apply {
+                val name = "Reimport Unique".toByteArray(Charsets.US_ASCII)
+                for (i in 0 until 20) this[0x10 + i] = if (i < name.size) name[i] else 0
+            }
+        val first = repository.importBinaries(
+            listOf(PresetRepository.IncomingPreset("first", "Reimport Test", bytes))
+        )
+        val imported = (first["first"] as PresetRepository.BinaryImportResult.Imported).preset
+        repository.delete(imported.id)
+
+        val second = repository.importBinaries(
+            listOf(PresetRepository.IncomingPreset("second", "Reimport Test Again", bytes))
+        )
+        assertTrue("删除后重新导入同一文件不应被判为重复",
+            second["second"] is PresetRepository.BinaryImportResult.Imported)
     }
 }

@@ -1,9 +1,12 @@
 package com.fujikon.app
 
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -62,5 +65,24 @@ class AppUiSmokeTest {
         }
         composeRule.onNodeWithText("nikonpc 在线预设").assertExists()
         composeRule.onNodeWithText("全部导入").assertExists()
+    }
+
+    @Test
+    fun homeShowsPresetFilterChipsAndFavoriteView() {
+        composeRule.waitUntil(15_000) {
+            composeRule.onAllNodesWithText("选照片套用").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTrue("首页应提供「全部」筛选",
+            composeRule.onAllNodesWithTag("presets_filter_all").fetchSemanticsNodes().isNotEmpty())
+        assertTrue("首页应提供「已收藏」筛选",
+            composeRule.onAllNodesWithTag("presets_filter_favorite").fetchSemanticsNodes().isNotEmpty())
+        assertTrue("首页应提供「已删除」筛选",
+            composeRule.onAllNodesWithTag("presets_filter_deleted").fetchSemanticsNodes().isNotEmpty())
+
+        composeRule.onNodeWithTag("presets_filter_favorite").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("还没有收藏的预设。点击卡片右上角的星标即可收藏。")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
     }
 }

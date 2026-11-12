@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -37,6 +38,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -69,11 +72,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.fujikon.app.FujiKonApp
-import com.fujikon.app.data.PresetSearch
+import com.fujikon.app.data.PresetFilter
+import com.fujikon.app.data.PresetListFilter
 import com.fujikon.app.ui.Routes
-import com.fujikon.app.ui.components.PresetCard
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.components.SectionHeader
+import com.fujikon.app.ui.components.SwipeRevealPresetCard
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
@@ -95,6 +99,7 @@ fun PresetsScreen(
     val context = LocalContext.current
     val app = context.applicationContext as FujiKonApp
     val presets by viewModel.presets.collectAsStateWithLifecycle()
+    val deletedPresets by viewModel.deletedPresets.collectAsStateWithLifecycle()
     val ready by viewModel.ready.collectAsStateWithLifecycle()
     val previewPhoto by app.container.selectionStore.previewPhoto.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -104,9 +109,16 @@ fun PresetsScreen(
     var importing by remember { mutableStateOf(false) }
     var importErrors by remember { mutableStateOf<List<String>>(emptyList()) }
     var searchQuery by remember { mutableStateOf("") }
-    // 按名称 / 说明 / 备注 / 来源名过滤；空查询展示全部。
-    val visiblePresets = remember(presets, searchQuery) {
-        PresetSearch.filter(presets, searchQuery)
+    var filter by remember { mutableStateOf(PresetListFilter.ALL) }
+    // 「全部 / 已收藏 / 已删除」三种视图叠加名称 / 说明搜索。已删除列表
+    // 是独立数据源，软删除条目不会出现在前两种视图里。
+    val visiblePresets = remember(presets, deletedPresets, filter, searchQuery) {
+        PresetFilter.forHome(presets, deletedPresets, filter, searchQuery)
+    }
+    val sectionTitle = when (filter) {
+        PresetListFilter.ALL -> "我的预设"
+        PresetListFilter.FAVORITE -> "已收藏"
+        PresetListFilter.DELETED -> "已删除"
     }
 
     val importLauncher = rememberLauncherForActivityResult(
@@ -182,7 +194,9 @@ fun PresetsScreen(
                     CircularProgressIndicator(color = Amber, strokeWidth = 2.dp)
                 }
 
-                presets.isEmpty() -> EmptyHome(
+                // 所有预设都被删掉时也必须能进入列表切到「已删除」恢复，
+                // 否则用户会被困在空首页且永远找不回已删除的预设。
+                presets.isEmpty() && deletedPresets.isEmpty() -> EmptyHome(
                     onImport = ::openImport,
                     onNikonPc = { navController.navigate(Routes.NIKONPC) },
                     onNikonCloud = { navController.navigate(Routes.NIKON_CLOUD) },
@@ -212,7 +226,7 @@ fun PresetsScreen(
                     }
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         SectionHeader(
-                            title = "我的预设 (${visiblePresets.size})",
+                            title = "$sectionTitle (${visiblePresets.size})",
                             action = {
                                 Row {
                                     TextButton(onClick = { navController.navigate(Routes.NIKONPC) }) {
@@ -266,10 +280,62 @@ fun PresetsScreen(
                             )
                         )
                     }
-                    if (visiblePresets.isEmpty() && searchQuery.isNotBlank()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = filter == PresetListFilter.ALL,
+                                onClick = { filter = PresetListFilter.ALL },
+                                label = { Text("全部") },
+                                modifier = Modifier.testTag("presets_filter_all"),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Amber,
+                                    selectedLabelColor = Ink
+                                )
+                            )
+                            FilterChip(
+                                selected = filter == PresetListFilter.FAVORITE,
+                                onClick = { filter = PresetListFilter.FAVORITE },
+                                label = { Text("已收藏") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Star,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("presets_filter_favorite"),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Amber,
+                                    selectedLabelColor = Ink
+                                )
+                            )
+                            FilterChip(
+                                selected = filter == PresetListFilter.DELETED,
+                                onClick = { filter = PresetListFilter.DELETED },
+                                label = { Text("已删除 (${deletedPresets.size})") },
+                                modifier = Modifier.testTag("presets_filter_deleted"),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Amber,
+                                    selectedLabelColor = Ink
+                                )
+                            )
+                        }
+                    }
+                    val emptyMessage = when {
+                        searchQuery.isNotBlank() ->
+                            "没有匹配「$searchQuery」的预设，试试名称或说明里的其他关键词。"
+                        filter == PresetListFilter.FAVORITE ->
+                            "还没有收藏的预设。点击卡片右上角的星标即可收藏。"
+                        filter == PresetListFilter.DELETED ->
+                            "已删除列表是空的。左滑任意预设并点击「删除」，它会移到这里等待恢复。"
+                        presets.isEmpty() ->
+                            "所有预设都已删除，点击上方「已删除」即可恢复。"
+                        else -> null
+                    }
+                    if (visiblePresets.isEmpty() && emptyMessage != null) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             Text(
-                                "没有匹配「$searchQuery」的预设，试试名称或说明里的其他关键词。",
+                                emptyMessage,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary,
                                 modifier = Modifier.padding(vertical = 20.dp)
@@ -277,12 +343,36 @@ fun PresetsScreen(
                         }
                     }
                     items(visiblePresets, key = { it.id }) { preset ->
-                        PresetCard(
+                        val isDeletedView = filter == PresetListFilter.DELETED
+                        val restoreAction: (() -> Unit)? = if (isDeletedView) {
+                            {
+                                scope.launch {
+                                    viewModel.restore(preset.id)
+                                    snackbar.showSnackbar("已恢复「${preset.name}」")
+                                }
+                            }
+                        } else null
+                        SwipeRevealPresetCard(
                             preset = preset,
-                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { navController.navigate(Routes.presetDetail(preset.id)) },
+                            onDelete = {
+                                scope.launch {
+                                    if (isDeletedView) {
+                                        viewModel.deletePermanently(preset.id)
+                                        snackbar.showSnackbar("已彻底删除「${preset.name}」")
+                                    } else {
+                                        viewModel.delete(preset.id)
+                                        snackbar.showSnackbar("已移到「已删除」，可在已删除列表恢复")
+                                    }
+                                }
+                            },
+                            onRestore = restoreAction,
+                            deleted = isDeletedView,
+                            onFavoriteClick = { scope.launch { viewModel.toggleFavorite(preset) } },
                             thumbnailStore = app.container.presetThumbnailStore,
                             photo = previewPhoto,
-                            onClick = { navController.navigate(Routes.presetDetail(preset.id)) }
+                            modifier = Modifier.fillMaxWidth(),
+                            testTag = "preset_card_${preset.id}"
                         )
                     }
                 }

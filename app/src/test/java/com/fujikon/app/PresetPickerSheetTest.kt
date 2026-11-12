@@ -6,6 +6,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import com.fujikon.app.data.Preset
@@ -126,5 +127,71 @@ class PresetPickerSheetTest {
             "按说明命中的预设应保留",
             composeRule.onAllNodesWithText("日系清透").fetchSemanticsNodes().isNotEmpty()
         )
+    }
+
+    @Test
+    fun favoriteFilterShowsOnlyFavoritesButKeepsNoneOption() {
+        val fav = Preset.none().copy(
+            id = "fav",
+            name = "收藏的日系",
+            favorite = true,
+            description = "低饱和胶片感"
+        )
+        val normal = Preset.none().copy(id = "normal", name = "普通预设")
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = listOf(fav, normal),
+                    selectedId = null,
+                    onSelect = {},
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("普通预设").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("preset_picker_favorite_filter").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("普通预设").fetchSemanticsNodes().isEmpty()
+        }
+
+        assertTrue("已收藏的预设应保留",
+            composeRule.onAllNodesWithText("收藏的日系").fetchSemanticsNodes().isNotEmpty())
+        assertTrue("「无（保留原图）」在收藏筛选下也必须保留",
+            composeRule.onAllNodesWithText("无（保留原图）").fetchSemanticsNodes().isNotEmpty())
+    }
+
+    @Test
+    fun favoriteFilterStacksWithSearch() {
+        val favA = Preset.none().copy(
+            id = "fav-a", name = "日系清透", favorite = true, description = "低饱和胶片感"
+        )
+        val favB = Preset.none().copy(
+            id = "fav-b", name = "人像暖调", favorite = true, description = "柔和肤色"
+        )
+        val normal = Preset.none().copy(id = "n", name = "通透胶片", description = "胶片感")
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = listOf(favA, favB, normal),
+                    selectedId = null,
+                    onSelect = {},
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("preset_picker_favorite_filter").performClick()
+        composeRule.onNodeWithTag("preset_picker_search_field").performTextInput("胶片感")
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("人像暖调").fetchSemanticsNodes().isEmpty()
+        }
+        assertTrue("收藏 + 搜索应只留下同时命中的收藏项",
+            composeRule.onAllNodesWithText("日系清透").fetchSemanticsNodes().isNotEmpty())
+        assertTrue("非收藏项即使匹配搜索也不能出现",
+            composeRule.onAllNodesWithText("通透胶片").fetchSemanticsNodes().isEmpty())
+        assertTrue(composeRule.onAllNodesWithText("无（保留原图）").fetchSemanticsNodes().isNotEmpty())
     }
 }

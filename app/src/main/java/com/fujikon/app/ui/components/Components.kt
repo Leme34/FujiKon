@@ -25,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,8 +46,10 @@ import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.Card as CardColor
 import com.fujikon.app.ui.theme.CardHigh
+import com.fujikon.app.ui.theme.Danger
 import com.fujikon.app.ui.theme.HueColors
 import com.fujikon.app.ui.theme.Outline
+import com.fujikon.app.ui.theme.Success
 import com.fujikon.app.ui.theme.TextSecondary
 import com.fujikon.app.ui.theme.TextPrimary
 import android.graphics.Bitmap
@@ -54,6 +57,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import coil.compose.AsyncImage
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.aspectRatio
@@ -128,7 +132,10 @@ fun PresetCard(
     /** Shows the preset applied to the sample scene instead of only its curve. */
     thumbnailStore: PresetThumbnailStore? = null,
     /** 预览源：最近一次选择的第一张照片；为空时使用内置样张。 */
-    photo: PhotoItem? = null
+    photo: PhotoItem? = null,
+    /** 已删除视图：显示状态标签与就地「恢复」入口。 */
+    deleted: Boolean = false,
+    onRestoreClick: (() -> Unit)? = null
 ) {
     Card(
         modifier = modifier.clickable(onClick = onClick),
@@ -206,6 +213,21 @@ fun PresetCard(
                 when {
                     preset.isDerived -> MetaChip("副本")
                     preset.isSample -> MetaChip("示例")
+                }
+            }
+            if (deleted) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MetaChip("已删除", tint = Danger)
+                    Spacer(Modifier.weight(1f))
+                    if (onRestoreClick != null) {
+                        TextButton(
+                            onClick = onRestoreClick,
+                            modifier = Modifier.testTag("preset_restore_${preset.id}")
+                        ) {
+                            Text("恢复", color = Success, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }

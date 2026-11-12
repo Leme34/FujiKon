@@ -449,7 +449,8 @@ fun PresetDetailScreen(
             title = { Text("删除预设？", color = TextPrimary) },
             text = {
                 Text(
-                    "将从应用中移除「${preset.name}」。已经导出的照片不受影响。",
+                    "「${preset.name}」会移入「我的预设 → 已删除」，可随时恢复；" +
+                        "在已删除列表里还能彻底删除。已经导出的照片不受影响。",
                     color = TextSecondary
                 )
             },

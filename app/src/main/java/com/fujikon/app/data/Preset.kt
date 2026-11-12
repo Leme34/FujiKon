@@ -67,7 +67,15 @@ data class Preset(
      * [com.fujikon.app.render.CubeLutProvider] 加载对应 LUT，用亮度锚定的相对
      * 变换叠加官方色彩风格。仅云创 LUT 方案使用，其余预置为 null，行为不变。
      */
-    val cubeLutAsset: String? = null
+    val cubeLutAsset: String? = null,
+    /**
+     * 软删除标记。删除预设时不再立即抹掉数据与二进制文件，而是移入「已删除」
+     * 列表，用户可随时恢复；[deletedAt] 让已删除列表按删除时间倒序展示。
+     * 只有真正「彻底删除」才会移除索引与文件。旧版本索引没有这两个键，
+     * 读取时按 false / 0 处理，行为完全不变。
+     */
+    val deleted: Boolean = false,
+    val deletedAt: Long = 0L
 ) {
     val hasCurve: Boolean get() = curve != null && curve.size >= 256
 
@@ -165,6 +173,11 @@ data class Preset(
         }
         // 3D LUT assets 路径：旧版本忽略该键，仍能正常读取其余字段。
         if (!cubeLutAsset.isNullOrBlank()) put("cubeLutAsset", cubeLutAsset)
+        // 软删除：仅在已删除时写入，未删除的预置保持与旧版一致的 JSON 形状。
+        if (deleted) {
+            put("deleted", true)
+            put("deletedAt", deletedAt)
+        }
     }
 
     companion object {
@@ -296,7 +309,9 @@ data class Preset(
                 if (array.length() >= 256) IntArray(256) { array.optInt(it).coerceIn(0, 255) }
                 else null
             },
-            cubeLutAsset = json.optString("cubeLutAsset", "").takeIf { it.isNotBlank() }
+            cubeLutAsset = json.optString("cubeLutAsset", "").takeIf { it.isNotBlank() },
+            deleted = json.optBoolean("deleted", false),
+            deletedAt = json.optLong("deletedAt", 0L)
         )
 
         private fun encodeCurve(curve: IntArray): String {

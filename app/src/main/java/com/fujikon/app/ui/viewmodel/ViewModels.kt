@@ -61,7 +61,10 @@ import java.util.Collections
 import kotlin.math.abs
 
 class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
+    /** 未删除的预设（编辑器 / 相册 / 选择预设列表共用）。 */
     val presets: StateFlow<List<Preset>> = repository.presets
+    /** 「已删除」列表，供首页筛选查看与恢复。 */
+    val deletedPresets: StateFlow<List<Preset>> = repository.deletedPresets
     val ready: StateFlow<Boolean> = repository.ready
 
     init {
@@ -74,7 +77,17 @@ class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
 
     suspend fun update(preset: Preset) = repository.update(preset)
 
+    suspend fun toggleFavorite(preset: Preset) =
+        repository.update(preset.copy(favorite = !preset.favorite))
+
+    /** 软删除：移入「已删除」列表，文件与用户态保留，可恢复。 */
     suspend fun delete(id: String) = repository.delete(id)
+
+    /** 从「已删除」列表恢复。 */
+    suspend fun restore(id: String) = repository.restore(id)
+
+    /** 彻底删除（仅在「已删除」列表里提供）。 */
+    suspend fun deletePermanently(id: String) = repository.deletePermanently(id)
 }
 
 class NikonPcViewModel(
