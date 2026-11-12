@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -38,6 +40,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -78,6 +81,15 @@ fun PresetPickerSheet(
     // 「无（保留原图）」不参与筛选，始终保留；搜索与「仅看已收藏」叠加。
     val visibleOptions = remember(presets, searchQuery, onlyFavorite) {
         listOf(Preset.none()) + PresetFilter.forPicker(presets, searchQuery, onlyFavorite)
+    }
+    // 每次打开选择页，自动把列表滚动定位到当前正在使用的预设，避免一长串列表里找不到。
+    // 工作表由 AnimatedVisibility 控制显隐，关闭即从组合移除，因此每次打开都是全新组合、
+    // LaunchedEffect(Unit) 必然触发一次；选中项随选择后关闭页面，不会在打开期间误滚。
+    val listState = rememberLazyListState()
+    LaunchedEffect(Unit) {
+        val index = visibleOptions.indexOfFirst { it.id == selectedId }
+        // index == 0 是「无（保留原图）」，本就在顶部无需滚动；其余直接定位到该位置。
+        if (index > 0) listState.scrollToItem(index)
     }
     EditorBottomPanel(
         onDismiss = onDismiss,
@@ -163,7 +175,8 @@ fun PresetPickerSheet(
             Spacer(Modifier.height(8.dp))
             LazyColumn(
                 modifier = Modifier.heightIn(max = 520.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                state = listState
             ) {
                 items(visibleOptions, key = { it.id }) { preset ->
                     val selected = preset.id == selectedId

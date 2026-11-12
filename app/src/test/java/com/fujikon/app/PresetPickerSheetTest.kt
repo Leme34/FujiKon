@@ -194,4 +194,33 @@ class PresetPickerSheetTest {
             composeRule.onAllNodesWithText("通透胶片").fetchSemanticsNodes().isEmpty())
         assertTrue(composeRule.onAllNodesWithText("无（保留原图）").fetchSemanticsNodes().isNotEmpty())
     }
+
+    @Test
+    fun opensScrolledToCurrentlySelectedPreset() {
+        // 一长串预设，选中的放在靠后位置，验证打开时自动定位到它（而非停在首屏）。
+        val presets = (0 until 30).map { i ->
+            Preset.none().copy(id = "p$i", name = "预设 $i", description = "说明 $i")
+        }
+        val selectedId = presets[20].id // 第 21 项（含「无」），远超首屏可见范围
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = presets,
+                    selectedId = selectedId,
+                    onSelect = {},
+                    onDismiss = {}
+                )
+            }
+        }
+
+        // 未做任何手动滚动，靠后的选中项必须已被自动带进可视区域并渲染。
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("预设 20").fetchSemanticsNodes().isNotEmpty()
+        }
+        // 同时未选中的靠前项（滚出视口上方）不应被渲染，证明列表确实滚动到了选中位置。
+        assertTrue(
+            "列表应已滚动到选中项，而非把全部项都渲染出来",
+            composeRule.onAllNodesWithText("预设 5").fetchSemanticsNodes().isEmpty()
+        )
+    }
 }
