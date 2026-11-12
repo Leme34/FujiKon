@@ -43,9 +43,9 @@ class RepositoryRobolectricTest {
     }
 
     /**
-     * 首次启动播种总数 = 4 个 sample assets + 10 个原有内置 +
-     * 「云创色彩预设.zip」逐一落地的 107 NP3 + 9 LUT（按实际解析结果计，
-     * 避免以后 assets 增减时硬编码数字失真）。
+     * 首次启动播种总数 = 4 个 sample assets + 10 个原有内置 + 用户指定的
+     * 4 个精选云创官方真实 NP3（按实际解析结果计，避免以后 assets 增减时
+     * 硬编码数字失真）。其余云创滤镜不再预置，由用户自行下载导入。
      */
     private fun seededCount(): Int =
         4 + com.fujikon.app.nic.builtInCloudPresets().size +
@@ -56,11 +56,24 @@ class RepositoryRobolectricTest {
         repository.load()
 
         assertTrue(repository.ready.value)
-        // 4 sample assets + 10 原有内置 + 116 官方真实方案（107 NP3 + 9 LUT）。
+        // 4 sample assets + 10 原有内置 + 4 个精选官方真实 NP3。
         assertEquals(seededCount(), repository.presets.value.size)
-        assertEquals(116, repository.presets.value.count {
+        val official = repository.presets.value.filter {
             it.contentHash.startsWith("cloudrecipe:") ||
                 it.contentHash.startsWith("cloudlut:")
+        }
+        assertEquals("只预置 4 个精选云创滤镜", 4, official.size)
+        assertEquals(
+            setOf(
+                "Vitality Film Pman",
+                "Nature Links",
+                "Textured Docmntry",
+                "Ht Harmony Hana"
+            ),
+            official.map { it.name }.toSet()
+        )
+        assertTrue("不应预置 3D LUT 方案", repository.presets.value.none {
+            !it.cubeLutAsset.isNullOrBlank()
         })
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400" })
@@ -108,6 +121,63 @@ class RepositoryRobolectricTest {
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-same-bytes" })
         // seededCount 内置/示例 + 4 伪造 - 2 退役
         assertEquals(seededCount() + 2, reopened.presets.value.size)
+    }
+
+    @Test
+    fun upgradeRetiresNonCuratedOfficialPresetsButKeepsUserImports() = runBlocking {
+        repository.load()
+        // 模拟从 1.6.43 覆盖安装：旧索引里额外有 3 个不再预置的官方方案
+        //（2 个 NP3 + 1 个 3D LUT），以及 2 条用户自行导入 / 调整出的副本。
+        val index = java.io.File(context.filesDir, "presets/index.json")
+        val root = org.json.JSONObject(index.readText())
+        val array = root.getJSONArray("presets")
+        val template = array.getJSONObject(0)
+        fun legacy(id: String, hash: String, isSample: Boolean) {
+            array.put(
+                org.json.JSONObject(template.toString())
+                    .put("id", id)
+                    .put("name", "旧官方方案 $id")
+                    .put("isSample", isSample)
+                    .put("contentHash", hash)
+                    .put("fileName", "")
+                    .put("fileSize", 0)
+                    .put("cubeLutAsset", "")
+            )
+        }
+        legacy("legacy-np3-001", "cloudrecipe:recipe_001", true)
+        legacy("legacy-np3-050", "cloudrecipe:recipe_050", true)
+        legacy("legacy-lut-01", "cloudlut:lut_01", true)
+        legacy("user-import-np3", "cloudrecipe:recipe_001", false)
+        legacy("user-edited-lut", "cloudlut:lut_01", false)
+        index.writeText(root.toString())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+
+        val kept = com.fujikon.app.nic.OfficialCloudPresets.PRESET_CONTENT_HASHES
+        assertTrue("非精选官方预置应被退役", reopened.presets.value.none {
+            it.id in setOf("legacy-np3-001", "legacy-np3-050", "legacy-lut-01")
+        })
+        assertTrue("不应残留任何已退役的 app-seeded 官方条目", reopened.presets.value.none {
+            it.isSample &&
+                (it.contentHash.startsWith("cloudrecipe:") ||
+                    it.contentHash.startsWith("cloudlut:")) &&
+                it.contentHash !in kept
+        })
+        assertNotNull("用户自行导入的条目不受影响",
+            reopened.presets.value.firstOrNull { it.id == "user-import-np3" })
+        assertNotNull("用户调整出的副本不受影响",
+            reopened.presets.value.firstOrNull { it.id == "user-edited-lut" })
+        assertEquals("4 个精选官方预置必须保留",
+            4, reopened.presets.value.count { it.contentHash in kept })
+        // seededCount + 2 条用户态条目
+        assertEquals(seededCount() + 2, reopened.presets.value.size)
+
+        // 幂等：再开一次不会重新播种已退役方案。
+        val third = PresetRepository(context)
+        third.load()
+        assertEquals(seededCount() + 2, third.presets.value.size)
+        assertEquals(4, third.presets.value.count { it.contentHash in kept })
     }
 
     @Test
@@ -447,8 +517,8 @@ class RepositoryRobolectricTest {
     @Test
     fun curveCopyIsPersistedAndDeleteKeepsOriginalFile() = runBlocking {
         repository.load()
-        // 显式选带二进制文件的 sample：新增 116 个官方方案后，排序后的第一个
-        // 可能是无 fileName 的内置预置，不能依赖 first() 的隐含顺序。
+        // 显式选带二进制文件的 sample：列表里还有无 fileName 的内置预置，
+        // 不能依赖 first() 的隐含顺序。
         val base = repository.presets.value.first { it.fileName.isNotBlank() }
         val originalFile = repository.fileFor(base)
         assertTrue(originalFile.exists())

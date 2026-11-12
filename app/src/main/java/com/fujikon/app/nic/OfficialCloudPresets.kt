@@ -5,35 +5,50 @@ import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.PictureControlParser
 
 /**
- * 把资料库附件「云创色彩预设.zip」中的 107 个真实 NP3 + 9 个 .cube 3D LUT，
- * **逐一**落地为 App 内置预设。
+ * 用户指定的 4 个精选云创官方真实方案，是 App 唯一预置的云创滤镜。
  *
- * 这是「云创滤镜改用官方真实方案」的主体：此前 App 的云创滤镜用在线接口返回的
- * 简化参数 + [CloudLookCalibration] 的统计拟合假 LUT + 合成 S 曲线，观感与官方
- * 效果图存在巨大差异。这里直接从官方 NP3 原始二进制零拟合解析：
- *  - 256 点真实色调曲线（31 个文件有）、官方参数（±100 口径）、8 分区 Color
- *    Blender、三分区 Color Grading 全部为文件内真实数据；
- *  - 无独立曲线的 76 个文件是官方「以参数 + 分区调色定义影调」的方案，曲线保持
- *    null，由渲染器按官方参数施加，绝不用合成曲线顶替。
+ * 1.6.43 曾把资料库附件「云创色彩预设.zip」中的 107 个真实 NP3 + 9 个 3D LUT
+ * 全部播种为内置预置；1.6.44 起按用户要求收敛为下面 4 个，其余云创滤镜由
+ * 用户在「尼康云创官方滤镜」自行下载后通过在线导入 / 本地 NP3 导入加入，
+ * 不再随 App 预置。
  *
- * 9 个 LUT 方案用 [com.fujikon.app.render.CubeLut] 做亮度锚定的相对变换，通过
- * [Preset.cubeLutAsset] 指向 assets 里的紧凑二进制，渲染时按需加载。
+ * 精选方案仍由 [PictureControlParser] 从官方 NP3 原始二进制零拟合解析：
+ *  - 256 点真实色调曲线（Nature Links 含）、官方参数（±100 口径）、
+ *    8 分区 Color Blender、三分区 Color Grading 全部为文件内真实数据；
+ *  - 无独立曲线的 3 个方案是官方「以参数 + 分区调色定义影调」的方案，曲线
+ *    保持 null，由渲染器按官方参数施加，绝不用合成曲线顶替。
  *
- * 结果按 contentHash 幂等，覆盖安装时由 PresetRepository 自动补齐新增方案；
- * 缓存避免每次播种重复解码 107 个 assets。
+ * [CloudRecipeCatalog] / [CloudLutCatalog] 与对应 assets 仍完整保留：它们既是
+ * 在线云创导入时 [OfficialCloudLooks] 官方真实数据的来源，也是用户自行导入
+ * 时的能力底座，只是不再进入预置列表。3D LUT 渲染能力由
+ * [com.fujikon.app.render.CubeLut] 承载，[Preset.cubeLutAsset] 依旧持久化。
+ *
+ * [PRESET_CONTENT_HASHES] 供 [com.fujikon.app.data.PresetRepository] 在覆盖
+ * 安装时把 1.6.43 播种的、现已退役的官方预置清理掉（只清理 isSample 条目，
+ * 用户自行导入或调整出的副本不受影响）。
  */
 object OfficialCloudPresets {
 
     const val RECIPE_SOURCE = CloudRecipeCatalog.SOURCE_NAME
-    const val LUT_SOURCE = CloudLutCatalog.SOURCE_NAME
 
     private const val RECIPE_HASH = "cloudrecipe:"
-    private const val LUT_HASH = "cloudlut:"
+
+    /** 用户指定的 4 个精选方案，顺序与需求一致。 */
+    private val PRESET_RECIPE_IDS = listOf(
+        "recipe_103", // vitality film pman
+        "recipe_074", // nature links
+        "recipe_098", // textured docmntry
+        "recipe_065"  // ht harmony hana
+    )
+
+    /** 当前仍应预置的官方方案 contentHash，用于覆盖安装时的退役清理。 */
+    val PRESET_CONTENT_HASHES: Set<String> =
+        PRESET_RECIPE_IDS.map { RECIPE_HASH + it }.toSet()
 
     @Volatile
     private var cached: List<Preset>? = null
 
-    /** 全部 116 个官方真实方案（107 NP3 + 9 LUT）。解析失败的 assets 被跳过。 */
+    /** 4 个精选官方真实方案；解析失败的 assets 被跳过。 */
     fun all(context: Context): List<Preset> {
         cached?.let { return it }
         val result = synchronized(this) {
@@ -43,8 +58,10 @@ object OfficialCloudPresets {
         return result
     }
 
-    private fun buildAll(context: Context): List<Preset> {
-        val recipes = CloudRecipeCatalog.ALL.mapNotNull { spec ->
+    private fun buildAll(context: Context): List<Preset> =
+        PRESET_RECIPE_IDS.mapNotNull { id ->
+            val spec = CloudRecipeCatalog.ALL.firstOrNull { it.id == id }
+                ?: return@mapNotNull null
             val bytes = runCatching {
                 context.assets.open(spec.asset).use { it.readBytes() }
             }.getOrNull() ?: return@mapNotNull null
@@ -61,23 +78,6 @@ object OfficialCloudPresets {
                 sourceName = RECIPE_SOURCE
             ).copy(name = spec.name, description = spec.description)
         }
-        val luts = CloudLutCatalog.ALL.map { spec ->
-            // 中性基底：1D 曲线 / 参数 / 分区全部恒等，只让 3D LUT 分支生效。
-            Preset.none().copy(
-                id = "",
-                name = spec.name,
-                format = "LUT3D",
-                version = "1.0",
-                sourceName = LUT_SOURCE,
-                baseProfileName = "${spec.size}³ 3D LUT",
-                description = spec.description,
-                isSample = true,
-                contentHash = LUT_HASH + spec.id,
-                cubeLutAsset = spec.asset
-            )
-        }
-        return recipes + luts
-    }
 
     /** 仅测试用：清空进程内缓存。 */
     fun clearCache() {

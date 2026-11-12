@@ -105,6 +105,11 @@ class PresetRepository(private val context: Context) {
      * preset the user imported under the same name (or with identical bytes) is
      * never touched. Idempotent: the index is written back only when rows were
      * actually removed.
+     *
+     * 1.6.44 起也负责收敛官方云创预置：1.6.43 曾一次性播种 107 个真实 NP3 +
+     * 9 个 3D LUT，现在只保留 [OfficialCloudPresets.PRESET_CONTENT_HASHES] 里
+     * 的 4 个精选方案，其余 app-seeded 官方条目在覆盖安装时退役；用户自行
+     * 导入或调整出的副本（isSample = false）一律保留。
      */
     private fun dropRetiredSamplesLocked(list: List<Preset>): List<Preset> {
         val retiredNames = setOf("NC 400 MATCH")
@@ -112,8 +117,15 @@ class PresetRepository(private val context: Context) {
             // sha256 of the retired assets/samples/nc400_match.ncp
             "925f3ee0a142e3642df7c67e911e0d99169b11322af3c61801c9bf16db7efb16"
         )
-        val retiredIds = list.filter {
-            it.isSample && (it.name in retiredNames || it.contentHash in retiredHashes)
+        val keptOfficial = OfficialCloudPresets.PRESET_CONTENT_HASHES
+        val retiredIds = list.filter { preset ->
+            if (!preset.isSample) return@filter false
+            val hash = preset.contentHash
+            val legacyOfficial = hash.startsWith("cloudrecipe:") ||
+                hash.startsWith("cloudlut:")
+            preset.name in retiredNames ||
+                hash in retiredHashes ||
+                (legacyOfficial && hash !in keptOfficial)
         }.mapTo(mutableSetOf()) { it.id }
         if (retiredIds.isEmpty()) return list
         list.filter { it.id in retiredIds }.forEach { preset ->
@@ -415,7 +427,8 @@ class PresetRepository(private val context: Context) {
 
     /**
      * 全部内置预置：原有 10 个（云创 / 社区近似 / 通透胶片 / 7 个 nikonpc 官方）
-     * 加上「云创色彩预设.zip」逐一落地的 107 个真实 NP3 + 9 个 3D LUT。
+     * 加上用户指定的 4 个精选云创官方真实 NP3。其余云创滤镜不再预置，由用户在
+     * 尼康云创官方滤镜自行下载后通过在线 / 本地导入加入。
      * 官方方案需要 Context 读 assets，这里统一合并，播种 / 补齐共用同一份，
      * 保证首次安装与覆盖安装都按 contentHash 幂等去重。
      */

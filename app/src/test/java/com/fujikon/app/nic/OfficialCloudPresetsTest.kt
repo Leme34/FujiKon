@@ -6,12 +6,14 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.test.core.app.ApplicationProvider
 import com.fujikon.app.data.Preset
+import com.fujikon.app.ncp.PictureControlParser
 import com.fujikon.app.render.CubeLut
 import com.fujikon.app.render.CubeLutProvider
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -22,15 +24,25 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 「云创色彩预设.zip」逐一落地的回归测试：107 个真实 NP3 零拟合解析、
- * 9 个 3D LUT 可解码、contentHash 幂等、JSON 往返不丢 3D LUT 路径，
- * 以及渲染链路确实通过 CubeLutProvider 套用了官方 LUT。
+ * 1.6.44 起只预置用户指定的 4 个精选云创官方真实 NP3，其余云创滤镜由用户在
+ * 尼康云创官方滤镜自行下载导入。这里验证：
+ *  - 预置集合恰好是这 4 个，且全部由官方 NP3 零拟合解析；
+ *  - 完整 catalog / LUT 能力数据仍保留（供用户自行导入与在线校准使用）；
+ *  - 3D LUT 解码、JSON 往返与亮度锚定渲染能力仍可用，只是不再预置；
+ *  - 覆盖安装退役用的白名单 hash 集合正确。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class OfficialCloudPresetsTest {
 
     private lateinit var context: Context
+
+    private val curatedNames = setOf(
+        "Vitality Film Pman",
+        "Nature Links",
+        "Textured Docmntry",
+        "Ht Harmony Hana"
+    )
 
     @Before
     fun setUp() {
@@ -47,67 +59,100 @@ class OfficialCloudPresetsTest {
     }
 
     @Test
-    fun allOfficialPresetsAreParsedZeroFitting() {
+    fun onlyFourCuratedOfficialPresetsAreSeeded() {
         val all = OfficialCloudPresets.all(context)
-        assertEquals(116, all.size)
-        assertEquals(107, all.count { it.sourceName == CloudRecipeCatalog.SOURCE_NAME })
-        assertEquals(9, all.count { it.sourceName == CloudLutCatalog.SOURCE_NAME })
+        assertEquals(4, all.size)
+        assertEquals(curatedNames, all.map { it.name }.toSet())
         assertEquals("contentHash 必须唯一", all.size, all.map { it.contentHash }.toSet().size)
         assertTrue(all.all { it.isSample })
-        assertTrue(
-            all.all {
-                it.contentHash.startsWith("cloudrecipe:") ||
-                    it.contentHash.startsWith("cloudlut:")
-            }
-        )
-    }
-
-    @Test
-    fun np3CurveDistributionMatchesCatalog() {
-        val recipes = OfficialCloudPresets.all(context)
-            .filter { it.contentHash.startsWith("cloudrecipe:") }
-        val expectedCurves = CloudRecipeCatalog.ALL.count { it.hasCurve }
-        assertEquals(31, expectedCurves)
+        assertTrue(all.all { it.contentHash.startsWith("cloudrecipe:") })
+        assertTrue("预置里不应再有 3D LUT 方案", all.all { it.cubeLutAsset == null })
         assertEquals(
-            "含真实 256 点曲线的 NP3 数量应与 catalog 一致",
-            expectedCurves,
-            recipes.count { it.curve?.size == 256 }
-        )
-        assertEquals(76, recipes.count { it.curve == null })
-        assertTrue(
-            "全部 107 个 NP3 都应带 8 分区官方真实数据",
-            recipes.all { it.colorBlender.size == 8 }
-        )
-        // 有独立曲线者五项影调参数本就为 0；无曲线者靠官方参数定义影调。
-        assertTrue(
-            recipes.filter { it.curve != null }.all {
-                it.contrast == 0 && it.highlights == 0 && it.shadows == 0 &&
-                    it.whites == 0 && it.blacks == 0
-            }
-        )
-        assertTrue(
-            recipes.filter { it.curve == null }.any {
-                it.contrast != 0 || it.highlights != 0 || it.shadows != 0
-            }
+            OfficialCloudPresets.PRESET_CONTENT_HASHES,
+            all.map { it.contentHash }.toSet()
         )
     }
 
     @Test
-    fun vitalityFilmNp3CarriesOfficialParameters() {
-        // 决定性证据：官方 NP3 与既有在线 detail 的五项参数逐位一致。
-        val spec = CloudRecipeCatalog.ALL.first { it.name.contains("Vitality Film", true) }
-        val p = OfficialCloudPresets.all(context)
-            .first { it.contentHash == "cloudrecipe:" + spec.id }
-        assertNull("vitality film pman.NP3 无独立曲线", p.curve)
-        assertEquals(-4, p.contrast)
-        assertEquals(54, p.highlights)
-        assertEquals(-17, p.shadows)
-        assertEquals(0, p.whites)
-        assertEquals(-3, p.blacks)
-        assertEquals(0, p.saturation)
-        assertEquals(8, p.colorBlender.size)
-        assertTrue(p.hasColorGrading)
-        assertTrue(p.description!!.contains("官方"))
+    fun curatedRecipesCarryOfficialNp3Parameters() {
+        val byName = OfficialCloudPresets.all(context).associateBy { it.name }
+
+        val vitality = byName.getValue("Vitality Film Pman")
+        assertNull("vitality film pman.NP3 无独立曲线", vitality.curve)
+        assertEquals(-4, vitality.contrast)
+        assertEquals(54, vitality.highlights)
+        assertEquals(-17, vitality.shadows)
+        assertEquals(0, vitality.whites)
+        assertEquals(-3, vitality.blacks)
+        assertEquals(0, vitality.saturation)
+
+        val nature = byName.getValue("Nature Links")
+        assertNotNull("nature links.NP3 含官方 256 点真实曲线", nature.curve)
+        assertEquals(256, nature.curve!!.size)
+        assertEquals(18, nature.saturation)
+        assertEquals(0, nature.contrast)
+
+        val textured = byName.getValue("Textured Docmntry")
+        assertNull(textured.curve)
+        assertEquals(100, textured.contrast)
+        assertEquals(54, textured.highlights)
+        assertEquals(33, textured.shadows)
+        assertEquals(-6, textured.blacks)
+
+        val harmony = byName.getValue("Ht Harmony Hana")
+        assertNull(harmony.curve)
+        assertEquals(8, harmony.contrast)
+        assertEquals(-27, harmony.highlights)
+        assertEquals(13, harmony.shadows)
+        assertEquals(-10, harmony.blacks)
+        assertEquals(10, harmony.saturation)
+
+        assertTrue(byName.values.all { it.colorBlender.size == 8 })
+        assertTrue(byName.values.all { it.hasColorBlender })
+        // 官方 NP3 的 Color Grading 并非每个方案都启用：vitality film pman
+        // 三分区全有，textured docmntry 仅阴影分区有值，ht harmony hana 与
+        // nature links 在官方文件里本就三分区全零。零拟合要求「不虚构数据」，
+        // 因此按文件原值逐一断言，而不是一律要求 hasColorGrading。
+        assertTrue(vitality.hasColorGrading)
+        assertEquals(184, vitality.colorGrading.highlights.hue)
+        assertEquals(348, vitality.colorGrading.shadows.hue)
+        assertTrue(textured.hasColorGrading)
+        assertEquals(340, textured.colorGrading.shadows.hue)
+        assertEquals(0, textured.colorGrading.highlights.hue)
+        assertEquals(0, textured.colorGrading.midtones.hue)
+        assertFalse("ht harmony hana 官方 NP3 未启用三分区调色", harmony.hasColorGrading)
+        assertFalse("nature links 官方 NP3 未启用三分区调色", nature.hasColorGrading)
+        assertTrue(byName.values.all { it.description!!.contains("官方") })
+    }
+
+    @Test
+    fun fullCatalogRemainsAvailableForUserImports() {
+        // 不再预置 ≠ 删除能力：107 个真实 NP3 + 9 个 3D LUT 的目录与 assets
+        // 仍在，用户自行下载导入 / 在线云创校准都依赖它们。
+        assertEquals(107, CloudRecipeCatalog.ALL.size)
+        assertEquals(9, CloudLutCatalog.ALL.size)
+        assertEquals(31, CloudRecipeCatalog.ALL.count { it.hasCurve })
+        assertTrue(CloudRecipeCatalog.ALL.map { it.name }.containsAll(curatedNames))
+        CloudRecipeCatalog.ALL.forEach { spec ->
+            val bytes = context.assets.open(spec.asset).use { it.readBytes() }
+            val control = PictureControlParser.parse(bytes, spec.name)
+            assertEquals("${spec.name} 应带官方 8 分区真实数据", 8, control.colorBlender.size)
+        }
+    }
+
+    @Test
+    fun retiredOfficialHashesAreExposedForUpgradeCleanup() {
+        assertEquals(4, OfficialCloudPresets.PRESET_CONTENT_HASHES.size)
+        assertTrue(
+            "cloudlut: 前缀已全部退役",
+            OfficialCloudPresets.PRESET_CONTENT_HASHES.none { it.startsWith("cloudlut:") }
+        )
+        assertFalse(
+            "非精选 NP3 应被判定为退役",
+            "cloudrecipe:recipe_001" in OfficialCloudPresets.PRESET_CONTENT_HASHES
+        )
+        assertTrue("cloudrecipe:recipe_103" in OfficialCloudPresets.PRESET_CONTENT_HASHES)
+        assertEquals(6, OfficialCloudLooks.BY_RECIPE_ID.size)
     }
 
     @Test
@@ -123,7 +168,6 @@ class OfficialCloudPresetsTest {
         assertNull(hidamari.curve)
         assertEquals(50, hidamari.contrast)
         assertEquals(90, hidamari.shadows)
-        // 含真实曲线的 recipe 必须是 256 点。
         val warm = OfficialCloudLooks.BY_RECIPE_ID["01J6VDR8901GMQMP1JA12XZ2SX"]!!
         assertNotNull(warm.curve)
         assertEquals(256, warm.curve!!.size)
@@ -131,27 +175,29 @@ class OfficialCloudPresetsTest {
 
     @Test
     fun lutAssetsDecodeTo33CubeAndLoadThroughProvider() {
-        val luts = OfficialCloudPresets.all(context)
-            .filter { !it.cubeLutAsset.isNullOrBlank() }
-        assertEquals(9, luts.size)
-        luts.forEach { preset ->
-            val bytes = context.assets.open(preset.cubeLutAsset!!).use { it.readBytes() }
+        CubeLutProvider.clearCache()
+        CloudLutCatalog.ALL.forEach { spec ->
+            val bytes = context.assets.open(spec.asset).use { it.readBytes() }
             val lut = CubeLut.decode(bytes)
-            assertNotNull("${preset.name} 的 FKL1 应能解码", lut)
+            assertNotNull("${spec.name} 的 FKL1 应能解码", lut)
             assertEquals(33, lut!!.size)
             assertEquals(33 * 33 * 33 * 3, lut.data.size)
         }
         CubeLutProvider.install { asset ->
             runCatching { context.assets.open(asset).use { it.readBytes() } }.getOrNull()
         }
-        val loaded = CubeLutProvider.get(luts.first().cubeLutAsset!!)
+        val asset = CloudLutCatalog.ALL.first().asset
+        val loaded = CubeLutProvider.get(asset)
         assertNotNull("渲染器应能通过 asset 路径加载 3D LUT", loaded)
         assertEquals(33, loaded!!.size)
     }
 
     @Test
     fun cubeLutAssetSurvivesJsonRoundTrip() {
-        val p = OfficialCloudPresets.all(context).first { !it.cubeLutAsset.isNullOrBlank() }
+        val p = Preset.none().copy(
+            name = "LUT 往返",
+            cubeLutAsset = CloudLutCatalog.ALL.first().asset
+        )
         val restored = Preset.fromJson(p.toJson())
         assertEquals(p.cubeLutAsset, restored.cubeLutAsset)
         assertNull(
@@ -161,9 +207,11 @@ class OfficialCloudPresetsTest {
     }
 
     @Test
-    fun rendererAppliesOfficialLutWithBrightnessAnchor() = runBlocking {
-        val preset = OfficialCloudPresets.all(context)
-            .first { !it.cubeLutAsset.isNullOrBlank() }
+    fun rendererStillApplies3dLutWithBrightnessAnchor() = runBlocking {
+        val preset = Preset.none().copy(
+            name = "LUT 渲染",
+            cubeLutAsset = CloudLutCatalog.ALL.first().asset
+        )
         CubeLutProvider.install { asset ->
             runCatching { context.assets.open(asset).use { it.readBytes() } }.getOrNull()
         }
