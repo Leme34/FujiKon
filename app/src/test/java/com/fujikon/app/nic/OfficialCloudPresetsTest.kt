@@ -15,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -122,6 +123,29 @@ class OfficialCloudPresetsTest {
         assertEquals(8, p.colorBlender.size)
         assertTrue(p.hasColorGrading)
         assertTrue(p.description!!.contains("官方"))
+    }
+
+    @Test
+    fun officialMergedPresetsUseOfficialDescription() {
+        val all = OfficialCloudPresets.all(context)
+        // 命中官方映射的预置，说明应改用尼康官方接口的官方说明，而非本地生成的解析说明。
+        val vitality = all.first { it.contentHash == "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK" }
+        assertTrue("官方说明应包含官方描述内容", vitality.description!!.contains("模拟了胶片的风格"))
+        assertFalse(
+            "官方说明不应再带本地生成的 NP3 解析说明",
+            vitality.description!!.contains("真实 NP3 导出")
+        )
+        // 缩写别名仍拼进说明尾，供旧缩写名搜索。
+        assertTrue(vitality.description!!.contains("Vitality Film Pman"))
+        // 2 个无官方对应的独立文件保留本地说明。
+        val independent = all.filter { it.contentHash.startsWith("cloudrecipe:") }
+        assertEquals(2, independent.size)
+        independent.forEach { p ->
+            assertTrue(
+                "独立文件应在本地说明里保留 NP3 解析信息：${p.name}",
+                p.description!!.contains("真实 NP3 导出")
+            )
+        }
     }
 
     @Test

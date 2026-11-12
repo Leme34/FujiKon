@@ -25,6 +25,10 @@ import com.fujikon.app.ncp.PictureControlParser
  * 同一官方 recipe 的多个缩写变体合并为一个代表（含官方 256 点曲线者优先），
  * 所有缩写名写入说明供搜索继续使用；2 个无官方对应的文件保持独立。
  *
+ * 自 1.6.49 起，命中官方映射的预置其「说明描述」也改用尼康官方接口
+ * bff/recipe/release/detail 的官方说明（详见 [CloudOfficialNames.DESCRIPTION_BY_RECIPE_ID]），
+ * 与在线导入共用同一内容，以官方说明为准；无官方对应的文件保留本地说明。
+ *
  * 结果按 contentHash 幂等，覆盖安装时由 PresetRepository 自动补齐/迁移；
  * 缓存避免每次播种重复解码 assets。
  */
@@ -71,7 +75,11 @@ object OfficialCloudPresets {
                 sourceName = RECIPE_SOURCE
             ).copy(
                 name = CloudOfficialNames.officialNameForSpec(spec.id) ?: spec.name,
-                description = CloudOfficialNames.descriptionWithAliases(spec.id, spec.description)
+                // 命中官方映射的预置改用官方说明描述（与在线导入一致），缩写别名仍拼进说明供搜索。
+                description = CloudOfficialNames.descriptionWithAliases(
+                    spec.id,
+                    CloudOfficialNames.officialDescriptionForSpec(spec.id) ?: spec.description
+                )
             )
         }
         val luts = CloudLutCatalog.ALL.map { spec ->
