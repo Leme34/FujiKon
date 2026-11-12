@@ -49,14 +49,18 @@ class OfficialCloudPresetsTest {
     @Test
     fun allOfficialPresetsAreParsedZeroFitting() {
         val all = OfficialCloudPresets.all(context)
-        assertEquals(116, all.size)
-        assertEquals(107, all.count { it.sourceName == CloudRecipeCatalog.SOURCE_NAME })
+        // 1.6.47：99 个官方命名 NP3（nic:<recipeId>）+ 2 个独立 NP3 + 9 个 3D LUT。
+        assertEquals(110, all.size)
+        assertEquals(101, all.count { it.sourceName == CloudRecipeCatalog.SOURCE_NAME })
         assertEquals(9, all.count { it.sourceName == CloudLutCatalog.SOURCE_NAME })
+        assertEquals(99, all.count { it.contentHash.startsWith("nic:") })
+        assertEquals(2, all.count { it.contentHash.startsWith("cloudrecipe:") })
         assertEquals("contentHash 必须唯一", all.size, all.map { it.contentHash }.toSet().size)
         assertTrue(all.all { it.isSample })
         assertTrue(
             all.all {
-                it.contentHash.startsWith("cloudrecipe:") ||
+                it.contentHash.startsWith("nic:") ||
+                    it.contentHash.startsWith("cloudrecipe:") ||
                     it.contentHash.startsWith("cloudlut:")
             }
         )
@@ -64,18 +68,24 @@ class OfficialCloudPresetsTest {
 
     @Test
     fun np3CurveDistributionMatchesCatalog() {
+        // 99 个官方命名方案 + 2 个独立文件；按 sourceName 过滤，不受哈希前缀变化影响。
         val recipes = OfficialCloudPresets.all(context)
-            .filter { it.contentHash.startsWith("cloudrecipe:") }
-        val expectedCurves = CloudRecipeCatalog.ALL.count { it.hasCurve }
-        assertEquals(31, expectedCurves)
+            .filter { it.sourceName == CloudRecipeCatalog.SOURCE_NAME }
+        assertEquals(101, recipes.size)
+        // 6 个重复缩写变体已合并（其中 1 个含曲线），代表优先保留含曲线者。
+        val keptSpecs = CloudRecipeCatalog.ALL.filterNot {
+            it.id in CloudOfficialNames.MERGED_INTO
+        }
+        assertEquals(101, keptSpecs.size)
+        assertEquals(30, keptSpecs.count { it.hasCurve })
         assertEquals(
-            "含真实 256 点曲线的 NP3 数量应与 catalog 一致",
-            expectedCurves,
+            "含真实 256 点曲线的 NP3 数量应与保留的 catalog 一致",
+            keptSpecs.count { it.hasCurve },
             recipes.count { it.curve?.size == 256 }
         )
-        assertEquals(76, recipes.count { it.curve == null })
+        assertEquals(71, recipes.count { it.curve == null })
         assertTrue(
-            "全部 107 个 NP3 都应带 8 分区官方真实数据",
+            "全部保留的 NP3 都应带 8 分区官方真实数据",
             recipes.all { it.colorBlender.size == 8 }
         )
         // 有独立曲线者五项影调参数本就为 0；无曲线者靠官方参数定义影调。
@@ -95,9 +105,13 @@ class OfficialCloudPresetsTest {
     @Test
     fun vitalityFilmNp3CarriesOfficialParameters() {
         // 决定性证据：官方 NP3 与既有在线 detail 的五项参数逐位一致。
+        // 1.6.47 起该方案以官方名 + nic:<recipeId> 身份提供，与在线导入去重。
         val spec = CloudRecipeCatalog.ALL.first { it.name.contains("Vitality Film", true) }
-        val p = OfficialCloudPresets.all(context)
-            .first { it.contentHash == "cloudrecipe:" + spec.id }
+        val hash = CloudOfficialNames.hashForSpec(spec.id, "cloudrecipe:" + spec.id)
+        assertEquals("nic:01JSBM30XWQ6GG4XK0KSZ3FQEK", hash)
+        val p = OfficialCloudPresets.all(context).first { it.contentHash == hash }
+        assertEquals("Vitality Film by Peng Mango", p.name)
+        assertTrue("说明里应保留缩写别名供搜索", p.description!!.contains("Vitality Film Pman"))
         assertNull("vitality film pman.NP3 无独立曲线", p.curve)
         assertEquals(-4, p.contrast)
         assertEquals(54, p.highlights)

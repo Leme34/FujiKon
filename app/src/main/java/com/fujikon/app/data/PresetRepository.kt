@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.fujikon.app.ncp.PictureControlParser
+import com.fujikon.app.nic.CloudOfficialNames
 import com.fujikon.app.nic.OfficialCloudPresets
 import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.nic.builtInCloudPresets
@@ -95,6 +96,9 @@ class PresetRepository(private val context: Context) {
                         // that changes their render recipe would otherwise never
                         // reach users who launched a previous version once.
                         list = upgradeBuiltInSamplesLocked(list)
+                        // 1.6.47：把旧 cloudrecipe:* 身份迁移为 nic:<recipeId> + 官方全称，
+                        // 合并重复缩写变体，并把此前在线导入的失真条目升级为真实 NP3 数据。
+                        list = migrateOfficialCloudIdentityLocked(list)
                         // Presets ADDED in a newer app version (e.g. the seven
                         // nikonpc.com official presets) must also be seeded on an
                         // existing install, otherwise users who already launched
@@ -178,6 +182,112 @@ class PresetRepository(private val context: Context) {
         if (result.size != list.size || result.zip(list).any { (a, b) -> a !== b }) {
             writeIndex(result)
         }
+        return result
+    }
+
+    /**
+     * 1.6.47 一次性身份迁移。旧版把附件 NP3 预置记为 `cloudrecipe:recipe_XXX`
+     * （缩写名），而在线导入记为 `nic:<recipeId>`（官方名）—— 同一官方滤镜
+     * 因此会出现两个。这里按 [CloudOfficialNames] 的官方对照表收敛：
+     *
+     *  - app 播种的旧 `cloudrecipe:*` 条目 → 改为 `nic:<recipeId>`、官方全称与
+     *    真实 NP3 渲染数据；6 个重复缩写变体退役（代表会被补种）；2 个无官方
+     *    对应的文件保持独立身份不变；
+     *  - 此前用户在线导入、命中官方映射但数据是失真简化参数的 `nic:*` 条目 →
+     *    就地升级为真实 NP3 数据；
+     *  - 用户状态（id / 收藏 / 备注 / 删除 / 导入时间）全部保留，软删除的内置
+     *    预置不会被「复活」，用户自己改名/加备注的条目也不会被覆盖显示状态。
+     *
+     * 幂等：迁移后旧 hash 不再出现，官方条目的 sourceName 与真实数据一致，
+     * 第二次加载不会重复改写索引。
+     */
+    private fun migrateOfficialCloudIdentityLocked(list: List<Preset>): List<Preset> {
+        val templates = OfficialCloudPresets.all(context).associateBy { it.contentHash }
+        val officialSource = OfficialCloudPresets.RECIPE_SOURCE
+        val officialIds = CloudOfficialNames.SPEC_BY_RECIPE_ID.keys
+
+        /** 每条记录的迁移规划：目标官方 hash；retire=true 表示退役；null 表示保持原样。 */
+        data class Plan(val targetHash: String?, val retire: Boolean)
+
+        fun plan(p: Preset): Plan {
+            val hash = p.contentHash
+            // 已是官方身份（内置在线预置或用户在线导入）：命中映射则升级数据。
+            if (hash.startsWith(CloudOfficialNames.HASH_PREFIX) &&
+                hash.removePrefix(CloudOfficialNames.HASH_PREFIX) in officialIds
+            ) return Plan(hash, false)
+            // 旧版 app 播种的附件 NP3 预置。
+            if (hash.startsWith("cloudrecipe:") && p.isSample && p.fileName.isBlank()) {
+                val specId = hash.removePrefix("cloudrecipe:")
+                return when {
+                    specId in CloudOfficialNames.INDEPENDENT_IDS -> Plan(null, false)
+                    specId in CloudOfficialNames.MERGED_INTO -> Plan(null, true)
+                    else -> {
+                        val identity = CloudOfficialNames.IDENTITY_FOR_ANY_SPEC[specId]
+                            ?: return Plan(null, false)
+                        Plan(CloudOfficialNames.HASH_PREFIX + identity.recipeId, false)
+                    }
+                }
+            }
+            return Plan(null, false)
+        }
+
+        val plans = list.map(::plan)
+
+        // 同一个官方 hash 可能同时存在「旧 cloudrecipe 条目」「旧内置在线预置」
+        // 「用户导入条目」。只保留一个胜者：优先用户导入（isSample=false，带用户
+        // 收藏/备注），其次保留先出现者；其余退役，避免列表里出现两个同名滤镜。
+        val winner = HashMap<String, Int>()
+        for (i in list.indices) {
+            val target = plans[i].targetHash ?: continue
+            val current = winner[target]
+            if (current == null || (!list[i].isSample && list[current].isSample)) {
+                winner[target] = i
+            }
+        }
+
+        var changed = false
+        val result = ArrayList<Preset>(list.size)
+        for (i in list.indices) {
+            val stored = list[i]
+            val plan = plans[i]
+            val target = plan.targetHash
+            when {
+                plan.retire -> changed = true
+                target == null -> result.add(stored)
+                winner[target] != i -> changed = true // 同 hash 的落选条目退役
+                else -> {
+                    val template = templates[target]
+                    if (template == null) {
+                        result.add(stored)
+                    } else if (stored.contentHash == target &&
+                        stored.sourceName == officialSource &&
+                        stored.description == template.description
+                    ) {
+                        // 幂等：已是真实数据 + 官方身份，无需改写索引。
+                        result.add(stored)
+                    } else {
+                        result.add(
+                            template.copy(
+                                id = stored.id,
+                                // 用户自行改过名的导入条目保留其显示名；app 播种的用官方名。
+                                name = if (stored.isSample) template.name else stored.name,
+                                favorite = stored.favorite,
+                                note = stored.note,
+                                importedAt = stored.importedAt,
+                                isSample = stored.isSample,
+                                fileName = stored.fileName,
+                                fileSize = stored.fileSize,
+                                deleted = stored.deleted,
+                                deletedAt = stored.deletedAt
+                            )
+                        )
+                        changed = true
+                    }
+                }
+            }
+        }
+
+        if (changed) writeIndex(result)
         return result
     }
 
@@ -474,13 +584,19 @@ class PresetRepository(private val context: Context) {
     }
 
     /**
-     * 全部内置预置：原有 10 个（云创 / 社区近似 / 通透胶片 / 7 个 nikonpc 官方）
-     * 加上「云创色彩预设.zip」逐一落地的 107 个真实 NP3 + 9 个 3D LUT。
-     * 官方方案需要 Context 读 assets，这里统一合并，播种 / 补齐共用同一份，
-     * 保证首次安装与覆盖安装都按 contentHash 幂等去重。
+     * 全部内置预置：资料库附件逐一落地的 99 个官方命名 NP3 + 2 个独立 NP3 +
+     * 9 个 3D LUT，加上原有内置（社区近似 / 通透胶片 / 7 个 nikonpc 官方等）。
+     *
+     * 1.6.47 起官方方案优先：旧内置在线预置「Vitality Film by Peng Mango」与新
+     * 的 `nic:<recipeId>` 指向同一官方滤镜，这里按 contentHash 排除重复项，让
+     * 零拟合 NP3 版本作为唯一来源，避免同一滤镜在列表里出现两个。
      */
-    private fun allBuiltIns(): List<Preset> =
-        builtInCloudPresets() + OfficialCloudPresets.all(context)
+    private fun allBuiltIns(): List<Preset> {
+        val official = OfficialCloudPresets.all(context)
+        val officialHashes = official.mapTo(HashSet()) { it.contentHash }
+        val legacy = builtInCloudPresets().filterNot { it.contentHash in officialHashes }
+        return official + legacy
+    }
 
     /**
      * Adds the built-in cloud presets that ship with the app. They have no

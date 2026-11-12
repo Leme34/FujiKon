@@ -43,24 +43,37 @@ class RepositoryRobolectricTest {
     }
 
     /**
-     * 首次启动播种总数 = 4 个 sample assets + 10 个原有内置 +
-     * 「云创色彩预设.zip」逐一落地的 107 NP3 + 9 LUT（按实际解析结果计，
-     * 避免以后 assets 增减时硬编码数字失真）。
+     * 首次启动播种总数 = 4 个 sample assets + 官方真实方案（99 个官方命名 NP3
+     * + 2 个独立 NP3 + 9 个 3D LUT）+ 与官方身份不重复的原有内置。
+     *
+     * 1.6.47 起旧内置在线预置「Vitality Film by Peng Mango」与官方 NP3 方案
+     * 共用 `nic:<recipeId>`，播种时按 contentHash 去重，只保留真实 NP3 版本，
+     * 所以这里也要按同一规则排除重复项，避免硬编码数字失真。
      */
-    private fun seededCount(): Int =
-        4 + com.fujikon.app.nic.builtInCloudPresets().size +
-            com.fujikon.app.nic.OfficialCloudPresets.all(context).size
+    private fun seededCount(): Int {
+        val official = com.fujikon.app.nic.OfficialCloudPresets.all(context)
+        val officialHashes = official.mapTo(HashSet()) { it.contentHash }
+        val legacy = com.fujikon.app.nic.builtInCloudPresets()
+            .filterNot { it.contentHash in officialHashes }
+        return 4 + official.size + legacy.size
+    }
 
     @Test
     fun seedsSamplesAndBuiltInCloudPresetOnFirstLaunch() = runBlocking {
         repository.load()
 
         assertTrue(repository.ready.value)
-        // 4 sample assets + 10 原有内置 + 116 官方真实方案（107 NP3 + 9 LUT）。
+        // 4 sample assets + 99 官方命名方案 + 2 独立 NP3 + 9 LUT + 9 原有内置。
         assertEquals(seededCount(), repository.presets.value.size)
-        assertEquals(116, repository.presets.value.count {
-            it.contentHash.startsWith("cloudrecipe:") ||
-                it.contentHash.startsWith("cloudlut:")
+        // 99 个官方方案已统一为 nic:<recipeId>；2 个无官方对应的仍是 cloudrecipe:。
+        assertEquals(99, repository.presets.value.count {
+            it.contentHash.startsWith("nic:")
+        })
+        assertEquals(2, repository.presets.value.count {
+            it.contentHash.startsWith("cloudrecipe:")
+        })
+        assertEquals(9, repository.presets.value.count {
+            it.contentHash.startsWith("cloudlut:")
         })
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400" })
@@ -115,15 +128,17 @@ class RepositoryRobolectricTest {
         repository.load()
 
         val preset = repository.presets.value.first { it.name == "Vitality Film by Peng Mango" }
+        // 1.6.47：与在线导入共用同一身份；旧的在线内置项已按 contentHash 去重，
+        // 唯一来源是附件 vitality film pman.NP3 的零拟合解析（官方真实数据）。
         assertEquals("nic:01JSBM30XWQ6GG4XK0KSZ3FQEK", preset.contentHash)
-        assertEquals("Nikon Imaging Cloud", preset.sourceName)
+        assertEquals(com.fujikon.app.nic.CloudRecipeCatalog.SOURCE_NAME, preset.sourceName)
         assertEquals("Flexible Color", preset.baseProfileName)
         assertTrue("内置云创预设没有二进制文件", preset.isDerived)
         assertEquals(0, preset.fileSize)
-        // 官方 pictureControl 数值经全局 0.30 缩放：+3.50 / +1.50 / −1.00。
-        assertEquals(1.05f, preset.sharpening, 1e-4f)
-        assertEquals(0.45f, preset.midRangeSharpening, 1e-4f)
-        assertEquals(-0.30f, preset.clarity, 1e-4f)
+        // NP3 文件原始锐化值，未套用在线接口的 0.30 缩放。
+        assertEquals(3.50f, preset.sharpening, 1e-4f)
+        assertEquals(1.50f, preset.midRangeSharpening, 1e-4f)
+        assertEquals(-1.00f, preset.clarity, 1e-4f)
         // 1.6.43：该 recipeId 命中「云创色彩预设.zip」的 vitality film pman.NP3。
         // 官方 392 字节文件以「参数 + 分区调色」定义影调，无独立曲线，因此
         // 不再有拟合 256 点 LUT，曲线由官方参数 / Blender / Grading 取代。
