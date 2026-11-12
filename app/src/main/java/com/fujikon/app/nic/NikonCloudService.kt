@@ -213,14 +213,14 @@ private const val CLOUD_DETAIL_SCALE = 0.30f
  * account, so the app can browse the official recipes and import the published
  * picture-control parameters directly.
  */
-class NikonCloudService(
+open class NikonCloudService(
     baseUrl: String = DEFAULT_BASE_URL,
     private val country: String = "cn",
     private val language: String = "zh-cn"
 ) {
     private val base = baseUrl.trimEnd('/') + "/"
 
-    suspend fun fetchCatalog(): List<NikonCloudRecipe> = withContext(Dispatchers.IO) {
+    open suspend fun fetchCatalog(): List<NikonCloudRecipe> = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("ownerUserId", "nikon")
             put("bookId", "")
@@ -236,7 +236,7 @@ class NikonCloudService(
         recipes
     }
 
-    suspend fun fetchDetail(recipeId: String): NikonCloudDetail = withContext(Dispatchers.IO) {
+    open suspend fun fetchDetail(recipeId: String): NikonCloudDetail = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("country", country)
             put("language", language)

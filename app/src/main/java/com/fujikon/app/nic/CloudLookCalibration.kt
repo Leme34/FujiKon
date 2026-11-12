@@ -13,8 +13,10 @@ import com.fujikon.app.ncp.ColorBlendValue
  * 在线接口只返回 "gamma" 的影调字段用统计拟合假 LUT（下方 LOOKS）+ 合成
  * S 曲线补全，与官方 NP3 原始配方差异巨大。
  *
- * 下方 LOOKS 是 1.6.43 之前的 color-audit 统计拟合表，现仅作为「附件中无对应
- * 真实 NP3」的 recipe（如 Catgrain）兜底；未知 recipe 直接返回原预置。
+ * 下方 LOOKS 是 1.6.43 之前的 color-audit 统计拟合表，现仅作为引擎兜底保留：
+ * 1.6.45 起 [CloudImportSupport] 只允许命中 [OfficialCloudLooks] 的 recipe 走
+ * 在线导入入口，附件中无对应真实 NP3 的 recipe（如 Catgrain）及未知 recipe
+ * 一律显示「暂不支持导入」，用户不会再拿到拟合假 LUT / 合成 S 曲线。
  *
  * 真实数据路径不再把 contrast/highlight/shadow/white/black 归零：官方 NP3 的
  * 曲线（如有）与参数是配套的，有曲线者参数本就为 0、无曲线者靠参数定义影调，

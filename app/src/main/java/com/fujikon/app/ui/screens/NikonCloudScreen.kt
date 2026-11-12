@@ -51,12 +51,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.fujikon.app.nic.CloudImportSupport
 import com.fujikon.app.nic.NikonCloudRecipe
 import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.MetaChip
@@ -228,6 +230,7 @@ fun NikonCloudScreen(
                                     recipe = recipe,
                                     detail = detail,
                                     status = state.statuses[recipe.id] ?: ItemState.Idle,
+                                    supported = viewModel.isImportSupported(recipe.id),
                                     onImport = { viewModel.importOne(recipe) },
                                     onOpenDetail = {
                                         navController.navigate(Routes.nikonCloudDetail(recipe.id))
@@ -237,8 +240,8 @@ fun NikonCloudScreen(
                             }
                             item {
                                 Text(
-                                    "色彩方案版权归 Nikon 及创作者所有。导入时按云创公开的参数生成应用内预设；" +
-                                        "未公开的色调曲线等参数不会被还原，效果可能与机内直出略有差异。",
+                                    "色彩方案版权归 Nikon 及创作者所有。仅「云创色彩预设」库中已落地官方真实色彩数据的方案支持导入；" +
+                                        "其余方案暂不支持导入（可下载官方 NP3 文件后经「导入预设」加入），以避免套用效果与官方样张不符。",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = TextSecondary,
                                     modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
@@ -282,7 +285,7 @@ private fun CloudHeader(
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "连接尼康云创公开色彩方案库，查看创作者说明后直接导入预设列表，无需尼康账号。",
+                "连接尼康云创公开色彩方案库，无需账号即可查看说明与参数。仅已落地官方真实色彩数据的方案支持导入，其余显示「暂不支持导入」。",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
@@ -311,6 +314,7 @@ private fun CloudRecipeRow(
     recipe: NikonCloudRecipe,
     detail: DetailState?,
     status: ItemState,
+    supported: Boolean,
     onImport: () -> Unit,
     onOpenDetail: () -> Unit,
     onRetryDetail: () -> Unit
@@ -400,17 +404,34 @@ private fun CloudRecipeRow(
                 )
             }
             Spacer(Modifier.width(8.dp))
-            CloudImportAction(status = status, onImport = onImport)
+            CloudImportAction(status = status, supported = supported, onImport = onImport)
         }
     }
 }
 
+/** 没有官方真实 NP3 数据的方案：明确标注「暂不支持导入」，不提供任何导入动作。 */
 @Composable
-private fun CloudImportAction(
+private fun UnsupportedImportLabel() {
+    Text(
+        CloudImportSupport.UNSUPPORTED_LABEL,
+        style = MaterialTheme.typography.labelSmall,
+        color = TextSecondary,
+        modifier = Modifier.testTag("cloud_import_unsupported")
+    )
+}
+
+@Composable
+internal fun CloudImportAction(
     status: ItemState,
+    supported: Boolean,
     onImport: () -> Unit
 ) {
+    if (!supported) {
+        UnsupportedImportLabel()
+        return
+    }
     when (status) {
+        ItemState.Unsupported -> UnsupportedImportLabel()
         ItemState.Importing -> CircularProgressIndicator(
             modifier = Modifier.size(22.dp),
             color = Amber,

@@ -42,12 +42,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.fujikon.app.nic.CloudImportSupport
 import com.fujikon.app.nic.NikonCloudDetail
 import com.fujikon.app.nic.NikonCloudRecipe
 import com.fujikon.app.ui.components.MetaChip
@@ -68,6 +70,9 @@ import java.util.Locale
 /**
  * Full detail page for one Nikon Imaging Cloud recipe: the complete creator
  * description plus every published picture-control parameter.
+ *
+ * 1.6.45 起只有命中「云创色彩预设.zip」官方真实 NP3 数据的方案显示导入按钮，
+ * 其余显示「暂不支持导入」并说明原因，避免用户导入观感失真的假滤镜。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,6 +120,7 @@ fun NikonCloudDetailScreen(
                 Surface(color = Ink) {
                     CloudDetailImportBar(
                         status = status,
+                        supported = viewModel.isImportSupported(recipe.id),
                         onImport = { viewModel.importOne(recipe) }
                     )
                 }
@@ -294,7 +300,7 @@ private fun CloudParameterGrid(detail: NikonCloudDetail) {
             }
         }
         Text(
-            "标记为“曲线控制”的参数由尼康未公开的色调曲线决定，应用内按基准 Picture Control 生成近似曲线。",
+            "标注为「曲线控制」的参数由尼康未公开的色调曲线决定。仅已落地官方真实色彩数据的方案支持导入，其余暂不支持导入。",
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary
         )
@@ -325,11 +331,40 @@ private fun CloudDetailLoading() {
 }
 
 @Composable
-private fun CloudDetailImportBar(
+internal fun CloudDetailImportBar(
     status: ItemState,
+    supported: Boolean,
     onImport: () -> Unit
 ) {
+    if (!supported) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(16.dp)
+                .testTag("cloud_detail_import_unsupported")
+        ) {
+            Text(
+                CloudImportSupport.UNSUPPORTED_LABEL,
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                CloudImportSupport.UNSUPPORTED_HINT,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary
+            )
+        }
+        return
+    }
     when (status) {
+        ItemState.Unsupported -> Text(
+            CloudImportSupport.UNSUPPORTED_LABEL,
+            color = TextSecondary,
+            modifier = Modifier.padding(16.dp)
+        )
         ItemState.Importing -> Row(
             Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically

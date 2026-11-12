@@ -3,6 +3,7 @@ package com.fujikon.app.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fujikon.app.data.PresetRepository
+import com.fujikon.app.nic.CloudImportSupport
 import com.fujikon.app.nic.NikonCloudDetail
 import com.fujikon.app.nic.NikonCloudRecipe
 import com.fujikon.app.nic.NikonCloudService
@@ -22,6 +23,11 @@ import kotlinx.coroutines.sync.withPermit
 /**
  * Browses the public Nikon Imaging Cloud recipe library and imports each
  * recipe as a local preset.
+ *
+ * 1.6.45 起只有命中「云创色彩预设.zip」官方真实 NP3 数据表的 recipe 允许导入。
+ * 其余方案在 UI 显示「暂不支持导入」，并在这里再次做防御性拦截 —— 它们只能
+ * 用统计拟合假 LUT / 合成 S 曲线补全公开接口未返回的色调曲线，套用后与官方
+ * 效果图相差甚远，绝不能进入用户的预设列表。
  */
 class NikonCloudViewModel(
     private val service: NikonCloudService,
@@ -33,6 +39,7 @@ class NikonCloudViewModel(
         data object Importing : ItemState
         data object Imported : ItemState
         data object Duplicate : ItemState
+        data object Unsupported : ItemState
         data class Failed(val message: String) : ItemState
     }
 
@@ -143,9 +150,20 @@ class NikonCloudViewModel(
         }
     }
 
+    /** 与 UI 共用的单一准入判定（[CloudImportSupport]）。 */
+    fun isImportSupported(recipeId: String): Boolean =
+        CloudImportSupport.isSupported(recipeId)
+
     fun importOne(recipe: NikonCloudRecipe) {
+        // 防御性拦截：即使 UI 被绕过，也不允许把没有官方真实 NP3 数据的
+        // 「假滤镜」写入用户预设列表。
+        if (!CloudImportSupport.isSupported(recipe.id)) {
+            setStatus(recipe.id, ItemState.Unsupported)
+            _state.update { it.copy(notice = CloudImportSupport.UNSUPPORTED_HINT) }
+            return
+        }
         when (_state.value.statuses[recipe.id]) {
-            ItemState.Importing, ItemState.Imported, ItemState.Duplicate -> return
+            ItemState.Importing, ItemState.Imported, ItemState.Duplicate, ItemState.Unsupported -> return
             else -> Unit
         }
         setStatus(recipe.id, ItemState.Importing)
