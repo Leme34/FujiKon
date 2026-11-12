@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.fujikon.app.ncp.PictureControlParser
+import com.fujikon.app.nic.OfficialCloudPresets
 import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.nic.builtInCloudPresets
 import kotlinx.coroutines.CancellationException
@@ -413,13 +414,22 @@ class PresetRepository(private val context: Context) {
     }
 
     /**
+     * 全部内置预置：原有 10 个（云创 / 社区近似 / 通透胶片 / 7 个 nikonpc 官方）
+     * 加上「云创色彩预设.zip」逐一落地的 107 个真实 NP3 + 9 个 3D LUT。
+     * 官方方案需要 Context 读 assets，这里统一合并，播种 / 补齐共用同一份，
+     * 保证首次安装与覆盖安装都按 contentHash 幂等去重。
+     */
+    private fun allBuiltIns(): List<Preset> =
+        builtInCloudPresets() + OfficialCloudPresets.all(context)
+
+    /**
      * Adds the built-in cloud presets that ship with the app. They have no
      * binary file, so de-duplication goes by their `nic:<recipeId>` content hash
      * (the same key a manual cloud import uses).
      */
     private fun appendBuiltIns(list: MutableList<Preset>, hashes: MutableSet<String>): Int {
         var added = 0
-        builtInCloudPresets().forEach { preset ->
+        allBuiltIns().forEach { preset ->
             val hash = preset.contentHash
             if (hash.isBlank() || !hashes.add(hash)) return@forEach
             list.add(
@@ -444,7 +454,7 @@ class PresetRepository(private val context: Context) {
      */
     private fun ensureBuiltInsLocked(list: List<Preset>): List<Preset> {
         val present = list.map { it.contentHash }.toMutableSet()
-        val missing = builtInCloudPresets().filter { present.add(it.contentHash) }
+        val missing = allBuiltIns().filter { present.add(it.contentHash) }
         if (missing.isEmpty()) return list
         val now = System.currentTimeMillis()
         val result = list.toMutableList()

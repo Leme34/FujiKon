@@ -4,18 +4,21 @@ import com.fujikon.app.data.Preset
 import com.fujikon.app.ncp.ColorBlendValue
 
 /**
- * 由 color-audit/export_kotlin.py 生成，请勿手改。
+ * 云创在线 / 内置预置的观感校准。
  *
- * 两类查表标定（都不是泛化模型）：
- *  1) Hidamari / Warm Portrait / Filmic / Catgrain：有官方同图前后样本，
- *     用 ΔE00 拟合（color-audit/iteration-report.md 第 3 轮）。
- *  2) Textured Documentary / Nature / Vitality Film：官方只有 after 单张，
- *     用无参考「统计风格匹配」拟合（color-audit/iteration-report-v3.md 第 2 轮）。
- *     该分数只衡量分布相似度，不含空间结构，不等于与官方的色差。
+ * 1.6.43 起，官方主流 recipe 优先命中 [OfficialCloudLooks] —— 由资料库附件
+ * 「云创色彩预设.zip」中的真实 NP3 逐一解析，含 256 点官方真实色调曲线、
+ * ±100 口径官方参数、8 分区 Color Blender 与三分区 Color Grading，零拟合。
+ * 这是修复「云创滤镜套用后与官方效果图存在天壤之别」的关键：早期实现把
+ * 在线接口只返回 "gamma" 的影调字段用统计拟合假 LUT（下方 LOOKS）+ 合成
+ * S 曲线补全，与官方 NP3 原始配方差异巨大。
  *
- * 曲线是拟合后的最终 tone LUT（已含 k/b 线性项），因此同时把
- * contrast/highlight/shadow/white/black 置 0，避免 ImageRenderer 在 LUT 之后重复施加一次。
- * 饱和度/色相/8 分区 blender 对应 color-audit 中的同一套渲染顺序。
+ * 下方 LOOKS 是 1.6.43 之前的 color-audit 统计拟合表，现仅作为「附件中无对应
+ * 真实 NP3」的 recipe（如 Catgrain）兜底；未知 recipe 直接返回原预置。
+ *
+ * 真实数据路径不再把 contrast/highlight/shadow/white/black 归零：官方 NP3 的
+ * 曲线（如有）与参数是配套的，有曲线者参数本就为 0、无曲线者靠参数定义影调，
+ * 二者都不需要额外补偿。拟合表路径保留旧行为（曲线已含影调，五项归零）。
  */
 object CloudLookCalibration {
 
@@ -261,6 +264,27 @@ object CloudLookCalibration {
     )
 
     fun apply(recipeId: String, preset: Preset): Preset {
+        // 1.6.43：官方主流 recipe 优先用「云创色彩预设.zip」中的真实 NP3 数据。
+        // 曲线为官方 256 点原值（无独立曲线的文件则为 null，由官方参数定义影调，
+        // 绝不再用合成 S 曲线顶替），参数 / 8 分区 Blender / 三分区 Grading 全部
+        // 为文件原值。锐化三档保留 toPictureControl 已按 CLOUD_DETAIL_SCALE 缩放
+        // 的结果，避免真实档位值与画质算子既有标定不一致。
+        val official = OfficialCloudLooks.BY_RECIPE_ID[recipeId]
+        if (official != null) {
+            return preset.copy(
+                curve = official.curve,
+                saturation = official.saturation,
+                hue = official.hue,
+                contrast = official.contrast,
+                highlights = official.highlights,
+                shadows = official.shadows,
+                whites = official.whites,
+                blacks = official.blacks,
+                colorBlender = official.blender,
+                colorGrading = official.grading
+            )
+        }
+        // 附件中无对应真实 NP3 的 recipe（如 Catgrain）：保留早期统计拟合兜底。
         val look = LOOKS[recipeId] ?: return preset
         return preset.copy(
             curve = look.curve,

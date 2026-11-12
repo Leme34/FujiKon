@@ -26,7 +26,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
@@ -40,6 +42,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -57,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,6 +69,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.fujikon.app.FujiKonApp
+import com.fujikon.app.data.PresetSearch
 import com.fujikon.app.ui.Routes
 import com.fujikon.app.ui.components.PresetCard
 import com.fujikon.app.ui.components.PresetPickerSheet
@@ -97,6 +103,11 @@ fun PresetsScreen(
     var showPicker by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
     var importErrors by remember { mutableStateOf<List<String>>(emptyList()) }
+    var searchQuery by remember { mutableStateOf("") }
+    // 按名称 / 说明 / 备注 / 来源名过滤；空查询展示全部。
+    val visiblePresets = remember(presets, searchQuery) {
+        PresetSearch.filter(presets, searchQuery)
+    }
 
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -201,7 +212,7 @@ fun PresetsScreen(
                     }
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         SectionHeader(
-                            title = "我的预设 (${presets.size})",
+                            title = "我的预设 (${visiblePresets.size})",
                             action = {
                                 Row {
                                     TextButton(onClick = { navController.navigate(Routes.NIKONPC) }) {
@@ -222,7 +233,50 @@ fun PresetsScreen(
                             }
                         )
                     }
-                    items(presets, key = { it.id }) { preset ->
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("presets_search_field"),
+                            singleLine = true,
+                            placeholder = { Text("搜索预设名称或说明") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary)
+                            },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "清除搜索",
+                                            tint = TextSecondary
+                                        )
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Amber,
+                                unfocusedBorderColor = Outline,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                cursorColor = Amber
+                            )
+                        )
+                    }
+                    if (visiblePresets.isEmpty() && searchQuery.isNotBlank()) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            Text(
+                                "没有匹配「$searchQuery」的预设，试试名称或说明里的其他关键词。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                                modifier = Modifier.padding(vertical = 20.dp)
+                            )
+                        }
+                    }
+                    items(visiblePresets, key = { it.id }) { preset ->
                         PresetCard(
                             preset = preset,
                             modifier = Modifier.fillMaxWidth(),

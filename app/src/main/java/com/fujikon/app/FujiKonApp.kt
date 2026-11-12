@@ -10,6 +10,7 @@ import com.fujikon.app.data.PresetRepository
 import com.fujikon.app.data.SelectionStore
 import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.nic.NikonCloudService
+import com.fujikon.app.render.CubeLutProvider
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import com.fujikon.app.render.MlSegmentation
@@ -49,6 +50,10 @@ class AppContainer(context: Context) {
         // back to the deterministic CV pipeline, never a broken selection.
         MlSegmentation.attach(appContext)
         SelectionMaskGenerator.provider = MlSegmentation
+        // 云创 3D LUT 方案：渲染器是纯 JVM 类，这里用 assets 装配解码入口。
+        CubeLutProvider.install { asset ->
+            runCatching { appContext.assets.open(asset).use { it.readBytes() } }.getOrNull()
+        }
         scope.launch {
             presetRepository.load()
             MlSegmentation.warmUp()

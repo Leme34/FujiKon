@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
+import com.fujikon.app.data.PresetSearch
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.ui.theme.Amber
@@ -55,6 +57,7 @@ import com.fujikon.app.ui.theme.Card
 import com.fujikon.app.ui.theme.CardHigh
 import com.fujikon.app.ui.theme.Ink
 import com.fujikon.app.ui.theme.InkElevated
+import com.fujikon.app.ui.theme.Outline
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
 
@@ -70,6 +73,12 @@ fun PresetPickerSheet(
     onOpenDetail: ((Preset) -> Unit)? = null
 ) {
     val options = remember(presets) { listOf(Preset.none()) + presets }
+    var searchQuery by remember { mutableStateOf("") }
+    // 「无（保留原图）」始终保留，搜索只过滤真实预设，随时能退回原图。
+    val visibleOptions = remember(options, searchQuery) {
+        if (searchQuery.isBlank()) options
+        else listOf(options.first()) + options.drop(1).filter { PresetSearch.matches(it, searchQuery) }
+    }
     EditorBottomPanel(
         onDismiss = onDismiss,
         testTag = "preset_picker_panel"
@@ -101,12 +110,44 @@ fun PresetPickerSheet(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("preset_picker_search_field"),
+                singleLine = true,
+                placeholder = { Text("搜索预设名称或说明") },
+                leadingIcon = {
+                    Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary)
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "清除搜索",
+                                tint = TextSecondary
+                            )
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Amber,
+                    unfocusedBorderColor = Outline,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    cursorColor = Amber
+                )
+            )
+            Spacer(Modifier.height(8.dp))
             LazyColumn(
                 modifier = Modifier.heightIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(options, key = { it.id }) { preset ->
+                items(visibleOptions, key = { it.id }) { preset ->
                     val selected = preset.id == selectedId
                     Row(
                         modifier = Modifier
@@ -217,9 +258,15 @@ fun PresetPickerSheet(
                     }
                 }
             }
-            if (presets.isEmpty()) {
-                Text(
+            when {
+                presets.isEmpty() -> Text(
                     "还没有导入预设；选择“无”可先直接编辑原图。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+                searchQuery.isNotBlank() && visibleOptions.size <= 1 -> Text(
+                    "没有匹配「$searchQuery」的预设，试试名称或说明里的其他关键词。",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     modifier = Modifier.padding(top = 10.dp)

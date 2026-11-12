@@ -353,12 +353,13 @@ class ImageRenderer {
         val textureRadius: Int,
         val hsl: FloatArray?,
         val shadowTint: Float,
-        val filter: FilterPlan?
+        val filter: FilterPlan?,
+        val cubeLut: CubeLut? = null
     ) {
         val needsColor: Boolean
             get() = monochrome || abs(saturation - 1f) > 0.001f || hueMatrix != null ||
                 blender != null || gradingChroma != null || hsl != null ||
-                shadowTint > 0.001f || filter != null
+                shadowTint > 0.001f || filter != null || cubeLut != null
 
         val needsDetail: Boolean
             get() = abs(sharpenFine) > 0.01f || abs(sharpenClarity) > 0.01f ||
@@ -501,6 +502,9 @@ class ImageRenderer {
         val texture = adjustments.texture / EditAdjustments.TONE_RANGE
         val adjustmentClarity = adjustments.clarity / EditAdjustments.TONE_RANGE
         val hsl = buildUserHsl(adjustments)
+        // 云创 LUT 方案：仅当预置带 assets 路径、且运行时已注册该 LUT 时启用。
+        // 其余预置为 null，processRows 完全不走 3D LUT 分支，行为零变化。
+        val cubeLut = preset.cubeLutAsset?.let { CubeLutProvider.get(it) }
         // Split-tone blue for shadows only. Normalised to 0..1 here; the pixel
         // loop further caps the actual channel shift at ~5% of full scale.
         val shadowTint = (adjustments.shadowTint / EditAdjustments.TONE_RANGE).coerceIn(0f, 1f)
@@ -543,7 +547,8 @@ class ImageRenderer {
             textureRadius = textureRadius,
             hsl = hsl,
             shadowTint = shadowTint,
-            filter = filter
+            filter = filter,
+            cubeLut = cubeLut
         )
     }
 
@@ -756,6 +761,8 @@ class ImageRenderer {
         val userHsl = plan.hsl
         val shadowTint = plan.shadowTint
         val filter = plan.filter
+        val cubeLut = plan.cubeLut
+        val cubeOut = IntArray(3)
 
         for (y in from until to) {
             if ((y and 0x0F) == 0) checkCancelled(job)
@@ -1023,6 +1030,14 @@ class ImageRenderer {
                     }
                 }
 
+                // 云创 3D LUT 方案：亮度锚定的相对变换，作为整个色彩管线的最后一步。
+                // 中性灰恒等、整体亮度不变，只叠加官方 LUT 的色彩 / 通道影调风格。
+                if (cubeLut != null) {
+                    cubeLut.applyRelative(
+                        r.coerceIn(0, 255), g.coerceIn(0, 255), b.coerceIn(0, 255), cubeOut
+                    )
+                    r = cubeOut[0]; g = cubeOut[1]; b = cubeOut[2]
+                }
                 pixels[index] = pack(r, g, b)
                 index++
             }

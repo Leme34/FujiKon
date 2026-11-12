@@ -42,13 +42,26 @@ class RepositoryRobolectricTest {
         context.filesDir.deleteRecursively()
     }
 
+    /**
+     * 首次启动播种总数 = 4 个 sample assets + 10 个原有内置 +
+     * 「云创色彩预设.zip」逐一落地的 107 NP3 + 9 LUT（按实际解析结果计，
+     * 避免以后 assets 增减时硬编码数字失真）。
+     */
+    private fun seededCount(): Int =
+        4 + com.fujikon.app.nic.builtInCloudPresets().size +
+            com.fujikon.app.nic.OfficialCloudPresets.all(context).size
+
     @Test
     fun seedsSamplesAndBuiltInCloudPresetOnFirstLaunch() = runBlocking {
         repository.load()
 
         assertTrue(repository.ready.value)
-        // 4 sample assets + 10 内置（云创 / 社区近似 / 通透胶片 / 7 个 nikonpc 官方）。
-        assertEquals(14, repository.presets.value.size)
+        // 4 sample assets + 10 原有内置 + 116 官方真实方案（107 NP3 + 9 LUT）。
+        assertEquals(seededCount(), repository.presets.value.size)
+        assertEquals(116, repository.presets.value.count {
+            it.contentHash.startsWith("cloudrecipe:") ||
+                it.contentHash.startsWith("cloudlut:")
+        })
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400" })
         assertFalse(repository.presets.value.any { it.name == "NC 400 MATCH" })
@@ -93,8 +106,8 @@ class RepositoryRobolectricTest {
         assertTrue("重命名过的内置条目也应被清理", reopened.presets.value.none { it.id == "legacy-renamed-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-match" })
         assertNotNull(reopened.presets.value.firstOrNull { it.id == "user-import-same-bytes" })
-        // 14 内置/示例 + 4 伪造 - 2 退役 = 16
-        assertEquals(16, reopened.presets.value.size)
+        // seededCount 内置/示例 + 4 伪造 - 2 退役
+        assertEquals(seededCount() + 2, reopened.presets.value.size)
     }
 
     @Test
@@ -105,20 +118,28 @@ class RepositoryRobolectricTest {
         assertEquals("nic:01JSBM30XWQ6GG4XK0KSZ3FQEK", preset.contentHash)
         assertEquals("Nikon Imaging Cloud", preset.sourceName)
         assertEquals("Flexible Color", preset.baseProfileName)
-        assertTrue("内置云创预设应带有拟合曲线", preset.curve?.size == 256)
         assertTrue("内置云创预设没有二进制文件", preset.isDerived)
         assertEquals(0, preset.fileSize)
         // 官方 pictureControl 数值经全局 0.30 缩放：+3.50 / +1.50 / −1.00。
         assertEquals(1.05f, preset.sharpening, 1e-4f)
         assertEquals(0.45f, preset.midRangeSharpening, 1e-4f)
         assertEquals(-0.30f, preset.clarity, 1e-4f)
-        // 拟合 LUT 已含影调，五项必须在 LUT 之后归零。
-        assertEquals(0, preset.contrast)
-        assertEquals(0, preset.highlights)
-        assertEquals(0, preset.shadows)
-        assertEquals(0, preset.whites)
-        assertEquals(0, preset.blacks)
+        // 1.6.43：该 recipeId 命中「云创色彩预设.zip」的 vitality film pman.NP3。
+        // 官方 392 字节文件以「参数 + 分区调色」定义影调，无独立曲线，因此
+        // 不再有拟合 256 点 LUT，曲线由官方参数 / Blender / Grading 取代。
+        assertNull("官方真实 NP3 无独立色调曲线", preset.curve)
         assertEquals(0, preset.saturation)
+        assertEquals(0, preset.hue)
+        // 官方 NP3 原值（±100 口径），五项不再归零。
+        assertEquals(-4, preset.contrast)
+        assertEquals(54, preset.highlights)
+        assertEquals(-17, preset.shadows)
+        assertEquals(0, preset.whites)
+        assertEquals(-3, preset.blacks)
+        // 官方 8 分区 Color Blender 与三分区 Color Grading 均为文件内真实数据。
+        assertEquals(8, preset.colorBlender.size)
+        assertTrue("应带官方 8 分区真实数据", preset.hasColorBlender)
+        assertTrue("应带官方三分区 Grading 真实数据", preset.hasColorGrading)
         assertTrue(preset.description!!.contains("胶片"))
     }
 
@@ -212,7 +233,7 @@ class RepositoryRobolectricTest {
         assertNull("v2 不应再有逐通道 curve", upgraded.curve)
         assertTrue("用户收藏应保留", upgraded.favorite)
         assertEquals("我最爱的滤镜", upgraded.note)
-        assertEquals("条目总数不应变化", 14, reopened.presets.value.size)
+        assertEquals("条目总数不应变化", seededCount(), reopened.presets.value.size)
     }
 
     @Test
@@ -234,16 +255,16 @@ class RepositoryRobolectricTest {
         val reopened = PresetRepository(context)
         reopened.load()
 
-        // 升级后 7 个新预置应被补齐，且总数回到 14（与全新安装一致）。
+        // 升级后 7 个新预置应被补齐，且总数回到 seededCount（与全新安装一致）。
         val nikonpc = reopened.presets.value.filter { it.contentHash.startsWith("nikonpc:") }
         assertEquals(7, nikonpc.size)
-        assertEquals(14, reopened.presets.value.size)
+        assertEquals(seededCount(), reopened.presets.value.size)
         assertTrue(nikonpc.all { it.isSample })
 
         // 幂等：再开一次不会重复播种。
         val third = PresetRepository(context)
         third.load()
-        assertEquals(14, third.presets.value.size)
+        assertEquals(seededCount(), third.presets.value.size)
         assertEquals(7, third.presets.value.count { it.contentHash.startsWith("nikonpc:") })
     }
 
@@ -256,7 +277,7 @@ class RepositoryRobolectricTest {
         reopened.load()
 
         assertEquals(firstIds, reopened.presets.value.map { it.id }.sorted())
-        assertEquals(14, reopened.presets.value.size)
+        assertEquals(seededCount(), reopened.presets.value.size)
     }
 
     @Test
@@ -296,8 +317,8 @@ class RepositoryRobolectricTest {
         val imported = (first as PresetRepository.BinaryImportResult.Imported).preset
         assertEquals("Remote Test", imported.name)
         assertEquals("B&W/PICCON16.NCP", imported.sourceName)
-        // 14 内置/示例 + 1 成功导入 = 15
-        assertEquals(15, repository.presets.value.size)
+        // seededCount 内置/示例 + 1 成功导入
+        assertEquals(seededCount() + 1, repository.presets.value.size)
         assertTrue(repository.fileFor(imported).exists())
 
         assertTrue(results["second"] is PresetRepository.BinaryImportResult.Duplicate)
@@ -426,7 +447,9 @@ class RepositoryRobolectricTest {
     @Test
     fun curveCopyIsPersistedAndDeleteKeepsOriginalFile() = runBlocking {
         repository.load()
-        val base = repository.presets.value.first()
+        // 显式选带二进制文件的 sample：新增 116 个官方方案后，排序后的第一个
+        // 可能是无 fileName 的内置预置，不能依赖 first() 的隐含顺序。
+        val base = repository.presets.value.first { it.fileName.isNotBlank() }
         val originalFile = repository.fileFor(base)
         assertTrue(originalFile.exists())
         val curve = ToneCurve(

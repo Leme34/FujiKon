@@ -60,7 +60,14 @@ data class Preset(
      * 彩色像素的 RGB 比例而引入色偏，这里从根上规避。仅内置影调预置使用，
      * 其余预置为 null，行为完全不变。
      */
-    val lumaToneLut: IntArray? = null
+    val lumaToneLut: IntArray? = null,
+    /**
+     * 可选 3D LUT 的 assets 路径（如 `cloud_luts/cloud_lut_01.bin`）。非空时
+     * [com.fujikon.app.render.ImageRenderer] 通过
+     * [com.fujikon.app.render.CubeLutProvider] 加载对应 LUT，用亮度锚定的相对
+     * 变换叠加官方色彩风格。仅云创 LUT 方案使用，其余预置为 null，行为不变。
+     */
+    val cubeLutAsset: String? = null
 ) {
     val hasCurve: Boolean get() = curve != null && curve.size >= 256
 
@@ -156,6 +163,8 @@ data class Preset(
         if (lumaToneLut != null && lumaToneLut.size >= 256) {
             put("lumaToneLut", JSONArray().apply { lumaToneLut.forEach { put(it) } })
         }
+        // 3D LUT assets 路径：旧版本忽略该键，仍能正常读取其余字段。
+        if (!cubeLutAsset.isNullOrBlank()) put("cubeLutAsset", cubeLutAsset)
     }
 
     companion object {
@@ -286,7 +295,8 @@ data class Preset(
             lumaToneLut = json.optJSONArray("lumaToneLut")?.let { array ->
                 if (array.length() >= 256) IntArray(256) { array.optInt(it).coerceIn(0, 255) }
                 else null
-            }
+            },
+            cubeLutAsset = json.optString("cubeLutAsset", "").takeIf { it.isNotBlank() }
         )
 
         private fun encodeCurve(curve: IntArray): String {

@@ -1,6 +1,8 @@
 package com.fujikon.app.nic
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -43,27 +45,69 @@ class CloudLookCalibrationTest {
     }
 
     @Test
-    fun calibratedRecipeUsesFittedLook() {
+    fun calibratedRecipeUsesOfficialNp3Data() {
         val preset = presetFor("01JD1PCXH2HKADD09AZZ80CN30")
 
-        val curve = preset.curve
-        assertTrue("校准曲线必须是 256 点", curve != null && curve.size == 256)
-        val table = curve!!
-        for (i in 1 until table.size) {
-            assertTrue("tone 曲线必须单调不减", table[i] >= table[i - 1])
-        }
-        // 拟合约束不允许把高光压到纯白，避免裁死。
-        assertTrue("曲线顶端不得裁剪到 32767", table.last() <= 32767 - 200)
-        assertTrue("曲线必须是有效映射", table.last() > 0)
+        // Hidamari Color 命中「云创色彩预设.zip」的 hidanaei hanuka.NP3（392 字节）：
+        // 官方以参数 + 分区调色定义影调，没有独立色调曲线。绝不能用拟合 / 合成
+        // S 曲线顶替，否则又回到「与官方效果图天壤之别」。
+        assertNull("官方真实 NP3 无独立曲线", preset.curve)
 
-        // 拟合约束：饱和度/色相不得越界（物理上合理，不靠极端参数刷分）。
-        assertTrue("饱和度越界", preset.saturation in -50..35)
-        assertTrue("色相越界", preset.hue in -33..33)
+        // 官方 NP3 原值（±100 口径），不再归零；detail 里的 saturation=-10 被覆盖。
+        assertEquals(10, preset.saturation)
+        assertEquals(0, preset.hue)
+        assertEquals(50, preset.contrast)
+        assertEquals(-5, preset.highlights)
+        assertEquals(90, preset.shadows)
+        assertEquals(-5, preset.whites)
+        assertEquals(30, preset.blacks)
+
+        // 官方 8 分区 Color Blender + 三分区 Color Grading 真实数据。
         assertEquals(8, preset.colorBlender.size)
-        assertTrue("分区色相越界", preset.colorBlender.all { it.hue in -60..60 })
-        assertTrue("分区彩度越界", preset.colorBlender.all { it.chroma in -45..45 })
-        assertTrue("分区亮度越界", preset.colorBlender.all { it.brightness in -25..25 })
-        // 曲线已是最终 LUT，五项影调必须在 LUT 之后归零。
+        assertTrue("官方分区调色应带真实数据", preset.hasColorBlender)
+        assertTrue("官方三分区 Grading 应带真实数据", preset.hasColorGrading)
+
+        // 真实数据路径不覆盖锐化三档，仍沿用 toPictureControl 已按 0.30 缩放的
+        // 结果，避免把官方未缩放档位（2.0f）直接喂给画质算子造成失配。
+        assertEquals(0.15f, preset.sharpening, 1e-4f)
+    }
+
+    @Test
+    fun officialRecipeWithRealCurveKeeps256PointToneTable() {
+        // Warm Portrait <- warmportrait y2.NP3（978 字节，含官方 256 点真实曲线）
+        val preset = presetFor("01J6VDR8901GMQMP1JA12XZ2SX")
+        val curve = preset.curve
+        assertNotNull("官方 NP3 应保留 256 点真实曲线", curve)
+        assertEquals(256, curve!!.size)
+        for (i in 1 until curve.size) {
+            assertTrue("官方真实曲线单调不减", curve[i] >= curve[i - 1])
+        }
+        assertTrue("曲线顶端应在 0..32767 内", curve.last() in 1..32767)
+        // 有独立曲线者，五项影调参数本就为 0；色彩风格来自曲线 + 分区。
+        assertEquals(0, preset.contrast)
+        assertEquals(0, preset.highlights)
+        assertEquals(0, preset.shadows)
+        assertEquals(0, preset.whites)
+        assertEquals(0, preset.blacks)
+        assertEquals(8, preset.saturation)
+        assertTrue("官方三分区 Grading 应带真实数据", preset.hasColorGrading)
+    }
+
+    @Test
+    fun recipeWithoutOfficialNp3StillUsesFittedFallback() {
+        // Catgrain：附件中无对应真实 NP3，保留 1.6.43 之前的统计拟合兜底，
+        // 确保「真实数据改造」没有破坏老 recipe 的既有观感。
+        val preset = presetFor("01K7JQEDMX051ZFVR4GW77D1DW")
+        val curve = preset.curve
+        assertNotNull("拟合兜底应提供 256 点曲线", curve)
+        assertEquals(256, curve!!.size)
+        for (i in 1 until curve.size) {
+            assertTrue("拟合曲线单调不减", curve[i] >= curve[i - 1])
+        }
+        assertEquals(-10, preset.saturation)
+        assertEquals(-8, preset.hue)
+        assertEquals(8, preset.colorBlender.size)
+        // 拟合曲线已含影调，五项仍归零。
         assertEquals(0, preset.contrast)
         assertEquals(0, preset.highlights)
         assertEquals(0, preset.shadows)
