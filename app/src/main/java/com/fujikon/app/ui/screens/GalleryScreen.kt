@@ -103,6 +103,9 @@ fun GalleryScreen(
     val presets by app.container.presetRepository.presets.collectAsStateWithLifecycle()
     val presetId by app.container.selectionStore.presetId.collectAsStateWithLifecycle()
     val currentPhoto by app.container.selectionStore.currentPhoto.collectAsStateWithLifecycle()
+    // 预设预览固定用「最近一次选择的第一张照片」，不受编辑器翻页影响。
+    val selectionPreview by app.container.selectionStore.previewPhoto.collectAsStateWithLifecycle()
+    val orderedIds by viewModel.selectionOrder.collectAsStateWithLifecycle()
     val preset = presets.firstOrNull { it.id == presetId }
     // 不选预设（presetId == null）一律视为「无（保留原图）」，不强制用户
     // 必须挑一个滤镜才能进入编辑器；只有 presetId 指向一个已失效的预设时才
@@ -138,6 +141,13 @@ fun GalleryScreen(
         }
     }
 
+    // 重新勾选照片后立刻把预设预览切到新批次的第一张。选择为空时保留上一次
+    // 的预览：从编辑器返回时 GalleryViewModel 会重建、选择为空，不能闪回样张。
+    LaunchedEffect(orderedIds, state.photos) {
+        val first = viewModel.chosenPhotos().firstOrNull()
+        if (first != null) app.container.selectionStore.setPreviewPhoto(first)
+    }
+
     LaunchedEffect(Unit) {
         if (!app.container.photoRepository.hasReadPermission()) {
             permissionLauncher.launch(app.container.photoRepository.requiredPermissions())
@@ -147,18 +157,18 @@ fun GalleryScreen(
     val visible = remember(state.photos, albumFilter) {
         if (albumFilter == null) state.photos else state.photos.filter { it.bucketId == albumFilter }
     }
-    val selectionOrder = remember(selectedIds) {
-        selectedIds.toList().mapIndexed { index, id -> id to index + 1 }.toMap()
+    val selectionOrder = remember(orderedIds) {
+        orderedIds.mapIndexed { index, id -> id to index + 1 }.toMap()
     }
     // Selected photos in the order they were picked, for the "已选" sheet.
-    val selectedPhotos = remember(selectedIds, state.photos) {
+    val selectedPhotos = remember(orderedIds, state.photos) {
         val byId = state.photos.associateBy { it.id }
-        selectedIds.mapNotNull { byId[it] }
+        orderedIds.mapNotNull { byId[it] }
     }
     val allVisibleSelected = visible.isNotEmpty() && visible.all { it.id in selectedIds }
-    // Prefer the photo open in the editor, then the first selected photo, then
-    // the built-in sample used by PresetThumbnail.
-    val previewPhoto = currentPhoto ?: state.photos.firstOrNull { it.id in selectedIds }
+    // Prefer the photo of the latest selection, then the photo open in the
+    // editor, then the first selected photo, then the built-in sample.
+    val previewPhoto = selectionPreview ?: currentPhoto ?: state.photos.firstOrNull { it.id in selectedIds }
 
     Scaffold(
         containerColor = Ink,
@@ -258,10 +268,9 @@ fun GalleryScreen(
                             } else if (!hasPresetChoice) {
                                 showPicker = true
                             } else {
+                                // setPhotos() also resets the preview source to
+                                // the first photo of this freshly picked batch.
                                 app.container.selectionStore.setPhotos(viewModel.chosenPhotos())
-                                app.container.selectionStore.setCurrentPhoto(
-                                    viewModel.chosenPhotos().firstOrNull()
-                                )
                                 navController.navigate(Routes.EDITOR)
                             }
                         },

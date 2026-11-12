@@ -56,13 +56,19 @@ class PresetThumbnailStore(
             cache.remove(key)
         }
 
-        val source = sourceFor(photo, size) ?: run {
+        val source = sourceFor(photo, size)
+        // A failed decode must NOT be cached under the real photo's key.
+        // Re-picking photos often returns URIs that are not readable for a
+        // moment; caching the sample fallback under that key would then
+        // permanently shadow the real photo once the URI becomes readable.
+        val effectiveKey = if (source != null) key else cacheKey(null, preset, size)
+        val base = source ?: withContext(Dispatchers.Default) {
             // Never leave the picker with an empty tile: fall back to the
             // built-in sample scene when the gallery photo cannot be decoded.
             val side = max(480, size * 2)
-            withContext(Dispatchers.Default) { SamplePhoto.create(side, side) }
+            SamplePhoto.create(side, side)
         }
-        return renderInto(source, preset, size, key)
+        return renderInto(base, preset, size, effectiveKey)
     }
 
     /**

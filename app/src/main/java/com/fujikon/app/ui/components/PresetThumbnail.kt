@@ -77,9 +77,16 @@ fun PresetThumbnail(
 
     val image = bitmap?.takeIf { it.hasVisiblePixels() }
     if (image != null) {
+        // 把预览来源写进语义描述：既方便无障碍朗读，也让「重新选照片后
+        // 预览图是否跟着换」可被自动化验证。
+        val sourceLabel = when {
+            photo != null -> photo.displayName
+            sourceBitmap != null -> "在线样张"
+            else -> "内置样张"
+        }
         Image(
             bitmap = image.asImageBitmap(),
-            contentDescription = "${preset.name} 预览",
+            contentDescription = "${preset.name} 预览 · $sourceLabel",
             contentScale = contentScale,
             modifier = modifier
         )

@@ -126,7 +126,9 @@ fun PresetCard(
     modifier: Modifier = Modifier,
     onFavoriteClick: (() -> Unit)? = null,
     /** Shows the preset applied to the sample scene instead of only its curve. */
-    thumbnailStore: PresetThumbnailStore? = null
+    thumbnailStore: PresetThumbnailStore? = null,
+    /** 预览源：最近一次选择的第一张照片；为空时使用内置样张。 */
+    photo: PhotoItem? = null
 ) {
     Card(
         modifier = modifier.clickable(onClick = onClick),
@@ -153,7 +155,7 @@ fun PresetCard(
                 }
                 if (thumbnailStore != null) {
                     PresetThumbnail(
-                        photo = null,
+                        photo = photo,
                         preset = preset,
                         store = thumbnailStore,
                         modifier = Modifier.fillMaxSize(),

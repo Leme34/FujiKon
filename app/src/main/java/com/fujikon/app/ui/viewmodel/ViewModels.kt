@@ -566,6 +566,11 @@ class GalleryViewModel(
     private val _selectedIds = MutableStateFlow<Set<Long>>(emptySet())
     val selectedIds: StateFlow<Set<Long>> = _selectedIds.asStateFlow()
 
+    /** Ids in the exact order the user picked them. The first one is the
+     * preview source for every preset; a plain Set has no stable first item. */
+    private val _selectionOrder = MutableStateFlow<List<Long>>(emptyList())
+    val selectionOrder: StateFlow<List<Long>> = _selectionOrder.asStateFlow()
+
     private val _albumFilter = MutableStateFlow<String?>(null)
     val albumFilter: StateFlow<String?> = _albumFilter.asStateFlow()
 
@@ -597,22 +602,32 @@ class GalleryViewModel(
     }
 
     fun toggle(id: Long) {
+        val nowSelected = id !in _selectedIds.value
         _selectedIds.update { current ->
-            if (id in current) current - id else current + id
+            if (nowSelected) current + id else current - id
+        }
+        _selectionOrder.update { order ->
+            if (nowSelected) {
+                if (id in order) order else order + id
+            } else order - id
         }
     }
 
     fun selectAll(visible: List<PhotoItem>) {
-        _selectedIds.update { current -> current + visible.map { it.id } }
+        val ids = visible.map { it.id }
+        _selectedIds.update { current -> current + ids }
+        _selectionOrder.update { order -> order + ids.filterNot { it in order } }
     }
 
     fun clearSelection() {
         _selectedIds.value = emptySet()
+        _selectionOrder.value = emptyList()
     }
 
+    /** Selected photos in pick order, so [firstOrNull] is the preview photo. */
     fun chosenPhotos(): List<PhotoItem> {
-        val order = _state.value.photos.associateBy { it.id }
-        return _selectedIds.value.mapNotNull { order[it] }
+        val byId = _state.value.photos.associateBy { it.id }
+        return _selectionOrder.value.mapNotNull { byId[it] }
     }
 }
 

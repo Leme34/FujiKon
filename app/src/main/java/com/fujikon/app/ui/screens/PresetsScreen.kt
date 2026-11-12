@@ -90,7 +90,7 @@ fun PresetsScreen(
     val app = context.applicationContext as FujiKonApp
     val presets by viewModel.presets.collectAsStateWithLifecycle()
     val ready by viewModel.ready.collectAsStateWithLifecycle()
-    val currentPhoto by app.container.selectionStore.currentPhoto.collectAsStateWithLifecycle()
+    val previewPhoto by app.container.selectionStore.previewPhoto.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -227,6 +227,7 @@ fun PresetsScreen(
                             preset = preset,
                             modifier = Modifier.fillMaxWidth(),
                             thumbnailStore = app.container.presetThumbnailStore,
+                            photo = previewPhoto,
                             onClick = { navController.navigate(Routes.presetDetail(preset.id)) }
                         )
                     }
@@ -255,7 +256,7 @@ fun PresetsScreen(
                 navController.navigate(Routes.GALLERY)
             },
             onDismiss = { showPicker = false },
-            photo = currentPhoto,
+            photo = previewPhoto,
             thumbnailStore = app.container.presetThumbnailStore,
             onOpenDetail = { selected ->
                 showPicker = false
