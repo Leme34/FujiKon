@@ -129,6 +129,36 @@ class PersonDetectionTest {
         assertEquals(0f, unknown.personCoverage(), 0.0001f)
     }
 
+    /**
+     * 1.6.56: 语义分割会把「人」概率零星撒在食物 / 暖色物体上，形成多个互不
+     * 相连的小噪点团。只要高概率 cell 够多（旧规则 ≥3）就会被误判为人像。
+     * 现在要求这些 cell 必须构成一个**单一占主导的连通块**，散落噪声被拒绝。
+     */
+    @Test
+    fun mlPersonMapRejectsScatteredFalsePositives() {
+        val side = 32
+        val n = side * side
+        val scattered = MlMaps(side, FloatArray(n), FloatArray(n), FloatArray(n))
+        // 3 个彼此远离、互不相通的高概率小团（模拟美食照上的散落噪点）。
+        val clusters = listOf(
+            listOf(2 to 2, 3 to 2, 2 to 3, 3 to 3),
+            listOf(20 to 5, 21 to 5, 20 to 6, 21 to 6),
+            listOf(10 to 25, 11 to 25, 10 to 26, 11 to 26)
+        )
+        for (c in clusters) for ((x, y) in c) scattered.person[y * side + x] = 0.9f
+        assertFalse(
+            "多个分散的高概率团（美食/暖色噪声）不得判定为有人体",
+            scattered.hasPerson()
+        )
+
+        // 对照：一个连贯的高概率小块（远处小但真实的人体）仍应识别。
+        val coherent = MlMaps(side, FloatArray(n), FloatArray(n), FloatArray(n))
+        for ((x, y) in listOf(15 to 15, 16 to 15, 15 to 16, 16 to 16, 15 to 17, 16 to 17)) {
+            coherent.person[y * side + x] = 0.9f
+        }
+        assertTrue("单一连贯的高概率块应判定为有人体", coherent.hasPerson())
+    }
+
     // --------------------------- model-based detector --------------------------
 
     @Test
@@ -171,6 +201,24 @@ class PersonDetectionTest {
         assertNotNull(flat)
         assertFalse("纯肤色矩形没有五官，不能算识别到人体", flat!!.detected)
         assertNull("无图源时不应给出人体结论", HeuristicPersonDetector.detect(null))
+    }
+
+    /**
+     * 1.6.56: 美食照里肉块等暖色碎块各自成团、互不相连。仅看占比/中心度会
+     * 误判，必须要求最大连通肤色块占绝大多数，否则判为无人体。
+     */
+    @Test
+    fun heuristicRejectsFragmentedWarmPatches() {
+        val food = bitmap { nx, ny ->
+            // 几块互不相连、分散在画面各处的暖色「肉块」，背景中性灰。
+            val inPatch = (nx in 0.15f..0.32f && ny in 0.20f..0.38f) ||
+                (nx in 0.62f..0.80f && ny in 0.30f..0.48f) ||
+                (nx in 0.35f..0.52f && ny in 0.66f..0.84f)
+            if (inPatch) rgb(0.74f, 0.50f, 0.40f) else rgb(0.46f, 0.46f, 0.46f)
+        }
+        val verdict = HeuristicPersonDetector.detect(food)
+        assertNotNull(verdict)
+        assertFalse("分散的暖色碎块（美食/秋叶）不是人体", verdict!!.detected)
     }
 
     @Test

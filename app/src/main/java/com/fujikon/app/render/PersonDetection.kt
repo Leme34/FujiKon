@@ -154,6 +154,13 @@ object HeuristicPersonDetector : PersonDetector {
             }
         }
         if (skinCount == 0) return PersonEvidence.NONE
+        // 1.6.56：人体是一个连贯的轮廓，不能是散落的暖色碎块。美食照里肉块 /
+        // 秋叶等会把肤色像素拆成许多互不相连的小团，单看占比 / 中心度都会
+        // 误判；要求最大连通肤色块占绝大多数肤色像素，否则视为无人体。
+        val largest = largestSkinCluster(skin, sw, sh)
+        if (largest < skinCount * 0.70f || largest < 4) {
+            return PersonEvidence.NONE
+        }
         val skinCov = skinCount / n.toFloat()
         val cx = wx / skinCount
         val cy = wy / skinCount
@@ -203,6 +210,42 @@ object HeuristicPersonDetector : PersonDetector {
             coverage = skinCov,
             source = "本机肤色/五官特征（非 AI 模型）"
         )
+    }
+
+    /** Largest 4-connected cluster of skin pixels on the [sw]×[sh] grid. */
+    private fun largestSkinCluster(skin: FloatArray, sw: Int, sh: Int): Int {
+        val seen = BooleanArray(sw * sh)
+        var best = 0
+        for (start in skin.indices) {
+            if (seen[start] || skin[start] <= 0f) continue
+            var size = 0
+            val stack = mutableListOf(start)
+            seen[start] = true
+            while (stack.isNotEmpty()) {
+                val c = stack.removeAt(stack.lastIndex)
+                size++
+                val cx = c % sw
+                val cy = c / sw
+                if (cx > 0) {
+                    val nb = c - 1
+                    if (!seen[nb] && skin[nb] > 0f) { seen[nb] = true; stack.add(nb) }
+                }
+                if (cx < sw - 1) {
+                    val nb = c + 1
+                    if (!seen[nb] && skin[nb] > 0f) { seen[nb] = true; stack.add(nb) }
+                }
+                if (cy > 0) {
+                    val nb = c - sw
+                    if (!seen[nb] && skin[nb] > 0f) { seen[nb] = true; stack.add(nb) }
+                }
+                if (cy < sh - 1) {
+                    val nb = c + sw
+                    if (!seen[nb] && skin[nb] > 0f) { seen[nb] = true; stack.add(nb) }
+                }
+            }
+            if (size > best) best = size
+        }
+        return best
     }
 }
 

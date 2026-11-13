@@ -59,19 +59,76 @@ class MlMaps(
     }
 
     /**
-     * Conservative "a human body is present" test. Coverage catches a normal
-     * portrait / full-body shot; the peak clause keeps a small distant person
-     * detectable without letting one soft noisy cell decide. Blurred model
-     * probabilities stay well below the peak on backgrounds.
+     * Conservative "a human body is present" test.
+     *
+     *  - [personCoverage] >= 0.012 catches a normal portrait / full-body shot.
+     *  - the peak clause keeps a SMALL but COHERENT distant person detectable.
+     *
+     * 1.6.56 修复：之前只要 ≥3 个 cell 概率 ≥0.55 就判定有人体，但语义分割
+     * 模型会把「人」概率零星撒在食物 / 暖色物体上（美食照里 52 个高概率 cell
+     * 其实是 3 团互不相连的小噪点）。现在要求这些高概率 cell 必须构成一个
+     * **单一、占主导的连通块**（人体是一个完整的轮廓，而不是散落的点），
+     * 散落的噪声因此被拒绝，无人体的美食照不再被误判为人像。
      */
     fun hasPerson(): Boolean {
         if (person.isEmpty()) return false
         if (personCoverage() >= 0.012f) return true
-        // A small but COHERENT distant person survives the edge blur as a few
-        // adjacent confident cells; one isolated noisy cell must not count.
+        // A small but COHERENT body survives the edge blur as ONE compact blob
+        // of confident cells. Scattered noise — food, warm objects the model
+        // sprinkles "person" probability over — forms several disjoint blobs
+        // and must NOT count as a body.
         var confident = 0
         for (v in person) if (v >= 0.55f) confident++
-        return confident >= 3
+        if (confident < 4) return false
+        val largest = largestConfidentCluster()
+        // The body must be ONE dominant silhouette: the biggest blob holds the
+        // overwhelming majority of the confident cells; a fragmented pattern
+        // (e.g. meat chunks / autumn leaves) is rejected even if it is noisy.
+        if (largest < confident * 0.85f) return false
+        return true
+    }
+
+    /**
+     * Largest 4-connected cluster of cells whose person probability is >= 0.55,
+     * counted on the [side]×[side] grid. A coherent human silhouette produces a
+     * single large cluster; scattered false positives produce many small ones.
+     */
+    private fun largestConfidentCluster(): Int {
+        val n = person.size
+        if (n != side * side) return 0
+        val seen = BooleanArray(n)
+        var best = 0
+        for (start in 0 until n) {
+            if (seen[start] || person[start] < 0.55f) continue
+            // Iterative flood fill (4-connected) to avoid deep recursion.
+            var size = 0
+            val stack = mutableListOf(start)
+            seen[start] = true
+            while (stack.isNotEmpty()) {
+                val c = stack.removeAt(stack.lastIndex)
+                size++
+                val cx = c % side
+                val cy = c / side
+                if (cx > 0) {
+                    val nb = c - 1
+                    if (!seen[nb] && person[nb] >= 0.55f) { seen[nb] = true; stack.add(nb) }
+                }
+                if (cx < side - 1) {
+                    val nb = c + 1
+                    if (!seen[nb] && person[nb] >= 0.55f) { seen[nb] = true; stack.add(nb) }
+                }
+                if (cy > 0) {
+                    val nb = c - side
+                    if (!seen[nb] && person[nb] >= 0.55f) { seen[nb] = true; stack.add(nb) }
+                }
+                if (cy < side - 1) {
+                    val nb = c + side
+                    if (!seen[nb] && person[nb] >= 0.55f) { seen[nb] = true; stack.add(nb) }
+                }
+            }
+            if (size > best) best = size
+        }
+        return best
     }
 }
 
