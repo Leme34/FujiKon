@@ -62,6 +62,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Collections
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
     /** 未删除的预设（编辑器 / 相册 / 选择预设列表共用）。 */
@@ -1584,6 +1587,42 @@ class EditorViewModel(
         data class Frame(val original: Bitmap, val shown: Bitmap, val fullFrame: Bitmap) : RenderOutcome
     }
 
+    /**
+     * 交互预览的最长边（像素），按设备真实屏幕物理像素自适应，首次使用时惰性
+     * 计算并缓存。
+     *
+     * 1.6.52 之前固定为 1280：在高 DPI 手机上 fit-to-screen 会被放大显示，且
+     * [ZoomableImage] 支持双指放大到 8x 查看细节，1280px 无论如何都极其模糊，
+     * 用户无法按实际画质调参。现在让 fit 时接近 1:1 清晰，并预留约 1.5x 的
+     * 缩放余量；同时受 [computePreviewMaxDimension] 的内存护栏约束，低内存机型
+     * 自动回落，绝不硬扛到 OOM。1.6.50 把全帧多核并行提速约 4.5x，使这一更高
+     * 分辨率下的交互渲染依然流畅。导出不受影响：ExportManager 仍走
+     * BitmapLoader.decodeFull 全分辨率。
+     */
+    internal val previewMaxDimension: Int by lazy { computePreviewMaxDimension() }
+
+    /**
+     * 反推预览最长边：
+     *  - 想要值 = 屏幕最长边物理像素 × 1.5（fit 清晰 + 约 1.5x 缩放余量）；
+     *  - 内存护栏 = 可用堆 × 0.45 ÷ 峰值字节/像素（预览需同时常驻 original +
+     *    rendered/cropBase 多份整帧，渲染瞬间还额外分配 pixels 整帧、原图副本、
+     *    降噪快照、亮度平面、输出 Bitmap，保守按 30 字节/像素估算），正方形
+     *    近似取最长边，夹在 [PREVIEW_MIN_DIMENSION, PREVIEW_MAX_CAP] 之间；
+     *  - 最终 = 想要值夹在 [地板, 护栏上限] 之间。
+     */
+    internal fun computePreviewMaxDimension(): Int {
+        val metrics = context.resources.displayMetrics
+        val screenLong = max(metrics.widthPixels, metrics.heightPixels)
+        val wanted = (screenLong * 1.5f).roundToInt()
+        val maxMem = Runtime.getRuntime().maxMemory().coerceAtLeast(64_000_000L)
+        val peakBytesPerPixel = 30.0
+        val safePixels = ((maxMem * 0.45) / peakBytesPerPixel)
+            .coerceIn(6_000_000.0, 24_000_000.0)
+        val cap = sqrt(safePixels.toDouble()).toInt()
+            .coerceIn(PREVIEW_MIN_DIMENSION, PREVIEW_MAX_CAP)
+        return wanted.coerceIn(PREVIEW_MIN_DIMENSION, cap)
+    }
+
     private fun renderCurrent() {
         val snapshot = _state.value
         val photo = snapshot.currentPhoto ?: run {
@@ -1613,7 +1652,7 @@ class EditorViewModel(
                     ensureActive()
                     val original = originalCache.get(photo.id) ?: run {
                         val decoded = BitmapLoader.decodePreview(
-                            context, photo.uri, PREVIEW_MAX_DIMENSION
+                            context, photo.uri, previewMaxDimension
                         ) ?: throw IllegalStateException("无法读取这张照片")
                         originalCache.put(photo.id, decoded)
                         decoded
@@ -1623,7 +1662,7 @@ class EditorViewModel(
                     // as-is instead of applying the local preset a second time.
                     if (aiUri != null) {
                         val finalImage = BitmapLoader.decodePreview(
-                            context, aiUri, PREVIEW_MAX_DIMENSION
+                            context, aiUri, previewMaxDimension
                         ) ?: throw IllegalStateException("无法读取 AI 修图结果")
                         return@withContext RenderOutcome.Ai(original, finalImage, aiUri)
                     }
@@ -1754,14 +1793,16 @@ class EditorViewModel(
 
     companion object {
         /**
-         * Longest edge of the interactive preview. 1800 px made every
-         * full-frame pass (portrait, detail, denoise, point colour, local
-         * masks, grain, vignette, lens blur, crop) about twice as expensive
-         * as a phone screen needs; 1280 px keeps the preview crisp while
-         * halving the work. Export is unaffected: ExportManager decodes at
-         * full resolution via BitmapLoader.decodeFull + forExport = true.
+         * 预览分辨率地板：任意设备都不低于此值，避免低分屏 / 低内存机型反而
+         * 比旧版（1280）更糊。
          */
-        const val PREVIEW_MAX_DIMENSION = 1280
+        const val PREVIEW_MIN_DIMENSION = 1600
+
+        /**
+         * 预览最长边的内存护栏上限：再高就会逼近低内存机型的 OOM 红线，因此
+         * 由 [computePreviewMaxDimension] 按可用堆反推，绝不硬扛。
+         */
+        const val PREVIEW_MAX_CAP = 4096
 
         private val SUPPORTED_RATIOS = listOf(
             "1:1" to 1f,

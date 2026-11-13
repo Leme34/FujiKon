@@ -221,16 +221,36 @@ class EditorRenderPerformanceTest {
         )
     }
 
-    /** Preview is halved in pixel count vs the old 1800 px; export stays full-res. */
+    /**
+     * 1.6.52 之前预览最长边固定 1280，在高 DPI 手机上 fit 被放大、放大看细节
+     * 极其模糊。现在改为按设备屏幕物理像素自适应（见 computePreviewMaxDimension）：
+     * 上限受内存护栏约束，但任何设备都不低于地板 PREVIEW_MIN_DIMENSION，且严格
+     * 高于旧版 1280，确保观感不再发糊；同时不高于 PREVIEW_MAX_CAP，避免 OOM。
+     */
     @Test
-    fun previewIsDownscaledToAScreenSizedBound() {
+    fun previewResolutionIsAdaptiveAndNeverBlurry() {
+        val dim = vm.previewMaxDimension
         assertTrue(
-            "预览最长边必须降到屏幕级（<=1280）才能把全图 pass 提速约 2 倍",
-            EditorViewModel.PREVIEW_MAX_DIMENSION <= 1280
+            "预览分辨率必须高于旧版 1280，否则仍会发糊",
+            dim > 1280
         )
         assertTrue(
-            "预览也不能过小而损失观感（>=720）",
-            EditorViewModel.PREVIEW_MAX_DIMENSION >= 720
+            "预览分辨率不得低于地板（任意设备都不应比旧版更糊）",
+            dim >= EditorViewModel.PREVIEW_MIN_DIMENSION
+        )
+        assertTrue(
+            "预览分辨率不得超过内存护栏上限，避免 OOM",
+            dim <= EditorViewModel.PREVIEW_MAX_CAP
+        )
+    }
+
+    /** 计算逻辑：高内存机型应贴近屏幕，低内存机型受护栏回落但仍不低于地板。 */
+    @Test
+    fun previewResolutionCapsAtMemoryGuardOnTinyHeaps() {
+        val dim = vm.computePreviewMaxDimension()
+        assertTrue(
+            "反推预览分辨率必须落在 [地板, 上限] 区间",
+            dim in EditorViewModel.PREVIEW_MIN_DIMENSION..EditorViewModel.PREVIEW_MAX_CAP
         )
     }
 }
