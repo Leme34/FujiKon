@@ -1132,6 +1132,7 @@ object AutoEnhance {
      * 真正的皮肤像素上，即便风景里混入了暖色像素（木船、秋叶、夕阳），
      * 也几乎不会被这套参数影响。
      */
+    /** 肤色占比只用于美颜强度的连续映射，不再作为「是否有人体」的判据。 */
     private const val ONE_TAP_MIN_SKIN = 0.07f
 
     /**
@@ -1142,9 +1143,12 @@ object AutoEnhance {
      *    色调 / 鲜艳度 / HSL（由 [suggest] 依实测直方图与灰度世界白平衡求解）；
      *  - 光感质感层次：纹理 / 清晰度 / 去朦胧 + 天空·主体·背景分区层
      *    （[suggestZoned] 的局部对比度增强，等价于 Snapseed 的局部自适应）；
-     *  - 人像美颜美白：磨皮 / 美白 / 红润 / 立体（[solvePortrait]），只在
-     *    实测肤色占比达标时启用，强度随占比与脸部亮度连续自适应。
+     *  - 人像美颜美白：磨皮 / 美白 / 红润 / 立体（[solvePortrait]），**当且仅当
+     *    [PersonEvidence.detected] 为真（识别到人体）时启用**；强度随肤色占比
+     *    与脸部亮度连续自适应，未识别到人体则完全不写入这组参数。
      *
+     * 人体识别由 UI 层调用 [detectPerson] 完成一次（TFLite person 语义分割优先，
+     * 严格启发式兜底），通过 [personEvidence] 传入，使提示与按钮结论完全一致。
      * 结果是一组普通 [EditAdjustments]，通过参数列表同步，用户可逐项二次调整；
      * 全部为绝对参数、从原图重算，因此重复点击幂等、绝不累加。
      */
@@ -1152,7 +1156,8 @@ object AutoEnhance {
         source: Bitmap?,
         current: EditAdjustments = EditAdjustments.Neutral,
         renderer: ImageRenderer = ImageRenderer(),
-        provider: SegmentationProvider = HeuristicSegmentationProvider
+        provider: SegmentationProvider = HeuristicSegmentationProvider,
+        personEvidence: PersonEvidence? = null
     ): AutoEnhanceResult = optimize(
         source = source,
         // 1.6.53：取消「先套用通透胶片滤镜」。闭环渲染基准不含任何预设
@@ -1161,20 +1166,28 @@ object AutoEnhance {
         current = current,
         provider = provider,
         renderer = renderer,
-        seedTransform = ::enrichOneTap
+        // 不能用 ::enrichOneTap 函数引用（第 4 个带默认值的形参会让引用变成
+        // 4 参类型）；用 lambda 把本次识别结果固定传入闭环的 seed。
+        seedTransform = { seed, stats, cur ->
+            enrichOneTap(seed, stats, cur, personEvidence)
+        }
     )
 
     /**
      * 一键优化的「内容感知增强」层：在纯参数化的全局/分区求解结果上叠加
      * 人像美颜美白，并把三大分组写进摘要。同时供一键优化按钮（作为 [optimize]
      * 的 seed 钩子）与直方图卡片的快速提示使用，保证两处结论一致。
+     *
+     * [personEvidence] 为 null / detected=false 时绝不添加人像美颜——识别不到
+     * 人体就不美颜，也不会在摘要里谎称做了美颜。
      */
     fun enrichOneTap(
         seed: AutoEnhanceResult,
         stats: ImageStats,
-        current: EditAdjustments
+        current: EditAdjustments,
+        personEvidence: PersonEvidence? = null
     ): AutoEnhanceResult {
-        val portrait = solvePortrait(stats, current)
+        val portrait = solvePortrait(stats, current, personEvidence)
         val beautyApplied = !portrait.isOff() && portrait != current.portrait
         // 影调已经很好且不是人像：保持 Lightroom「好照片精确不动」语义。
         if (!seed.changed && !beautyApplied) return seed
@@ -1191,12 +1204,20 @@ object AutoEnhance {
     /**
      * 内容感知人像美颜美白：把实测肤色占比映射到磨皮 / 美白 / 红润 / 立体
      * 四个现有滑杆上。数值刻意保守（对照 [PortraitStyle.NATURAL]），避免
-     * 「塑料感」；脸部偏暗时略多给一点美白。非人像照返回用户原有设置，
-     * 绝不覆盖手动编辑。
+     * 「塑料感」；脸部偏暗时略多给一点美白。
+     *
+     * 1.6.55：**当且仅当 [evidence] 确证画面里有人体**才生成这组参数。肤色
+     * 占比只决定强度，不再是人体判据——沙滩、秋叶、木墙等暖色场景即使
+     * skinCoverage 很高，也不会被强加美颜。未识别到人体时原样返回用户的
+     * 设置，绝不覆盖手动编辑。
      */
-    private fun solvePortrait(stats: ImageStats, current: EditAdjustments): PortraitRetouch {
+    private fun solvePortrait(
+        stats: ImageStats,
+        current: EditAdjustments,
+        evidence: PersonEvidence?
+    ): PortraitRetouch {
+        if (evidence?.detected != true) return current.portrait
         val skin = stats.skinCoverage
-        if (skin < ONE_TAP_MIN_SKIN) return current.portrait
         val confidence = ramp(skin, ONE_TAP_MIN_SKIN, 0.30f)
         val darkFace = ramp(0.46f - stats.meanLuma, 0f, 0.28f)
         return PortraitRetouch(

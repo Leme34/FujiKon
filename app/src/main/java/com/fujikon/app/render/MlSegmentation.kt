@@ -18,7 +18,18 @@ import kotlin.math.max
  * (u, v) in [0,1] maps straight onto the photo regardless of its aspect
  * ratio. The consumer bilinearly resamples it onto its own analysis grid.
  */
-class MlMaps(val side: Int, val subject: FloatArray, val sky: FloatArray) {
+class MlMaps(
+    val side: Int,
+    val subject: FloatArray,
+    val sky: FloatArray,
+    /**
+     * Per-cell probability that the pixel belongs to a HUMAN BODY, fused from
+     * PASCAL-VOC class 15 (person) and ADE20K class 13 (person). Empty when a
+     * provider does not expose person semantics (older / test fakes), which
+     * callers must treat as "unknown", NEVER as "person present".
+     */
+    val person: FloatArray = FloatArray(0)
+) {
 
     /** Bilinear sample of one field at normalised (u, v). */
     fun sample(field: FloatArray, u: Float, v: Float): Float {
@@ -38,6 +49,30 @@ class MlMaps(val side: Int, val subject: FloatArray, val sky: FloatArray) {
     /** True when there is usable signal (so callers can show an honest status). */
     fun hasSubject(): Boolean = subject.any { it > 0.35f }
     fun hasSky(): Boolean = sky.any { it > 0.35f }
+
+    /** Mean person probability over the frame; 0 when no person field exists. */
+    fun personCoverage(): Float {
+        if (person.isEmpty()) return 0f
+        var sum = 0f
+        for (v in person) sum += v
+        return (sum / person.size).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Conservative "a human body is present" test. Coverage catches a normal
+     * portrait / full-body shot; the peak clause keeps a small distant person
+     * detectable without letting one soft noisy cell decide. Blurred model
+     * probabilities stay well below the peak on backgrounds.
+     */
+    fun hasPerson(): Boolean {
+        if (person.isEmpty()) return false
+        if (personCoverage() >= 0.012f) return true
+        // A small but COHERENT distant person survives the edge blur as a few
+        // adjacent confident cells; one isolated noisy cell must not count.
+        var confident = 0
+        for (v in person) if (v >= 0.55f) confident++
+        return confident >= 3
+    }
 }
 
 /**
@@ -81,6 +116,8 @@ object MlSegmentation : SelectionAiProvider {
     private const val ADE_SIDE = 512
     private const val VOC_SIDE = 257
     private const val VOC_CLASSES = 21
+    /** PASCAL-VOC class index 15 = "person". */
+    private const val VOC_PERSON = 15
     private const val ADE_SKY = 3
     private const val ADE_PERSON = 13
 
@@ -199,6 +236,7 @@ object MlSegmentation : SelectionAiProvider {
         val n = side * side
         val sky = FloatArray(n)
         val subject = FloatArray(n)
+        val person = FloatArray(n)
 
         // ---- ADE20K: semantic sky + a higher-resolution person prior --------
         val adeIn = ByteBuffer.allocateDirect(ADE_SIDE * ADE_SIDE * 3)
@@ -269,22 +307,30 @@ object MlSegmentation : SelectionAiProvider {
                 }
                 var sum = 0f
                 var obj = 0f
+                var personE = 0f
                 for (c in 0 until VOC_CLASSES) {
                     val e = exp(logits.get(base + c) - maxLogit)
                     sum += e
                     if (c != 0) obj += e
+                    // Class 15 is the VOC "person" logit. Keeping its own
+                    // softmax mass is what lets one-tap beauty tell a real
+                    // human body apart from a generic warm-coloured object.
+                    if (c == VOC_PERSON) personE = e
                 }
                 val p = if (sum > 0f) obj / sum else 0f
+                val pPerson = if (sum > 0f) personE / sum else 0f
                 val i = y * side + x
                 // The person prior from ADE20K (512 px) sharpens the VOC (257 px)
                 // person boundary; VOC still covers every other object class.
                 subject[i] = max(p, adePerson[i] * 0.88f)
+                person[i] = max(pPerson, adePerson[i] * 0.88f)
                 sky[i] = adeSky[i]
             }
         }
         boxBlur(subject, side, 1)
         boxBlur(sky, side, 1)
-        return MlMaps(side, subject, sky)
+        boxBlur(person, side, 1)
+        return MlMaps(side, subject, sky, person)
     }
 
     private fun boxBlur(values: FloatArray, side: Int, radius: Int) {
