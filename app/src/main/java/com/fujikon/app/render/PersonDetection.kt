@@ -63,6 +63,43 @@ object MlPersonDetector : PersonDetector {
         return PersonEvidence(maps.hasPerson(), cov, "AI 语义分割 · person")
     }
 
+    /**
+     * 1.6.57：在确证有人体后，产出用于「美颜限定在人像区域」的软蒙版。
+     * 复用同一次 [SelectionMaskGenerator.provider] 推理（fingerprint 缓存命中），
+     * 对 person 概率图做一次 3×3 均值软化，避免蒙版硬边。
+     *
+     * 返回 null 的条件：模型不可用 / 无 person 语义 / 未检出人体 / 覆盖率过低。
+     * 任一条件不满足都绝不安装蒙版，渲染走既有 skinMask 行为。
+     */
+    fun personMaskFor(source: Bitmap?): PortraitRegionMask? {
+        val bmp = source ?: return null
+        if (bmp.isRecycled || bmp.width < 2 || bmp.height < 2) return null
+        val provider = SelectionMaskGenerator.provider ?: return null
+        val (pixels, sw, sh) = sample(bmp, SAMPLE_SIDE) ?: return null
+        val maps = provider.segment(pixels, sw, sh, GRID_SIDE) ?: return null
+        if (maps.person.isEmpty() || !maps.hasPerson()) return null
+        // 覆盖率过低（散点噪声）时不安装，宁可不限制也不套一张破碎的蒙版。
+        if (maps.personCoverage() < 0.012f) return null
+        val side = maps.side
+        val soft = FloatArray(maps.person.size)
+        for (y in 0 until side) {
+            for (x in 0 until side) {
+                var sum = 0f
+                var count = 0
+                for (dy in -1..1) {
+                    for (dx in -1..1) {
+                        val xx = (x + dx).coerceIn(0, side - 1)
+                        val yy = (y + dy).coerceIn(0, side - 1)
+                        sum += maps.person[yy * side + xx]
+                        count++
+                    }
+                }
+                soft[y * side + x] = (sum / count).coerceIn(0f, 1f)
+            }
+        }
+        return PortraitRegionMask(side, soft)
+    }
+
     /** Downsample to at most [side] on the longest edge, preserving the ratio. */
     internal fun sample(bmp: Bitmap, side: Int): Triple<IntArray, Int, Int>? {
         val w = bmp.width

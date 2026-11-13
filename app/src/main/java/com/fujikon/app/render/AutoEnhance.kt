@@ -1157,7 +1157,8 @@ object AutoEnhance {
         current: EditAdjustments = EditAdjustments.Neutral,
         renderer: ImageRenderer = ImageRenderer(),
         provider: SegmentationProvider = HeuristicSegmentationProvider,
-        personEvidence: PersonEvidence? = null
+        personEvidence: PersonEvidence? = null,
+        scene: SceneEvidence? = null
     ): AutoEnhanceResult = optimize(
         source = source,
         // 1.6.53：取消「先套用通透胶片滤镜」。闭环渲染基准不含任何预设
@@ -1166,35 +1167,50 @@ object AutoEnhance {
         current = current,
         provider = provider,
         renderer = renderer,
-        // 不能用 ::enrichOneTap 函数引用（第 4 个带默认值的形参会让引用变成
-        // 4 参类型）；用 lambda 把本次识别结果固定传入闭环的 seed。
+        // 不能用 ::enrichOneTap 函数引用（带默认值的形参会让引用变成多参
+        // 类型）；用 lambda 把本次识别结果固定传入闭环的 seed。
         seedTransform = { seed, stats, cur ->
-            enrichOneTap(seed, stats, cur, personEvidence)
+            enrichOneTap(seed, stats, cur, personEvidence, scene)
         }
     )
 
     /**
      * 一键优化的「内容感知增强」层：在纯参数化的全局/分区求解结果上叠加
-     * 人像美颜美白，并把三大分组写进摘要。同时供一键优化按钮（作为 [optimize]
-     * 的 seed 钩子）与直方图卡片的快速提示使用，保证两处结论一致。
+     * 人像美颜美白与场景化参数策略，并把各分组写进摘要。同时供一键优化
+     * 按钮（作为 [optimize] 的 seed 钩子）与直方图卡片的快速提示使用，
+     * 保证两处结论一致。
      *
-     * [personEvidence] 为 null / detected=false 时绝不添加人像美颜——识别不到
-     * 人体就不美颜，也不会在摘要里谎称做了美颜。
+     * 1.6.57 双保险：[personEvidence] 为 null / detected=false **或** [scene]
+     * 属于美食/风景/文档/夜景时，绝不添加人像美颜——既不会因分割噪声误判，
+     * 也不会在摘要里谎称做了美颜。
+     *
+     * [scene] 默认 null：全部既有调用 / 回归测试的行为完全不变。
      */
     fun enrichOneTap(
         seed: AutoEnhanceResult,
         stats: ImageStats,
         current: EditAdjustments,
-        personEvidence: PersonEvidence? = null
+        personEvidence: PersonEvidence? = null,
+        scene: SceneEvidence? = null
     ): AutoEnhanceResult {
-        val portrait = solvePortrait(stats, current, personEvidence)
+        val sceneBlocksBeauty = scene?.scene?.blocksBeauty == true
+        val portrait = solvePortrait(stats, current, personEvidence, sceneBlocksBeauty)
         val beautyApplied = !portrait.isOff() && portrait != current.portrait
-        // 影调已经很好且不是人像：保持 Lightroom「好照片精确不动」语义。
-        if (!seed.changed && !beautyApplied) return seed
+        val strategy = sceneStrategy(scene?.scene)
+        val hasStrategy = strategy != null
 
-        val next = if (beautyApplied) seed.adjustments.copy(portrait = portrait) else seed.adjustments
+        // 影调已经很好且无美颜、无场景策略：保持 Lightroom「好照片精确不动」
+        // 语义，连「已优化」都不提示。
+        if (!seed.changed && !beautyApplied && !hasStrategy) return seed
+
+        var next = if (beautyApplied) seed.adjustments.copy(portrait = portrait) else seed.adjustments
+        if (strategy != null) next = applySceneStrategy(next, strategy)
         val label = buildString {
-            append("智能优化 · 影调氛围 · 光感质感")
+            append("智能优化")
+            if (scene != null && scene.scene != PhotoScene.OTHER && scene.confidence > 0f) {
+                append(" · ").append(scene.scene.label).append("场景")
+            }
+            append(" · 影调氛围 · 光感质感")
             if (beautyApplied) append(" · 人像美颜美白")
             append("（参数已同步，可二次调整）")
         }
@@ -1207,16 +1223,17 @@ object AutoEnhance {
      * 「塑料感」；脸部偏暗时略多给一点美白。
      *
      * 1.6.55：**当且仅当 [evidence] 确证画面里有人体**才生成这组参数。肤色
-     * 占比只决定强度，不再是人体判据——沙滩、秋叶、木墙等暖色场景即使
-     * skinCoverage 很高，也不会被强加美颜。未识别到人体时原样返回用户的
-     * 设置，绝不覆盖手动编辑。
+     * 占比只决定强度，不再是人体判据。1.6.57 再叠加 [sceneBlocksBeauty]：
+     * 美食/风景/文档/夜景场景即使人体检测存疑也不美颜（双保险）。未识别到
+     * 人体时原样返回用户的设置，绝不覆盖手动编辑。
      */
     private fun solvePortrait(
         stats: ImageStats,
         current: EditAdjustments,
-        evidence: PersonEvidence?
+        evidence: PersonEvidence?,
+        sceneBlocksBeauty: Boolean = false
     ): PortraitRetouch {
-        if (evidence?.detected != true) return current.portrait
+        if (sceneBlocksBeauty || evidence?.detected != true) return current.portrait
         val skin = stats.skinCoverage
         val confidence = ramp(skin, ONE_TAP_MIN_SKIN, 0.30f)
         val darkFace = ramp(0.46f - stats.meanLuma, 0f, 0.28f)
@@ -1228,6 +1245,65 @@ object AutoEnhance {
             contour = (4f + confidence * 6f).coerceIn(0f, 12f)
         ).normalized()
     }
+
+    // --------------------------- 阶段二：场景化参数策略 ---------------------
+
+    /**
+     * 每个场景在「现有可调参数」上的一组**绝对增量**。刻意只选闭环
+     * [refine] 不碰的字段（vibrance / dehaze / texture / clarity /
+     * temperature / denoise / saturation），因此闭环收敛不会被覆盖，
+     * 且重复点击幂等（每次从 current 重算，不累加）。
+     *
+     * 幅度都很小：一键优化仍是「跟着原片走」的影调求解，场景只做口味
+     * 微调，绝不把美食照染成浓艳、把风景照压成灰。
+     */
+    private data class SceneStrategy(
+        val vibrance: Float = 0f,
+        val dehaze: Float = 0f,
+        val texture: Float = 0f,
+        val clarity: Float = 0f,
+        val temperature: Float = 0f,
+        val denoise: Float = 0f
+    )
+
+    private fun sceneStrategy(scene: PhotoScene?): SceneStrategy? = when (scene) {
+        // 美食：轻微提鲜艳度与暖调让食物更有食欲，加一点纹理保质感，
+        // 绝不做磨皮类柔化（否则食物会发糊）。
+        PhotoScene.FOOD -> SceneStrategy(vibrance = 6f, temperature = 3f, texture = 4f)
+        // 风景：轻微去朦胧 + 提鲜艳度，强化天空/远景层次；不动清晰度
+        // 以免山脉边缘出现 halo。
+        PhotoScene.LANDSCAPE -> SceneStrategy(vibrance = 5f, dehaze = 7f)
+        // 夜景：降噪优先，避免提亮阴影时把噪点一起放大。
+        PhotoScene.NIGHT -> SceneStrategy(denoise = 10f, dehaze = 2f)
+        // 文档/文字：偏清晰、中性色温，轻微提 clarity 让边缘利落。
+        PhotoScene.DOCUMENT -> SceneStrategy(clarity = 6f, texture = 3f)
+        // 人像 / 通用：沿用既有求解结果，不额外干预。
+        PhotoScene.PORTRAIT, PhotoScene.OTHER, null -> null
+    }
+
+    /**
+     * 把场景增量叠加到求解结果上。
+     *
+     * [suggest] 产出的是**绝对参数**（每次从原图重算，与 current 无关），
+     * 因此这里直接在 seed 的绝对值上做小幅叠加：
+     *  - 重复点击时 seed 完全相同、叠加量固定 → 结果逐字节一致（幂等）；
+     *  - 叠加而非覆盖 → suggest 已经解出的 vibrance / texture 等不会被吞掉；
+     *  - 只碰 refine 不管的字段 → 闭环收敛不会覆盖场景策略。
+     *
+     * 结构性编辑（crop / grain / portrait / presetStrength…）不在此列，
+     * 完全沿用 seed 已有的值，绝不被场景策略改动。
+     */
+    private fun applySceneStrategy(
+        adjustments: EditAdjustments,
+        strategy: SceneStrategy
+    ): EditAdjustments = adjustments.copy(
+        vibrance = (adjustments.vibrance + strategy.vibrance).coerceIn(-100f, 100f),
+        dehaze = (adjustments.dehaze + strategy.dehaze).coerceIn(-100f, 100f),
+        texture = (adjustments.texture + strategy.texture).coerceIn(-100f, 100f),
+        clarity = (adjustments.clarity + strategy.clarity).coerceIn(-100f, 100f),
+        temperature = (adjustments.temperature + strategy.temperature).coerceIn(-100f, 100f),
+        denoise = (adjustments.denoise + strategy.denoise).coerceIn(0f, 100f)
+    ).normalized()
 
     // ------------------------------- 通透胶片 + RGB 直方图一键优化 (1.6.39)
     // 保留为可调用的历史算法（含完整回归测试），但 1.6.53 起 UI 的「一键

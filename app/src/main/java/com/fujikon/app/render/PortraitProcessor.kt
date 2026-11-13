@@ -17,19 +17,52 @@ import kotlin.math.roundToInt
 private const val PORTRAIT_WORKING_PIXELS = 2_000_000L
 
 /**
+ * 1.6.57 阶段一：可选的「人像区域」软蒙版（归一化 side×side 网格，
+ * 0..1）。来自 on-device person 语义分割概率图，与 YCbCr 肤色蒙版相乘，
+ * 把磨皮/美白**只作用在识别到的人体上**。为 null 时完全走既有行为
+ * （全部现有调用、回归测试、手动美颜都不受影响）。
+ *
+ * 用归一化网格而非逐像素大图，因此预览与导出的分辨率各不相同也能共享
+ * 同一份 mask，且内存开销恒定（128×128 Float = 64KB）。
+ */
+class PortraitRegionMask(
+    val side: Int,
+    val weights: FloatArray
+) {
+    init { require(side > 1 && weights.size == side * side) }
+
+    /** 双线性采样，与 MlMaps.sample 一致。 */
+    fun sample(u: Float, v: Float): Float {
+        val fx = u.coerceIn(0f, 1f) * (side - 1)
+        val fy = v.coerceIn(0f, 1f) * (side - 1)
+        val x0 = fx.toInt().coerceIn(0, side - 1)
+        val y0 = fy.toInt().coerceIn(0, side - 1)
+        val x1 = (x0 + 1).coerceAtMost(side - 1)
+        val y1 = (y0 + 1).coerceAtMost(side - 1)
+        val a = weights[y0 * side + x0] + (weights[y0 * side + x1] - weights[y0 * side + x0]) * (fx - x0)
+        val b = weights[y1 * side + x0] + (weights[y1 * side + x1] - weights[y1 * side + x0]) * (fx - x0)
+        return (a + (b - a) * (fy - y0)).coerceIn(0f, 1f)
+    }
+}
+
+/**
  * Skin-aware portrait retouch: smooth, whiten, blush and contour.
  *
  * Eyes, lips, hair and the background are protected twice: first by an
  * YCbCr skin mask, then by a local-contrast guard inside the smear radius, so
  * feature edges keep their definition. Work happens on a downscaled copy for
  * speed and memory; results are sampled back bilinearly.
+ *
+ * 1.6.57：[region] 非空时再乘一层人像区域蒙版，使背景里的暖色物体
+ * （木船、秋叶、餐盘里的肉）不会被误当皮肤磨皮。默认 null = 原行为。
  */
 internal suspend fun applyPortrait(
     pixels: IntArray,
     width: Int,
     height: Int,
     retouch: PortraitRetouch,
-    job: Job?
+    job: Job?,
+    region: PortraitRegionMask? = null
 ) {
     if (retouch.isOff()) return
     val state = retouch.normalized()
@@ -41,6 +74,19 @@ internal suspend fun applyPortrait(
 
     val mask = skinMask(work, sw, sh)
     featherMask(mask, sw, sh, 3)
+    // 1.6.57：与人像区域蒙版相乘，把美颜限定在识别到的人体上。region
+    // 是归一化网格，按 work 网格坐标双线性采样，预览/导出一致。
+    if (region != null) {
+        for (y in 0 until sh) {
+            val v = (y + 0.5f) / sh
+            for (x in 0 until sw) {
+                val i = y * sw + x
+                // 保留一个很低的地板值，避免硬边界造成可见的「蒙版轮廓」；
+                // 背景权重被压到 4% 以下，实际不可见。
+                mask[i] *= (0.04f + 0.96f * region.sample((x + 0.5f) / sw, v))
+            }
+        }
+    }
 
     val smoothAmount = state.smooth / PortraitRetouch.MAX_STRENGTH
     val contourAmount = state.contour / PortraitRetouch.MAX_STRENGTH

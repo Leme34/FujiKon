@@ -15,6 +15,7 @@ import com.fujikon.app.render.ExportCoordinator
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import com.fujikon.app.render.MlSegmentation
+import com.fujikon.app.render.OnDeviceModels
 import com.fujikon.app.render.PresetThumbnailStore
 import com.fujikon.app.render.SelectionMaskGenerator
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +55,9 @@ class AppContainer(context: Context) {
         // back to the deterministic CV pipeline, never a broken selection.
         MlSegmentation.attach(appContext)
         SelectionMaskGenerator.provider = MlSegmentation
+        // 1.6.57：人脸检测 + 场景分类两个纯标准算子 TFLite 模型，同样
+        // lazy + 守卫，缺失时自动降级到既有的人体/影调逻辑，绝不崩溃。
+        OnDeviceModels.attach(appContext)
         // 云创 3D LUT 方案：渲染器是纯 JVM 类，这里用 assets 装配解码入口。
         CubeLutProvider.install { asset ->
             runCatching { appContext.assets.open(asset).use { it.readBytes() } }.getOrNull()
@@ -61,6 +65,7 @@ class AppContainer(context: Context) {
         scope.launch {
             presetRepository.load()
             MlSegmentation.warmUp()
+            OnDeviceModels.warmUp()
         }
     }
 }

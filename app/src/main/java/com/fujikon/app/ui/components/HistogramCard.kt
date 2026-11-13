@@ -47,8 +47,10 @@ import com.fujikon.app.data.Preset
 import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.AutoEnhanceResult
 import com.fujikon.app.render.ImageStats
-import com.fujikon.app.render.PersonEvidence
-import com.fujikon.app.render.detectPerson
+import com.fujikon.app.render.MlPersonDetector
+import com.fujikon.app.render.PhotoUnderstanding
+import com.fujikon.app.render.PortraitRegionRegistry
+import com.fujikon.app.render.understandPhoto
 import com.fujikon.app.render.OptimizationReport
 import com.fujikon.app.render.PresetRecommendation
 import com.fujikon.app.render.PresetRecommender
@@ -119,10 +121,11 @@ fun HistogramCard(
     var report by remember { mutableStateOf<OptimizationReport?>(null) }
     var optimizing by remember { mutableStateOf(false) }
     /**
-     * 1.6.55：人体识别结果，按「照片」只算一次。提示与按钮共用它，保证
-     * 「是否做美颜」两处结论一致；null / detected=false 一律不美颜。
+     * 1.6.57：照片理解结果（人体 + 场景 + 人脸），按「照片」只算一次。
+     * 提示与按钮共用同一结论，保证「是否做美颜 / 用哪套场景策略」两处
+     * 完全一致；美食/风景/文档/夜景场景或无人体一律不美颜。
      */
-    var personEvidence by remember { mutableStateOf<PersonEvidence?>(null) }
+    var understanding by remember { mutableStateOf<PhotoUnderstanding?>(null) }
     /** Whether the zone description + report + preset picks panel is expanded. */
     var detailsExpanded by remember { mutableStateOf(AUTO_ENHANCE_DETAILS_DEFAULT_EXPANDED) }
     val scope = rememberCoroutineScope()
@@ -132,11 +135,20 @@ fun HistogramCard(
     LaunchedEffect(sourceBitmap) {
         appliedSummary = null
         report = null
-        // 人体识别（TFLite person 语义分割优先，严格启发式兜底）在后台跑一次。
-        // 先清空，避免上一张照片的结论被短暂误用；识别不到人体时一键优化
-        // 完全不启用人像美颜。
-        personEvidence = null
-        personEvidence = withContext(Dispatchers.Default) { detectPerson(sourceBitmap) }
+        // 1.6.57：一次推理得到人脸 / 场景 / 人体三路证据（后台只跑一次）。
+        // 先清空，避免上一张照片的结论被短暂误用；美食/风景/文档/夜景
+        // 场景或识别不到人体时，一键优化完全不启用人像美颜。
+        understanding = null
+        // 换照片先清空上一张的人像蒙版，避免串图。
+        PortraitRegionRegistry.clear()
+        val u = withContext(Dispatchers.Default) { understandPhoto(sourceBitmap) }
+        // 1.6.57 阶段一：仅确证有人体（且场景允许美颜）时，安装人像区域
+        // 蒙版，让渲染器把磨皮/美白限定在人体上；美食/风景/文档一律不装。
+        if (u.beautyAllowed) {
+            val mask = withContext(Dispatchers.Default) { MlPersonDetector.personMaskFor(sourceBitmap) }
+            PortraitRegionRegistry.install(sourceBitmap, mask)
+        }
+        understanding = u
     }
     LaunchedEffect(bitmap, presets) {
         if (presets.isEmpty()) { recommendations = emptyList(); return@LaunchedEffect }
@@ -146,14 +158,19 @@ fun HistogramCard(
     }
     // Fast single-pass preview hint only. The expensive render→verify loop is
     // deliberately deferred to the button tap so slider dragging never stalls.
-    LaunchedEffect(bitmap, currentAdjustments, personEvidence) {
+    LaunchedEffect(bitmap, currentAdjustments, understanding) {
         val pair = withContext(Dispatchers.Default) {
             val stats = AutoEnhance.analyse(bitmap)
             stats?.let { s ->
-                // 与一键优化按钮共用同一套内容感知增强 + 同一次人体识别，
+                // 与一键优化按钮共用同一套内容感知增强 + 同一次照片理解，
                 // 保证「建议优化」的提示与按钮实际结果一致。
+                val u = understanding ?: PhotoUnderstanding.UNKNOWN
                 val seed = AutoEnhance.suggestZoned(bitmap, s, currentAdjustments)
-                s to AutoEnhance.enrichOneTap(seed, s, currentAdjustments, personEvidence)
+                s to AutoEnhance.enrichOneTap(
+                    seed, s, currentAdjustments,
+                    personEvidence = if (u.beautyAllowed) u.person else null,
+                    scene = u.scene
+                )
             }
         }
         if (pair != null) {
@@ -349,15 +366,17 @@ fun HistogramCard(
                             // 人像美颜美白的整套参数，并在真实渲染像素上闭环验证
                             // 不死黑、不发灰、不过曝。
                             val result = withContext(Dispatchers.Default) {
-                                // 与提示共用同一次人体识别；若刚进页面识别尚未
+                                // 与提示共用同一次照片理解；若刚进页面识别尚未
                                 // 完成就点击，这里补算一次，绝不凭肤色占比猜测
-                                // 而误加人像美颜。
-                                val evidence = personEvidence
-                                    ?: detectPerson(sourceBitmap ?: bitmap)
+                                // 而误加人像美颜。美食/风景/文档/夜景场景由
+                                // scene 门控再次兜底。
+                                val src = sourceBitmap ?: bitmap
+                                val u = understanding ?: understandPhoto(src)
                                 AutoEnhance.optimizeOneTap(
-                                    source = sourceBitmap ?: bitmap,
+                                    source = src,
                                     current = currentAdjustments,
-                                    personEvidence = evidence
+                                    personEvidence = if (u.beautyAllowed) u.person else null,
+                                    scene = u.scene
                                 )
                             }
                             // 结果是一组普通调节参数：同步进调节列表，用户可

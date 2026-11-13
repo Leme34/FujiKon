@@ -83,7 +83,11 @@ open class ImageRenderer {
 
         // Skin retouch runs before the grade so the mask sees natural skin
         // tones; strong looks (monochrome, filters) would otherwise hide it.
-        applyPortrait(pixels, width, height, adjustments.portrait, job)
+        // 1.6.57：仅当照片理解确证有人体并安装了人像蒙版时才传入，把美颜
+        // 限定在人体区域；注册表为空（默认/单测/手动美颜）时完全走既有路径。
+        val portraitRegion = if (adjustments.portrait.isOff()) null
+        else PortraitRegionRegistry.forPixels(pixels, width, height)
+        applyPortrait(pixels, width, height, adjustments.portrait, job, portraitRegion)
 
         parallelRows(height) { from, to ->
             processRows(pixels, width, from, to, plan, job)
