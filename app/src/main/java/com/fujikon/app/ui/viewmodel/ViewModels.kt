@@ -670,6 +670,29 @@ class EditorViewModel(
     private val renderDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
 
+    /**
+     * 交互预览的最长边（像素），按设备真实屏幕物理像素自适应。
+     *
+     * 1.6.52 之前固定为 1280：在高 DPI 手机上 fit-to-screen 会被放大显示，且
+     * [ZoomableImage] 支持双指放大到 8x 查看细节，1280px 无论如何都极其模糊，
+     * 用户无法按实际画质调参。现在让 fit 时接近 1:1 清晰，并预留约 1.5x 的
+     * 缩放余量；同时受 [computePreviewMaxDimension] 的内存护栏约束，低内存机型
+     * 自动回落，绝不硬扛到 OOM。1.6.50 把全帧多核并行提速约 4.5x，使这一更高
+     * 分辨率下的交互渲染依然流畅。导出不受影响：ExportManager 仍走
+     * BitmapLoader.decodeFull 全分辨率。
+     *
+     * 1.6.54 修复：这里**绝不能**用 `by lazy`。本类有多个 [init] 块声明在
+     * renderCurrent() 之前，其中一个会用 viewModelScope.launch 在构造期直接
+     * 调用 renderCurrent()，而 renderCurrent() 又 withContext(renderDispatcher)
+     * 切到后台线程读取本属性。后台线程可能抢在构造函数执行到 `by lazy` 的
+     * delegate 字段赋值之前读取它，触发「Attempt to invoke interface method
+     * kotlin.Lazy.getValue() on a null object reference」——表现为选照片后
+     * 偶发黑屏 + 报错。改为构造期立即计算（只依赖构造参数 [context] 与
+     * companion 常量），并前置到所有 [init] 块之前，构造一完成即对所有线程
+     * 可见，彻底消除竞态。
+     */
+    internal val previewMaxDimension: Int = computePreviewMaxDimension()
+
     sealed interface AiEditState {
         data object Idle : AiEditState
         /** No API key saved; the UI offers a shortcut into Settings. */
@@ -1587,19 +1610,8 @@ class EditorViewModel(
         data class Frame(val original: Bitmap, val shown: Bitmap, val fullFrame: Bitmap) : RenderOutcome
     }
 
-    /**
-     * 交互预览的最长边（像素），按设备真实屏幕物理像素自适应，首次使用时惰性
-     * 计算并缓存。
-     *
-     * 1.6.52 之前固定为 1280：在高 DPI 手机上 fit-to-screen 会被放大显示，且
-     * [ZoomableImage] 支持双指放大到 8x 查看细节，1280px 无论如何都极其模糊，
-     * 用户无法按实际画质调参。现在让 fit 时接近 1:1 清晰，并预留约 1.5x 的
-     * 缩放余量；同时受 [computePreviewMaxDimension] 的内存护栏约束，低内存机型
-     * 自动回落，绝不硬扛到 OOM。1.6.50 把全帧多核并行提速约 4.5x，使这一更高
-     * 分辨率下的交互渲染依然流畅。导出不受影响：ExportManager 仍走
-     * BitmapLoader.decodeFull 全分辨率。
-     */
-    internal val previewMaxDimension: Int by lazy { computePreviewMaxDimension() }
+    // previewMaxDimension 的实现已前置到类体开头（1.6.54 构造期竞态修复）；
+    // 此处只保留其自适应反推算法。
 
     /**
      * 反推预览最长边：
