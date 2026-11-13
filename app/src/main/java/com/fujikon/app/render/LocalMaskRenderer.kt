@@ -5,6 +5,7 @@ import com.fujikon.app.data.EraserStroke
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.PortraitRetouch
 import com.fujikon.app.data.isContentAware
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -43,9 +44,39 @@ object LocalMaskRenderer {
             val b = values[y1 * width + x0] + (values[y1 * width + x1] - values[y1 * width + x0]) * tx
             return (a + (b - a) * ty).coerceIn(0f, 1f)
         }
+
+        /**
+         * 1.6.58：把任意尺寸的选区 grid 重采样成 [PortraitRegionMask] 的
+         * side×side 归一化网格，供 [applyPortrait] 把美颜限定在选区内。
+         * 用归一化坐标采样，因此预览与导出（不同分辨率）得到同一作用域。
+         */
+        fun toPortraitRegion(side: Int = PORTRAIT_REGION_SIDE, strength: Float = 1f): PortraitRegionMask {
+            val out = FloatArray(side * side)
+            for (y in 0 until side) {
+                val v = y.toFloat() / (side - 1)
+                for (x in 0 until side) {
+                    val u = x.toFloat() / (side - 1)
+                    out[y * side + x] = (sample(u, v) * strength).coerceIn(0f, 1f)
+                }
+            }
+            return PortraitRegionMask(side, out)
+        }
     }
 
-    data class PreparedLayer(val grid: MaskGrid, val params: LocalParams, val strength: Float)
+    private const val PORTRAIT_REGION_SIDE = 128
+
+    /**
+     * 1.6.58：一个图层除影调参数外，还可携带一组「仅选择主体」的局部人像
+     * 美颜及其作用域。[portraitRegion] 由该图层最终 grid（含 eraser / 反选 /
+     * 精修 / 羽化）重采样而来，保证美颜与影调作用于完全相同的区域。
+     */
+    data class PreparedLayer(
+        val grid: MaskGrid,
+        val params: LocalParams,
+        val strength: Float,
+        val portrait: PortraitRetouch = PortraitRetouch.Off,
+        val portraitRegion: PortraitRegionMask? = null
+    )
 
     /** Legacy entry point for geometric masks / unit tests (no photo needed). */
     fun buildGrid(mask: LocalMask, frameWidth: Int, frameHeight: Int): MaskGrid =
@@ -89,7 +120,9 @@ object LocalMaskRenderer {
                     for (x in 0 until w) {
                         val nx = x.toFloat() / (w - 1)
                         val d = hypot((nx - mask.x) * aspect.coerceAtMost(2f), ny - mask.y) / radius
-                        values[y * w + x] = 1f - smoothstep(inner, 1f, d)
+                        // 1.6.58：与其它几何/内容感知蒙版一致，控制点也支持反选。
+                        val inside = 1f - smoothstep(inner, 1f, d)
+                        values[y * w + x] = if (mask.invert) 1f - inside else inside
                     }
                 }
             }
@@ -318,11 +351,41 @@ object LocalMaskRenderer {
             // The eraser is layer-scoped and mask-agnostic: apply it to the
             // final grid so geometric shapes and AI selections behave alike.
             applyEraser(grid.values, grid.width, grid.height, layer.eraser)
+            // 1.6.58：仅「选择主体」图层可带局部人像美颜。作用域取自已经过
+            // eraser / 反选 / 精修 / 羽化的最终 grid，并叠加图层强度，保证
+            // 美颜与影调落在完全相同的区域、浓淡随图层强度一致。
+            val hasPortrait = layer.mask is LocalMask.SubjectMask && !layer.portrait.isOff()
+            val portrait = if (hasPortrait) layer.portrait.normalized() else PortraitRetouch.Off
+            val portraitRegion = if (hasPortrait) {
+                grid.toPortraitRegion(strength = layer.strength / 100f)
+            } else null
             PreparedLayer(
                 grid,
                 layer.params,
-                layer.strength / 100f
+                layer.strength / 100f,
+                portrait,
+                portraitRegion
             )
+        }
+    }
+
+    /**
+     * 1.6.58：对「选择主体」图层执行局部人像美颜。逐图层在 grade 之前、
+     * 全局美颜之后调用 [applyPortrait]，用该图层的选区 region 与
+     * regionFloor=0 把磨皮/美白严格限制在选区内；region 为空（无主体美颜）
+     * 时完全跳过，既有渲染路径逐像素不变。预览与导出共用 [prepare]，一致。
+     */
+    suspend fun applyLocalPortrait(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        layers: List<PreparedLayer>,
+        job: Job?
+    ) {
+        for (layer in layers) {
+            if (layer.portrait.isOff()) continue
+            val region = layer.portraitRegion ?: continue
+            applyPortrait(pixels, width, height, layer.portrait, job, region, 0f)
         }
     }
 

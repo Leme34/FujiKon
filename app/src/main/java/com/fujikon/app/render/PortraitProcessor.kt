@@ -55,6 +55,10 @@ class PortraitRegionMask(
  *
  * 1.6.57：[region] 非空时再乘一层人像区域蒙版，使背景里的暖色物体
  * （木船、秋叶、餐盘里的肉）不会被误当皮肤磨皮。默认 null = 原行为。
+ *
+ * 1.6.58：[regionFloor] 是作用域外的保留地板值。全局人像美颜沿用 0.04
+ * 的软地板（避免硬边界可见轮廓，行为零变化）；「蒙版-选择主体」的局部
+ * 美颜传 0，让选区外严格不受美颜——与「只作用于选区」的语义一致。
  */
 internal suspend fun applyPortrait(
     pixels: IntArray,
@@ -62,7 +66,8 @@ internal suspend fun applyPortrait(
     height: Int,
     retouch: PortraitRetouch,
     job: Job?,
-    region: PortraitRegionMask? = null
+    region: PortraitRegionMask? = null,
+    regionFloor: Float = 0.04f
 ) {
     if (retouch.isOff()) return
     val state = retouch.normalized()
@@ -77,13 +82,15 @@ internal suspend fun applyPortrait(
     // 1.6.57：与人像区域蒙版相乘，把美颜限定在识别到的人体上。region
     // 是归一化网格，按 work 网格坐标双线性采样，预览/导出一致。
     if (region != null) {
+        val floor = regionFloor.coerceIn(0f, 1f)
+        val span = 1f - floor
         for (y in 0 until sh) {
             val v = (y + 0.5f) / sh
             for (x in 0 until sw) {
                 val i = y * sw + x
-                // 保留一个很低的地板值，避免硬边界造成可见的「蒙版轮廓」；
-                // 背景权重被压到 4% 以下，实际不可见。
-                mask[i] *= (0.04f + 0.96f * region.sample((x + 0.5f) / sw, v))
+                // 全局路径保留 4% 软地板避免可见的「蒙版轮廓」；局部路径
+                // floor=0 时选区外严格为 0。两者共用同一段逐像素逻辑。
+                mask[i] *= (floor + span * region.sample((x + 0.5f) / sw, v))
             }
         }
     }

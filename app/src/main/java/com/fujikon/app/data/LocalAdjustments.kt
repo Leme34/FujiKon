@@ -17,8 +17,11 @@ private fun safeAspect(aspect: Float): Float =
  *
  * Local layers deliberately support only the parameters that make sense on a
  * selection (brightness / contrast / zones / saturation / temperature /
- * clarity). Structural edits (crop, blur, portrait, tone curve, filter) stay
- * global by design — they cannot be meaningfully feathered into a mask.
+ * clarity). Structural edits (crop, blur, tone curve, filter) stay global by
+ * design — they cannot be meaningfully feathered into a mask.
+ *
+ * 1.6.58 例外：当图层蒙版为「选择主体」时，[LocalLayer.portrait] 额外提供
+ * 一组局部人像美颜（磨皮/美白/红润/立体），由渲染器把美颜限定在该选区内。
  */
 data class LocalParams(
     val brightness: Float = 0f,
@@ -295,7 +298,9 @@ sealed class LocalMask {
         val x: Float = 0.5f,
         val y: Float = 0.5f,
         val radius: Float = 0.25f,
-        val feather: Float = 0.65f
+        val feather: Float = 0.65f,
+        /** 1.6.58 反选：把软圆盘内/外的作用域对调，与其余蒙版类型一致。 */
+        val invert: Boolean = false
     ) : LocalMask()
 
     /** Linear gradient between two points; [feather] softens the transition. */
@@ -467,6 +472,7 @@ sealed class LocalMask {
                 put("type", "point")
                 put("x", x.toDouble()); put("y", y.toDouble())
                 put("radius", radius.toDouble()); put("feather", feather.toDouble())
+                put("invert", invert)
             }
             is LinearGradient -> {
                 put("type", "linear")
@@ -587,7 +593,8 @@ sealed class LocalMask {
                     json.optDouble("x", 0.5).toFloat(),
                     json.optDouble("y", 0.5).toFloat(),
                     json.optDouble("radius", 0.25).toFloat(),
-                    json.optDouble("feather", 0.65).toFloat()
+                    json.optDouble("feather", 0.65).toFloat(),
+                    json.optBoolean("invert", false)
                 )
             }
         }
@@ -600,6 +607,32 @@ val LocalMask.isContentAware: Boolean
         this is LocalMask.SkyMask ||
         this is LocalMask.ColorRangeMask
 
+/**
+ * 1.6.58：全 7 种蒙版统一的反选状态读取。此前「控制点」没有 invert 字段，
+ * 且 UI 的「反转选区」按钮对控制点静默无效；现在每种选区都能反选。
+ */
+val LocalMask.isInverted: Boolean
+    get() = when (this) {
+        is LocalMask.ControlPoint -> invert
+        is LocalMask.LinearGradient -> invert
+        is LocalMask.RadialGradient -> invert
+        is LocalMask.Brush -> invert
+        is LocalMask.SubjectMask -> invert
+        is LocalMask.SkyMask -> invert
+        is LocalMask.ColorRangeMask -> invert
+    }
+
+/** 1.6.58：翻转任意蒙版的反选状态，其余参数原样保留。 */
+fun LocalMask.withInverted(value: Boolean): LocalMask = when (this) {
+    is LocalMask.ControlPoint -> copy(invert = value)
+    is LocalMask.LinearGradient -> copy(invert = value)
+    is LocalMask.RadialGradient -> copy(invert = value)
+    is LocalMask.Brush -> copy(invert = value)
+    is LocalMask.SubjectMask -> copy(invert = value)
+    is LocalMask.SkyMask -> copy(invert = value)
+    is LocalMask.ColorRangeMask -> copy(invert = value)
+}
+
 /** One editable local adjustment layer (mask + its scoped parameters). */
 data class LocalLayer(
     val id: String,
@@ -609,15 +642,27 @@ data class LocalLayer(
     val strength: Float = 100f,
     val enabled: Boolean = true,
     /** Free-hand eraser strokes that remove scope from THIS layer's mask. */
-    val eraser: List<EraserStroke> = emptyList()
+    val eraser: List<EraserStroke> = emptyList(),
+    /**
+     * 1.6.58：仅当 [mask] 为「选择主体」时生效的一组局部人像美颜。磨皮/美白
+     * /红润/立体只作用于选区内的皮肤，选区外不受影响。默认 Off，旧预设的
+     * JSON 没有该键时自动取 Off，完全向后兼容。
+     */
+    val portrait: PortraitRetouch = PortraitRetouch.Off
 ) {
     fun normalized(): LocalLayer = copy(
         strength = strength.coerceIn(0f, 100f),
         params = params.normalized(),
-        eraser = eraser.map { it.normalized() }.take(64)
+        eraser = eraser.map { it.normalized() }.take(64),
+        portrait = portrait.normalized()
     )
 
-    fun active(): Boolean = enabled && strength > 0.001f && !params.isNeutral()
+    /**
+     * 一个「选择主体」图层即使影调参数全为 0，只要设置了局部人像美颜也
+     * 必须参与渲染；其它类型图层的 portrait 恒为 Off，不影响原有判定。
+     */
+    fun active(): Boolean = enabled && strength > 0.001f &&
+        (!params.isNeutral() || (mask is LocalMask.SubjectMask && !portrait.isOff()))
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -627,6 +672,7 @@ data class LocalLayer(
         put("strength", strength.toDouble())
         put("enabled", enabled)
         put("eraser", eraser.toEraserJsonArray())
+        put("portrait", portrait.toJson())
     }
 
     companion object {
@@ -642,7 +688,9 @@ data class LocalLayer(
                 strength = json.optDouble("strength", 100.0).toFloat(),
                 enabled = json.optBoolean("enabled", true),
                 // Legacy presets have no "eraser" key -> empty list.
-                eraser = (json.optJSONArray("eraser") ?: JSONArray()).toEraserStrokes()
+                eraser = (json.optJSONArray("eraser") ?: JSONArray()).toEraserStrokes(),
+                // Legacy presets have no "portrait" key -> Off (no局部美颜).
+                portrait = PortraitRetouch.fromJson(json.optJSONObject("portrait"))
             ).normalized()
         }
     }

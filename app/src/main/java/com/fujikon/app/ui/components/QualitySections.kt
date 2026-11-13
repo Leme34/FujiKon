@@ -64,9 +64,12 @@ import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.PortraitRetouch
 import com.fujikon.app.data.RefineStroke
 import com.fujikon.app.data.SelectionRefine
 import com.fujikon.app.data.isContentAware
+import com.fujikon.app.data.isInverted
+import com.fujikon.app.data.withInverted
 import com.fujikon.app.render.MlSegmentation
 import com.fujikon.app.render.LocalMaskRenderer
 import com.fujikon.app.render.SelectionMaskGenerator
@@ -1114,6 +1117,38 @@ fun LocalAdjustmentSection(
             }
 
             // ----------------------------------------------------------
+            // 1.6.58：仅「选择主体」图层新增局部人像美颜参数。磨皮 / 美白
+            // / 红润 / 立体只作用于选区内的人像皮肤，选区外不受影响；复用
+            // PortraitSection 的风格 chips + 四滑块，数值写回 layer.portrait。
+            // ----------------------------------------------------------
+            if (mask is LocalMask.SubjectMask) {
+                Text(
+                    "人像美颜 · 仅作用于选中的主体",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Amber,
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp, vertical = 6.dp)
+                        .testTag("mask_subject_portrait_title")
+                )
+                Text(
+                    "磨皮 / 美白 / 红润 / 立体只作用于选区内的人像皮肤，背景与其它区域不受影响；" +
+                        "配合上方「反选」可改作用于主体之外。选区由主体识别 + 擦除 / 精修共同决定。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+                PortraitSection(
+                    portrait = layer.portrait,
+                    expanded = true,
+                    onToggle = {},
+                    onChange = { p, field -> update({ it.copy(portrait = p) }, field) },
+                    onFinished = { field -> commit(field) },
+                    enabled = enabled,
+                    embedded = true
+                )
+            }
+
+            // ----------------------------------------------------------
             // MASK ERASER: available for EVERY mask kind. Painted areas are
             // subtracted from this layer's scope in both preview and export.
             // ----------------------------------------------------------
@@ -1300,20 +1335,29 @@ fun LocalAdjustmentSection(
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth()) {
-                TextButton(onClick = {
-                    val inverted = when (val m = mask) {
-                        is LocalMask.LinearGradient -> m.copy(invert = !m.invert)
-                        is LocalMask.RadialGradient -> m.copy(invert = !m.invert)
-                        is LocalMask.Brush -> m.copy(invert = !m.invert)
-                        is LocalMask.SubjectMask -> m.copy(invert = !m.invert)
-                        is LocalMask.SkyMask -> m.copy(invert = !m.invert)
-                        is LocalMask.ColorRangeMask -> m.copy(invert = !m.invert)
-                        is LocalMask.ControlPoint -> m
-                    }
-                    update({ it.copy(mask = inverted) })
-                    commit()
-                }, enabled = enabled) { Text("反转选区", color = TextSecondary) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                // 1.6.58：反选升级为醒目的状态化开关，覆盖全部 7 种蒙版
+                // （此前「控制点」无 invert 字段，点了静默无效）。选中态用
+                // Amber 高亮，明确告诉用户「当前选区已被反选」。
+                val inverted = mask.isInverted
+                TextButton(
+                    onClick = {
+                        update({ l -> l.copy(mask = l.mask.withInverted(!l.mask.isInverted)) })
+                        commit()
+                    },
+                    enabled = enabled,
+                    modifier = Modifier
+                        .background(
+                            if (inverted) Amber.copy(alpha = 0.18f) else CardHigh.copy(alpha = 0.30f),
+                            RoundedCornerShape(50)
+                        )
+                        .testTag("mask_invert_toggle")
+                ) {
+                    Text(
+                        if (inverted) "● 已反选（点击还原）" else "○ 反选选区",
+                        color = if (inverted) Amber else TextPrimary
+                    )
+                }
                 if (mask is LocalMask.ColorRangeMask) {
                     TextButton(onClick = {
                         update({ it.copy(mask = mask.copy(contiguous = !mask.contiguous)) })

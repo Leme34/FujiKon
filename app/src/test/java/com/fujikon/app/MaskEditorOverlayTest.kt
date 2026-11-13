@@ -16,7 +16,9 @@ import androidx.compose.ui.test.moveTo
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.BrushStroke
@@ -332,5 +334,43 @@ class MaskEditorOverlayTest {
             "单指按已有笔迹拖动应整体移动: ${moved?.offsetY}",
             (moved?.offsetY ?: 0f) > 0.01f
         )
+    }
+
+    @Test
+    fun subjectMaskLayerShowsLocalPortraitSection() {
+        // 选择主体图层应展示「仅作用于选中主体」的局部人像美颜参数区块。
+        setEditor(adjustments = editorWith(LocalMask.SubjectMask(seedX = 0.5f, seedY = 0.5f)))
+        rule.waitForIdle()
+        rule.onNodeWithTag("mask_params_panel").assertExists()
+        rule.onNodeWithTag("mask_subject_portrait_title").assertExists()
+        // 风格 chips + 四滑块（磨皮 / 美白 / 红润 / 立体）须齐备。
+        rule.onNodeWithText("磨皮").assertExists()
+        rule.onNodeWithText("美白").assertExists()
+        rule.onNodeWithText("红润").assertExists()
+        rule.onNodeWithText("立体").assertExists()
+    }
+
+    @Test
+    fun invertToggleWorksForControlPointAndSubjectMasks() {
+        setEditor(adjustments = editorWith(LocalMask.ControlPoint(x = 0.5f, y = 0.5f)))
+        rule.waitForIdle()
+        rule.onNodeWithTag("mask_params_panel").assertExists()
+        // 1.6.58：此前控制点蒙版没有 invert 字段，反选按钮静默失效；现在必须生效。
+        rule.onNodeWithTag("mask_invert_toggle").assertExists()
+        // 初始为「未反选」状态。
+        rule.onNodeWithTag("mask_invert_toggle").assertExists()
+        rule.onNodeWithText("○ 反选选区").assertExists()
+        rule.onNodeWithText("● 已反选（点击还原）").assertDoesNotExist()
+        // 点击反选：文案切换为「已反选」。（直接触发 onClick，绕过布局命中，
+        // 聚焦验证反选逻辑本身；真实坐标点击在其它用例已覆盖。）
+        rule.onNodeWithTag("mask_invert_toggle").performSemanticsAction(SemanticsActions.OnClick)
+        rule.waitForIdle()
+        rule.onNodeWithText("● 已反选（点击还原）").assertExists()
+        rule.onNodeWithText("○ 反选选区").assertDoesNotExist()
+        // 再次点击还原为「未反选」。
+        rule.onNodeWithTag("mask_invert_toggle").performSemanticsAction(SemanticsActions.OnClick)
+        rule.waitForIdle()
+        rule.onNodeWithText("○ 反选选区").assertExists()
+        rule.onNodeWithText("● 已反选（点击还原）").assertDoesNotExist()
     }
 }

@@ -89,6 +89,15 @@ open class ImageRenderer {
         else PortraitRegionRegistry.forPixels(pixels, width, height)
         applyPortrait(pixels, width, height, adjustments.portrait, job, portraitRegion)
 
+        // 1.6.58：局部图层（含「选择主体」的局部人像美颜与选区 region）提前
+        // 统一 prepare 一次，grade 前的局部美颜与 grade 后的局部影调共用同一
+        // 份选区，作用域完全一致。prepare 只读原图 analysis 与蒙版几何，不
+        // 依赖当前 pixels，提前执行对既有影调结果逐像素不变。
+        val localLayers = LocalMaskRenderer.prepare(adjustments.local, width, height, job, selectionAnalysis)
+        // 「选择主体」图层的局部美颜：同样在 grade 之前、全局美颜之后执行，
+        // 用各自选区 region 把磨皮/美白严格限制在选区内。
+        LocalMaskRenderer.applyLocalPortrait(pixels, width, height, localLayers, job)
+
         parallelRows(height) { from, to ->
             processRows(pixels, width, from, to, plan, job)
         }
@@ -132,7 +141,6 @@ open class ImageRenderer {
                 )
             }
         }
-        val localLayers = LocalMaskRenderer.prepare(adjustments.local, width, height, job, selectionAnalysis)
         if (localLayers.isNotEmpty()) {
             // meanLuma 是整帧归约，必须在并行块前基于「pointColor 之后」的
             // pixels 算好（与原串行顺序一致），再作为常量传给每个行区间。
