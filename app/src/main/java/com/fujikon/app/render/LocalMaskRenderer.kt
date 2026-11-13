@@ -326,6 +326,16 @@ object LocalMaskRenderer {
         }
     }
 
+    /** 整帧平均亮度，供并行 apply 在进入前一次性计算。 */
+    fun computeMeanLuma(pixels: IntArray): Float {
+        var sum = 0f
+        for (i in pixels.indices) {
+            val c = pixels[i]
+            sum += ((c shr 16) and 0xFF) * 0.299f + ((c shr 8) and 0xFF) * 0.587f + (c and 0xFF) * 0.114f
+        }
+        return sum / pixels.size.coerceAtLeast(1)
+    }
+
     /**
      * Blends the prepared layers onto the pixels. All arithmetic stays in
      * floating point until the single final write, so stacking several masks
@@ -336,17 +346,18 @@ object LocalMaskRenderer {
         width: Int,
         height: Int,
         layers: List<PreparedLayer>,
-        job: Job?
+        job: Job?,
+        meanLumaValue: Float? = null,
+        fromRow: Int = 0,
+        toRow: Int = height
     ) {
         if (layers.isEmpty()) return
-        var meanLuma = 0f
-        for (i in pixels.indices) {
-            val c = pixels[i]
-            meanLuma += ((c shr 16) and 0xFF) * 0.299f + ((c shr 8) and 0xFF) * 0.587f + (c and 0xFF) * 0.114f
-        }
-        meanLuma /= pixels.size.coerceAtLeast(1)
+        // 全局平均亮度：并行渲染时由调用方在进入本 pass 之前算好并传入，
+        // 保证每个行区间用的是同一份「整帧」均值，与串行逐像素完全一致。
+        // 兼容调用（未传）则在快路径之后就地计算，语义不变。
+        val meanLuma = meanLumaValue ?: computeMeanLuma(pixels)
 
-        for (y in 0 until height) {
+        for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             val ny = y.toFloat() / (height - 1).coerceAtLeast(1)
             var index = y * width

@@ -46,16 +46,21 @@ object QualityOperators {
      * weight rejects pixels across an edge. Runs BEFORE sharpening so the
      * existing unsharp mask does not amplify noise.
      */
-    fun applyDenoise(pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?) {
+    fun applyDenoise(
+        pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?,
+        snapshot: IntArray? = null, fromRow: Int = 0, toRow: Int = height
+    ) {
         val strength = (amount / 100f).coerceIn(0f, 1f)
         if (strength <= 0.001f) return
-        val source = pixels.copyOf()
+        // 并行渲染时由调用方传入「只读整帧快照」，保证所有线程读到同一份
+        // denoise 前的像素；串行/兼容调用则在快路径之后就地拷贝，语义不变。
+        val source = snapshot ?: pixels.copyOf()
         val sigma = 16f + strength * 34f
         val twoSigma2 = 2f * sigma * sigma
         val radius = if (strength > 0.65f) 2 else 1
         val mix = strength * 0.88f
 
-        for (y in 0 until height) {
+        for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             var i = y * width
             for (x in 0 until width) {
@@ -95,12 +100,15 @@ object QualityOperators {
     }
 
     /** Shifts only the pixels near [pointColor.targetHue]. */
-    fun applyPointColor(pixels: IntArray, width: Int, height: Int, pointColor: PointColor, job: Job?) {
+    fun applyPointColor(
+        pixels: IntArray, width: Int, height: Int, pointColor: PointColor, job: Job?,
+        fromRow: Int = 0, toRow: Int = height
+    ) {
         if (pointColor.isNeutral()) return
         val pc = pointColor.normalized()
         val range = pc.hueRange.coerceAtLeast(1f)
         val hsl = FloatArray(3)
-        for (y in 0 until height) {
+        for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             var i = y * width
             for (x in 0 until width) {
@@ -133,11 +141,14 @@ object QualityOperators {
      * of the same frame stay visually consistent and repeated renders are
      * byte-identical (idempotent).
      */
-    fun applyGrain(pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?) {
+    fun applyGrain(
+        pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?,
+        fromRow: Int = 0, toRow: Int = height
+    ) {
         val strength = (amount / 100f).coerceIn(0f, 1f)
         if (strength <= 0.001f) return
         val amplitude = strength * 17f
-        for (y in 0 until height) {
+        for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             var i = y * width
             for (x in 0 until width) {
@@ -157,10 +168,13 @@ object QualityOperators {
     }
 
     /** Negative [amount] darkens the corners; positive brightens them. */
-    fun applyVignette(pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?) {
+    fun applyVignette(
+        pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?,
+        fromRow: Int = 0, toRow: Int = height
+    ) {
         val strength = (amount / 100f).coerceIn(-1f, 1f)
         if (abs(strength) <= 0.001f) return
-        for (y in 0 until height) {
+        for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             var i = y * width
             for (x in 0 until width) {

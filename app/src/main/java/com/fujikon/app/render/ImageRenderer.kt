@@ -43,6 +43,14 @@ class ImageRenderer {
      */
     var backend: RenderBackend = CpuRenderBackend
 
+    /**
+     * 1.6.50 性能：是否把各全帧像素 pass 按行并行到多核。默认开启。
+     * 关闭时所有 pass 走单段串行（用于逐像素等价性回归测试，也是极端
+     * 单核设备的降级开关）。并行与串行对同一像素的计算完全一致：各 pass
+     * 只读自己的行区间，邻域算子读的是并行前一次性算好的只读快照。
+     */
+    var parallelRowsEnabled: Boolean = true
+
     suspend fun render(source: Bitmap, preset: Preset, forExport: Boolean): Bitmap {
         val job = currentCoroutineContext()[Job]
         val width = source.width
@@ -81,21 +89,60 @@ class ImageRenderer {
             processRows(pixels, width, from, to, plan, job)
         }
 
+        // 1.6.50: 以下每个全帧 pass 现在都按行并行到多核。它们之间保持
+        // 严格串行（每段 parallelRows 自带 barrier），只对同一份 pixels 依次
+        // 施加变换。任何需要「整帧只读」的算子（denoise 双边、detail 亮度
+        // 平面、local 平均亮度）都在进入并行块前算好一份快照，使并行与
+        // 串行对每个像素的输入完全一致 —— 画质逐像素不变。
+
         // Independent denoise runs BEFORE the existing unsharp mask so the
-        // sharpening stage cannot amplify sensor noise.
-        QualityOperators.applyDenoise(pixels, width, height, adjustments.denoise, job)
+        // sharpening stage cannot amplify sensor noise. 双边滤波读邻域，
+        // 必须读一份并行前固定的整帧快照。
+        if (adjustments.denoise > 0.001f) {
+            val denoiseSnapshot = pixels.copyOf()
+            parallelRows(height) { from, to ->
+                QualityOperators.applyDenoise(
+                    pixels, width, height, adjustments.denoise, job, denoiseSnapshot, from, to
+                )
+            }
+        }
 
         if (plan.needsDetail) {
-            applyDetail(pixels, width, height, plan, job)
+            val luma = buildDetailLuma(pixels, job)
+            parallelRows(height) { from, to ->
+                applyDetail(pixels, width, height, plan, luma, from, to, job)
+            }
         }
 
         // Colour / zone / finishing operators. All keep float precision until
         // their single final write, so stacking layers cannot cause banding.
-        QualityOperators.applyPointColor(pixels, width, height, adjustments.pointColor, job)
+        // 这些算子对每个像素只读自身、只写自身（pointColor / grain /
+        // vignette），可安全按行并行；local 的平均亮度是整帧归约，前置算好。
+        // 只在中立项之外才进入并行块：绝大多数「纯套滤镜」场景这些质量算子
+        // 全为 0，跳过可省去若干空协程。guard 用宽松超集，算子内部各自的阈值
+        // 负责精确早退，绝不漏跑 → 画质与串行逐像素一致。
+        if (!adjustments.pointColor.isNeutral()) {
+            parallelRows(height) { from, to ->
+                QualityOperators.applyPointColor(
+                    pixels, width, height, adjustments.pointColor, job, from, to
+                )
+            }
+        }
         val localLayers = LocalMaskRenderer.prepare(adjustments.local, width, height, job, selectionAnalysis)
-        LocalMaskRenderer.apply(pixels, width, height, localLayers, job)
-        QualityOperators.applyGrain(pixels, width, height, adjustments.grain, job)
-        QualityOperators.applyVignette(pixels, width, height, adjustments.vignette, job)
+        if (localLayers.isNotEmpty()) {
+            // meanLuma 是整帧归约，必须在并行块前基于「pointColor 之后」的
+            // pixels 算好（与原串行顺序一致），再作为常量传给每个行区间。
+            val meanLuma = LocalMaskRenderer.computeMeanLuma(pixels)
+            parallelRows(height) { from, to ->
+                LocalMaskRenderer.apply(pixels, width, height, localLayers, job, meanLuma, from, to)
+            }
+        }
+        if (adjustments.grain != 0f || adjustments.vignette != 0f) {
+            parallelRows(height) { from, to ->
+                QualityOperators.applyGrain(pixels, width, height, adjustments.grain, job, from, to)
+                QualityOperators.applyVignette(pixels, width, height, adjustments.vignette, job, from, to)
+            }
+        }
 
         applyLensBlur(pixels, width, height, adjustments.lensBlur, job)
         checkCancelled(job)
@@ -105,7 +152,9 @@ class ImageRenderer {
         // coordinates. Linear RGB interpolation at the same pixel cannot
         // stretch channel ratios, so strength never introduces a colour cast.
         if (originalPixels != null) {
-            blendWithSource(pixels, originalPixels, strength, job)
+            parallelRows(height) { from, to ->
+                blendWithSource(pixels, originalPixels, strength, job, width, from, to)
+            }
         }
         return cropPixels(pixels, width, height, adjustments.crop, job)
     }
@@ -119,17 +168,22 @@ class ImageRenderer {
         pixels: IntArray,
         original: IntArray,
         strength: Float,
-        job: Job?
+        job: Job?,
+        width: Int,
+        fromRow: Int = 0,
+        toRow: Int = -1
     ) {
+        val start = fromRow * width
+        val end = if (toRow < 0) pixels.size else min(pixels.size, toRow * width)
         if (strength <= 0f) {
-            original.copyInto(pixels)
+            original.copyInto(pixels, start, start, end)
             return
         }
         val effect = strength
         val base = 1f - effect
-        var from = 0
-        while (from < pixels.size) {
-            val to = min(pixels.size, from + 65_536)
+        var from = start
+        while (from < end) {
+            val to = min(end, from + 65_536)
             for (i in from until to) {
                 val a = original[i]
                 val b = pixels[i]
@@ -142,7 +196,7 @@ class ImageRenderer {
                 pixels[i] = (a and -0x1000000) or (r shl 16) or (g shl 8) or bl
             }
             from = to
-            if (from < pixels.size) checkCancelled(job)
+            if (from < end) checkCancelled(job)
         }
     }
 
@@ -1046,7 +1100,11 @@ class ImageRenderer {
 
     // ------------------------------------------------------------- detail
 
-    private fun applyDetail(pixels: IntArray, width: Int, height: Int, plan: Plan, job: Job?) {
+    /**
+     * 1.6.50: 整帧亮度平面在进入并行块之前一次性算好。detail 的邻域采样
+     * 只读这份快照、写只写自己的行区间，因此按行并行与串行逐像素一致。
+     */
+    private fun buildDetailLuma(pixels: IntArray, job: Job?): ByteArray {
         val luma = ByteArray(pixels.size)
         for (i in pixels.indices) {
             if ((i and 0xFFFF) == 0) checkCancelled(job)
@@ -1056,14 +1114,26 @@ class ImageRenderer {
             val b = color and 0xFF
             luma[i] = ((r * 77 + g * 150 + b * 29) shr 8).toByte()
         }
+        return luma
+    }
 
+    private fun applyDetail(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        plan: Plan,
+        luma: ByteArray,
+        fromRow: Int,
+        toRow: Int,
+        job: Job?
+    ) {
         val fine = plan.sharpenFine
         val clarity = plan.sharpenClarity + plan.adjustmentClarity * 0.85f
         val texture = plan.texture
         val radius = plan.clarityRadius
         val textureRadius = plan.textureRadius
 
-        for (y in 0 until height) {
+        for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
             var i = y * width
             for (x in 0 until width) {
@@ -1124,16 +1194,27 @@ class ImageRenderer {
         if (job != null && !job.isActive) throw CancellationException("Render cancelled")
     }
 
-    private suspend fun parallelRows(height: Int, block: (Int, Int) -> Unit) = coroutineScope {
-        val threads = min(8, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
-        val chunk = (height + threads - 1) / threads
-        (0 until threads).map { t ->
-            async(Dispatchers.Default) {
-                val from = t * chunk
-                val to = min(height, from + chunk)
-                if (from < to) block(from, to)
-            }
-        }.awaitAll()
+    /**
+     * 把一个覆盖 [0, height) 的逐行任务切成若干行区间并行执行。
+     * 关闭并行、或行数过小（调度开销大于收益）时退化为单段串行。
+     * 每个区间只被一个协程处理一次，串行/并行对像素的读写顺序完全等价。
+     */
+    private suspend fun parallelRows(height: Int, block: (Int, Int) -> Unit) {
+        if (!parallelRowsEnabled || height < PARALLEL_MIN_ROWS) {
+            block(0, height)
+            return
+        }
+        coroutineScope {
+            val threads = min(8, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
+            val chunk = (height + threads - 1) / threads
+            (0 until threads).map { t ->
+                async(Dispatchers.Default) {
+                    val from = t * chunk
+                    val to = min(height, from + chunk)
+                    if (from < to) block(from, to)
+                }
+            }.awaitAll()
+        }
     }
 
     private fun contrastCurve(x: Float, amount: Float): Float {
@@ -1234,5 +1315,7 @@ class ImageRenderer {
     companion object {
         private val BAND_CENTERS = floatArrayOf(0f, 30f, 60f, 120f, 180f, 240f, 280f, 320f)
         private const val BAND_WIDTH = 52f
+        /** 低于此行数不并行：协程调度开销会大于像素计算收益（缩略图/小图）。 */
+        private const val PARALLEL_MIN_ROWS = 96
     }
 }
