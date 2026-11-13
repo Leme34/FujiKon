@@ -66,6 +66,35 @@ object BitmapLoader {
             }.getOrNull()
         }
 
+    /**
+     * 把最长边缩放到 [maxLongest] 像素后解码整图。
+     * 用于大图导出失败时的逐级降级重试：相比按像素面积 [maxExportPixels]，
+     * 这里直接约束最长边，缩放更直观，且同样不会重新读盘。
+     */
+    suspend fun decodeFullLimited(
+        context: Context,
+        uri: Uri,
+        maxLongest: Int = maxExportLongest()
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        runCatching {
+            val orientation = readOrientation(context, uri)
+            val bounds = readBounds(context, uri) ?: return@runCatching null
+            val longest = max(bounds.first, bounds.second)
+            var sample = 1
+            while (longest / sample > maxLongest) {
+                sample *= 2
+            }
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val decoded = context.contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, options)
+            } ?: return@runCatching null
+            applyOrientation(decoded, orientation)
+        }.getOrNull()
+    }
+
     fun readOrientation(context: Context, uri: Uri): Int {
         return runCatching {
             context.contentResolver.openInputStream(uri)?.use { stream ->
@@ -129,7 +158,28 @@ object BitmapLoader {
         return (width * scale).roundToInt().coerceAtLeast(1) to (height * scale).roundToInt().coerceAtLeast(1)
     }
 
-    /** Keeps peak export memory within the app's heap while preserving resolution where possible. */
-    private fun maxExportPixels(): Long =
-        (Runtime.getRuntime().maxMemory() / 10L).coerceIn(12_000_000L, 36_000_000L)
+    /**
+     * 全分辨率导出时的安全像素上限。
+     *
+     * 旧实现把 `maxMemory() / 10` 当成「像素数」使用：maxMemory() 是字节数
+     * （largeHeap 设备可达 512MB），/10 得到约 53M，随后又被 clamp 到 36M 像素。
+     * 而渲染管线同一时刻实际持有的全帧副本约为 16~20 字节/像素
+     * （pixels 4B + 输出 Bitmap 4B + 解码临时 4B + 可选的降噪快照 / 原图副本 /
+     * 亮度平面），所以 36M 像素 ≈ 600MB，远超 heap → 必然 OOM、进程被杀、
+     * 弹窗消失。这里按「可用堆 × 余量系数 ÷ 峰值字节/像素」反推一个真实
+     * 安全上限：内存够就尽量保留原分辨率，内存不够才降，绝不硬扛到 OOM。
+     */
+    fun maxExportPixels(): Long {
+        val maxMem = Runtime.getRuntime().maxMemory().coerceAtLeast(64_000_000L)
+        val peakBytesPerPixel = 18L // 含降噪快照 / 原图副本等可选副本的保守峰值
+        val usable = (maxMem * 0.55).toLong() // 留 45% 给系统与其他对象 / 碎片
+        return (usable / peakBytesPerPixel).coerceIn(8_000_000L, 24_000_000L)
+    }
+
+    /** 与 [maxExportPixels] 配套的最长边上限（按面积反推），用于 [decodeFullLimited]。 */
+    fun maxExportLongest(): Int {
+        val px = maxExportPixels()
+        // 取正方形近似的最长边
+        return kotlin.math.sqrt(px.toDouble()).toInt().coerceIn(2600, 4900)
+    }
 }

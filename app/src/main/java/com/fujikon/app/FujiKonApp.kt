@@ -11,6 +11,7 @@ import com.fujikon.app.data.SelectionStore
 import com.fujikon.app.nikonpc.NikonPcService
 import com.fujikon.app.nic.NikonCloudService
 import com.fujikon.app.render.CubeLutProvider
+import com.fujikon.app.render.ExportCoordinator
 import com.fujikon.app.render.ExportManager
 import com.fujikon.app.render.ImageRenderer
 import com.fujikon.app.render.MlSegmentation
@@ -33,6 +34,9 @@ class AppContainer(context: Context) {
     val imageRenderer = ImageRenderer()
     val presetThumbnailStore = PresetThumbnailStore(appContext, imageRenderer)
     val exportManager = ExportManager(appContext, imageRenderer, settings)
+    /** 进程级导出协调器：导出任务运行在 Application 作用域，独立于任何页面生命周期。 */
+    val exportScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val exportCoordinator = ExportCoordinator(exportManager, exportScope)
     val nikonPcService = NikonPcService(cacheDir = File(appContext.cacheDir, "nikonpc"))
     val nikonCloudService = NikonCloudService()
     // Resolved per request so a region switch in Settings takes effect at once.

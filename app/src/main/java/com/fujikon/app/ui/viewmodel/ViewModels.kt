@@ -37,10 +37,13 @@ import com.fujikon.app.nikonpc.presetSummary
 import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.BitmapLoader
 import com.fujikon.app.render.ExportManager
+import com.fujikon.app.render.ExportCoordinator
 import com.fujikon.app.render.ImageRenderer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -648,9 +651,11 @@ class EditorViewModel(
     @SuppressLint("StaticFieldLeak") private val context: Context,
     private val presetRepository: PresetRepository,
     private val selectionStore: SelectionStore,
-    private val renderer: ImageRenderer,
-    private val exportManager: ExportManager,
-    private val settings: AppSettings,
+        private val renderer: ImageRenderer,
+        private val exportManager: ExportManager,
+        private val exportCoordinator: ExportCoordinator =
+            ExportCoordinator(exportManager, CoroutineScope(SupervisorJob() + Dispatchers.Default)),
+        private val settings: AppSettings,
     private val agnesImageService: AgnesImageService,
     private val aiCacheDir: File,
     private val agnesTextService: AgnesTextService = AgnesTextService(),
@@ -684,7 +689,13 @@ class EditorViewModel(
 
     sealed interface ExportState {
         data object Idle : ExportState
-        data class Running(val done: Int, val total: Int, val currentName: String) : ExportState
+        data class Running(
+            val done: Int,
+            val total: Int,
+            val currentName: String,
+            /** 单张内阶段："" / "解码" / "渲染" / "写入相册"，让用户看到进度在动。 */
+            val stage: String = ""
+        ) : ExportState
         data class Done(
             val saved: Int,
             val failures: List<String>,
@@ -799,8 +810,32 @@ class EditorViewModel(
     }
 
     private var renderJob: Job? = null
-    private var exportJob: Job? = null
     private var aiJob: Job? = null
+
+    /**
+     * 把进程级导出协调器的状态镜像到本 ViewModel 的 UI 状态，使编辑器页面
+     * 重建（旋转 / 被系统回收）后仍能恢复真实进度与结果弹窗，而不是从 Idle 重启。
+     * 导出任务本身不随本 ViewModel 销毁而取消。
+     */
+    init {
+        viewModelScope.launch {
+            exportCoordinator.status.collect { st ->
+                _state.update { ui ->
+                    ui.copy(
+                        export = when (st) {
+                            ExportCoordinator.Status.Idle -> EditorViewModel.ExportState.Idle
+                            is ExportCoordinator.Status.Running ->
+                                EditorViewModel.ExportState.Running(st.done, st.total, st.currentName, st.stage)
+                            is ExportCoordinator.Status.Done ->
+                                EditorViewModel.ExportState.Done(st.saved, st.failures, st.firstUri, st.album)
+                            is ExportCoordinator.Status.Failed ->
+                                EditorViewModel.ExportState.Failed(st.message)
+                        }
+                    )
+                }
+            }
+        }
+    }
     private var renderGeneration = 0
 
     /**
@@ -1681,66 +1716,39 @@ class EditorViewModel(
     }
 
     fun export(options: ExportManager.Options) {
-        if (_state.value.export is ExportState.Running) return
-        exportJob?.cancel()
-        exportJob = viewModelScope.launch {
-            // Snapshot every photo's own grade before the (long) export starts.
-            val perPhoto = exportPresetsByPhoto()
-            val fallback = _state.value.currentPreset
-            if (fallback == null) {
-                _state.update { it.copy(export = ExportState.Failed("请选择一个预设")) }
-                return@launch
-            }
-            _state.update { it.copy(export = ExportState.Running(0, _state.value.photos.size, "")) }
-            try {
-                val result = exportManager.export(
-                    photos = _state.value.photos,
-                    preset = fallback,
-                    options = options,
-                    finalImageUris = _state.value.aiResultUris,
-                    presetsByPhoto = perPhoto
-                ) { progress ->
-                    _state.update { current ->
-                        current.copy(
-                            export = ExportState.Running(progress.done, progress.total, progress.currentName)
-                        )
-                    }
-                }
-                _state.update {
-                    it.copy(
-                        export = ExportState.Done(
-                            saved = result.saved.size,
-                            failures = result.failures,
-                            firstUri = result.saved.firstOrNull(),
-                            album = options.album
-                        )
-                    )
-                }
-            } catch (e: CancellationException) {
-                _state.update { it.copy(export = ExportState.Idle) }
-                throw e
-            } catch (e: Exception) {
-                _state.update { it.copy(export = ExportState.Failed(e.message ?: "导出失败")) }
-            }
+        if (exportCoordinator.status.value is ExportCoordinator.Status.Running) return
+        // Snapshot every photo's own grade before the (long) export starts.
+        val perPhoto = exportPresetsByPhoto()
+        val fallback = _state.value.currentPreset
+        if (fallback == null) {
+            _state.update { it.copy(export = ExportState.Failed("请选择一个预设")) }
+            return
         }
+        // 委托给进程级协调器：任务运行于 Application 作用域，不随本页面销毁而取消。
+        exportCoordinator.export(
+            photos = _state.value.photos,
+            preset = fallback,
+            options = options,
+            finalImageUris = _state.value.aiResultUris,
+            presetsByPhoto = perPhoto
+        )
     }
 
     fun cancelExport() {
-        exportJob?.cancel()
-        exportJob = null
-        _state.update { it.copy(export = ExportState.Idle) }
+        exportCoordinator.cancel()
     }
 
     fun dismissExportResult() {
-        _state.update { it.copy(export = ExportState.Idle) }
+        exportCoordinator.reset()
     }
 
     fun currentOptions(): ExportManager.Options = exportManager.defaultOptions()
 
     override fun onCleared() {
         renderJob?.cancel()
-        exportJob?.cancel()
         aiJob?.cancel()
+        // 注意：导出任务交由进程级 ExportCoordinator 管理，不在此取消，
+        // 否则页面被回收（旋转 / 内存压力）会中断导出并让弹窗消失。
         super.onCleared()
     }
 
@@ -1786,6 +1794,7 @@ class FujiKonViewModelFactory(private val container: AppContainer) : ViewModelPr
                 selectionStore = container.selectionStore,
                 renderer = container.imageRenderer,
                 exportManager = container.exportManager,
+                exportCoordinator = container.exportCoordinator,
                 settings = container.settings,
                 agnesImageService = container.agnesImageService,
                 aiCacheDir = container.aiEditCacheDir,

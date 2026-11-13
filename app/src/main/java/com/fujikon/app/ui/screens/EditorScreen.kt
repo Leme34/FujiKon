@@ -821,7 +821,10 @@ fun EditorScreen(
                         )
                         Spacer(Modifier.height(10.dp))
                         Text(
-                            if (export.currentName.isBlank()) "正在写入相册…" else export.currentName,
+                            run {
+                                val name = if (export.currentName.isBlank()) "正在导出…" else export.currentName
+                                if (export.stage.isBlank()) name else "$name · ${export.stage}"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                             maxLines = 1,

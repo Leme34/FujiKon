@@ -35,7 +35,7 @@ import kotlin.math.sin
  * The 256x256 LUT is built once per preset, then applied per channel.
  * Work is split across CPU cores; previews use a downscaled bitmap.
  */
-class ImageRenderer {
+open class ImageRenderer {
 
     /**
      * Pluggable backend descriptor. Only [CpuRenderBackend] ships today; the
@@ -51,7 +51,7 @@ class ImageRenderer {
      */
     var parallelRowsEnabled: Boolean = true
 
-    suspend fun render(source: Bitmap, preset: Preset, forExport: Boolean): Bitmap {
+    open suspend fun render(source: Bitmap, preset: Preset, forExport: Boolean): Bitmap {
         val job = currentCoroutineContext()[Job]
         val width = source.width
         val height = source.height
