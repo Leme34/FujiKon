@@ -370,7 +370,9 @@ fun PresetsScreen(
                             deleted = isDeletedView,
                             onFavoriteClick = { scope.launch { viewModel.toggleFavorite(preset) } },
                             thumbnailStore = app.container.presetThumbnailStore,
-                            photo = previewPhoto,
+                            // 1.6.53：我的预设列表缩略图固定用一张 4K 风景
+                            // 壁纸套预设，便于横向对比，不再随所选照片变化。
+                            wallpaper = true,
                             modifier = Modifier.fillMaxWidth(),
                             testTag = "preset_card_${preset.id}"
                         )

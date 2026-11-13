@@ -99,6 +99,31 @@ class PresetThumbnailStore(
         return null
     }
 
+    /**
+     * 1.6.53：首页「我的预设」列表固定使用 4K 风景壁纸套用预设后的缩略图。
+     * 源永远是 [PresetWallpaper.get] 返回的同一张壁纸，缓存键按预设视觉签名
+     * 区分，保证不同预设得到各自的效果图、同一预设命中缓存不重复渲染。
+     */
+    suspend fun thumbnailFromWallpaper(preset: Preset, targetSize: Int = 280): Bitmap? {
+        val size = targetSize.coerceIn(64, 512)
+        val key = "${PresetWallpaper.SOURCE_KEY}|${visualSignature(preset)}|$size"
+        cache.get(key)?.let { cached ->
+            if (cached.hasVisiblePixels()) return cached
+            cache.remove(key)
+        }
+        val source = PresetWallpaper.get(appContext) ?: return null
+        return renderInto(source, preset, size, key)
+    }
+
+    /** Cache hit for [thumbnailFromWallpaper], without rendering. */
+    fun cachedFromWallpaper(preset: Preset, targetSize: Int = 280): Bitmap? {
+        val key = "${PresetWallpaper.SOURCE_KEY}|${visualSignature(preset)}|${targetSize.coerceIn(64, 512)}"
+        val cached = cache.get(key) ?: return null
+        if (cached.hasVisiblePixels()) return cached
+        cache.remove(key)
+        return null
+    }
+
     private suspend fun renderInto(
         source: Bitmap,
         preset: Preset,

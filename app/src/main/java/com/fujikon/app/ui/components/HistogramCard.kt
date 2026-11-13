@@ -44,7 +44,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.Preset
-import com.fujikon.app.nic.WorkStyle16Preset
 import com.fujikon.app.render.AutoEnhance
 import com.fujikon.app.render.AutoEnhanceResult
 import com.fujikon.app.render.ImageStats
@@ -87,12 +86,12 @@ private fun reportLine(r: OptimizationReport): String {
  * always visible while a preview is rendered. Below the chart it shows the
  * problems actually measured in the pixels and a one-tap "一键优化" button.
  *
- * The button is a TRUE one-tap closed loop on top of 「通透胶片」: on tap it
- * renders candidate parameters on the original (downscaled) with the work-style
- * preset as base, measures the real RGB histograms, and keeps refining until
- * 不过曝 / 不死黑 / 不发灰 is met — see [AutoEnhance.optimizeWorkStyle]. The
- * zone description, the convergence report and the offline preset picks form
- * one collapsible white-on-photo panel with a chevron toggle.
+ * 1.6.53 起「一键优化」是**纯参数化、内容感知**的闭环：不再预套「通透胶片」
+ * 或任何滤镜，也不切换当前预设。它在原图（降采样副本）上智能求解 App 现有的
+ * 调节参数——影调氛围 / 光感质感层次 / 人像美颜美白——并在真实渲染像素上
+ * 闭环验证不过曝 / 不死黑，见 [AutoEnhance.optimizeOneTap]。求得的参数通过
+ * [onApplyAdjustments] 同步进调节列表，用户可逐项二次调整。
+ * 分区说明、收敛报告与离线预设推荐合并为一个可折叠白字面板。
  */
 @Composable
 fun HistogramCard(
@@ -105,8 +104,8 @@ fun HistogramCard(
     /** Unedited original: the closed loop must verify against this, not the
      *  already-graded preview, or repeated taps would drift. */
     sourceBitmap: Bitmap? = null,
-    /** Kept for API compatibility; the closed loop now always verifies with
-     *  the built-in 「通透胶片」 look as its base. */
+    /** Kept for API compatibility; 1.6.53 起一键优化不套任何滤镜基准，
+     *  该参数不再参与求解（渲染基准恒为 Preset.none()）。 */
     basePreset: Preset? = null,
     modifier: Modifier = Modifier,
     width: Dp = 190.dp
@@ -138,7 +137,12 @@ fun HistogramCard(
     LaunchedEffect(bitmap, currentAdjustments) {
         val pair = withContext(Dispatchers.Default) {
             val stats = AutoEnhance.analyse(bitmap)
-            stats?.let { it to AutoEnhance.suggestZoned(bitmap, it, currentAdjustments) }
+            stats?.let { s ->
+                // 与一键优化按钮共用同一套内容感知增强，保证「建议优化」的
+                // 提示（含人像可优化）与按钮实际结果一致。
+                val seed = AutoEnhance.suggestZoned(bitmap, s, currentAdjustments)
+                s to AutoEnhance.enrichOneTap(seed, s, currentAdjustments)
+            }
         }
         if (pair != null) {
             data = pair.first
@@ -328,21 +332,18 @@ fun HistogramCard(
                     scope.launch {
                         optimizing = true
                         try {
-                            // 一键优化固定以「通透胶片」为基底，再按 RGB
-                            // 直方图做提暗部 / 压高光 / 理顺光感层次，并在
-                            // 真实渲染像素上闭环验证不死黑、不发灰、不过曝。
+                            // 1.6.53：纯参数化内容感知闭环，取消「先套通透胶片」，
+                            // 也不切换当前预设。求解影调氛围 / 光感质感层次 /
+                            // 人像美颜美白的整套参数，并在真实渲染像素上闭环验证
+                            // 不死黑、不发灰、不过曝。
                             val result = withContext(Dispatchers.Default) {
-                                AutoEnhance.optimizeWorkStyle(
+                                AutoEnhance.optimizeOneTap(
                                     source = sourceBitmap ?: bitmap,
                                     current = currentAdjustments
                                 )
                             }
-                            // 内置预置入库时 id 会被替换成 UUID，不能用
-                            // WorkStyle16Preset.ID 常量；按 contentHash 找真身。
-                            val workStyleId = presets.firstOrNull {
-                                it.contentHash == WorkStyle16Preset.CONTENT_HASH
-                            }?.id
-                            if (workStyleId != null) onSelectPreset(workStyleId)
+                            // 结果是一组普通调节参数：同步进调节列表，用户可
+                            // 逐项二次调整；不再 onSelectPreset 切换任何滤镜。
                             appliedSummary = result.summary
                             report = result.report
                             onApplyAdjustments(result.adjustments)

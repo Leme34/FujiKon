@@ -497,9 +497,9 @@ fun EditorScreen(
                 if (preset != null && rendered != null) {
                     HistogramCard(
                         bitmap = if (comparing) state.original ?: rendered else rendered,
-                        // The closed loop must verify against the unedited
-                        // original and the actual preset, so its measured
-                        // result matches what preview / export will show.
+                        // 1.6.53：一键优化闭环始终针对未编辑原图求解一组纯
+                        // 调节参数（不套任何滤镜、不切换预设），结果同步进
+                        // 调节列表供二次调整。basePreset 仅为兼容保留。
                         sourceBitmap = state.original ?: rendered,
                         basePreset = preset,
                         currentAdjustments = state.adjustments,

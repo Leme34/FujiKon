@@ -133,6 +133,8 @@ fun PresetCard(
     thumbnailStore: PresetThumbnailStore? = null,
     /** 预览源：最近一次选择的第一张照片；为空时使用内置样张。 */
     photo: PhotoItem? = null,
+    /** 1.6.53：为 true 时缩略图固定用 4K 风景壁纸套预设，忽略 [photo]。 */
+    wallpaper: Boolean = false,
     /** 已删除视图：显示状态标签与就地「恢复」入口。 */
     deleted: Boolean = false,
     onRestoreClick: (() -> Unit)? = null
@@ -167,6 +169,7 @@ fun PresetCard(
                         store = thumbnailStore,
                         modifier = Modifier.fillMaxSize(),
                         targetSize = 480,
+                        wallpaper = wallpaper,
                         placeholder = curveChart
                     )
                 } else {

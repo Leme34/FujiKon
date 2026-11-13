@@ -11,6 +11,8 @@ import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.PortraitRetouch
+import com.fujikon.app.data.PortraitStyle
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.data.ToneCurvePoint
 import kotlin.math.PI
@@ -1041,7 +1043,12 @@ object AutoEnhance {
         basePreset: Preset = Preset.none(),
         current: EditAdjustments = EditAdjustments.Neutral,
         provider: SegmentationProvider = HeuristicSegmentationProvider,
-        renderer: ImageRenderer = ImageRenderer()
+        renderer: ImageRenderer = ImageRenderer(),
+        /** Optional hook to enrich the single-pass seed (e.g. content-aware
+         *  portrait beauty) before the closed loop starts. Defaults to identity
+         *  so every existing caller / regression is untouched. */
+        seedTransform: (AutoEnhanceResult, ImageStats, EditAdjustments) -> AutoEnhanceResult =
+            { seed, _, _ -> seed }
     ): AutoEnhanceResult {
         if (source == null || source.isRecycled || source.width <= 0 || source.height <= 0) {
             return AutoEnhanceResult(current, emptyList(), "无预览，无法优化", false)
@@ -1049,7 +1056,7 @@ object AutoEnhance {
         val stats = analyse(source)
             ?: return AutoEnhanceResult(current, emptyList(), "无法分析画面", false)
 
-        val seed = suggestZoned(source, stats, current, provider)
+        val seed = seedTransform(suggestZoned(source, stats, current, provider), stats, current)
 
         // Already good AND already compliant: no rendering at all, exact Neutral.
         // The original is its own reference, so every retention floor is met
@@ -1117,7 +1124,93 @@ object AutoEnhance {
         )
     }
 
+    // ------------------------------- 一键优化：纯参数化内容感知 (1.6.53)
+
+    /**
+     * 人像判定门槛：实测肤色像素占比低于此值视为非人像照，不强加美颜。
+     * 这是一道保险——渲染器本身还会用 YCbCr 肤色蒙版把磨皮/美白限定在
+     * 真正的皮肤像素上，即便风景里混入了暖色像素（木船、秋叶、夕阳），
+     * 也几乎不会被这套参数影响。
+     */
+    private const val ONE_TAP_MIN_SKIN = 0.07f
+
+    /**
+     * 对标 Lightroom「自动」与美图秀秀「一键美颜」的算法本质，结合本 App
+     * **现有的可调参数**智能求一组值，而不是预套任何一个滤镜：
+     *
+     *  - 影调氛围：曝光 / 对比度 / 高光 / 阴影 / 白 / 黑 / 主曲线 / 色温 /
+     *    色调 / 鲜艳度 / HSL（由 [suggest] 依实测直方图与灰度世界白平衡求解）；
+     *  - 光感质感层次：纹理 / 清晰度 / 去朦胧 + 天空·主体·背景分区层
+     *    （[suggestZoned] 的局部对比度增强，等价于 Snapseed 的局部自适应）；
+     *  - 人像美颜美白：磨皮 / 美白 / 红润 / 立体（[solvePortrait]），只在
+     *    实测肤色占比达标时启用，强度随占比与脸部亮度连续自适应。
+     *
+     * 结果是一组普通 [EditAdjustments]，通过参数列表同步，用户可逐项二次调整；
+     * 全部为绝对参数、从原图重算，因此重复点击幂等、绝不累加。
+     */
+    suspend fun optimizeOneTap(
+        source: Bitmap?,
+        current: EditAdjustments = EditAdjustments.Neutral,
+        renderer: ImageRenderer = ImageRenderer(),
+        provider: SegmentationProvider = HeuristicSegmentationProvider
+    ): AutoEnhanceResult = optimize(
+        source = source,
+        // 1.6.53：取消「先套用通透胶片滤镜」。闭环渲染基准不含任何预设
+        // LUT / 配方，一键优化只产出可撤销的普通调节参数。
+        basePreset = Preset.none(),
+        current = current,
+        provider = provider,
+        renderer = renderer,
+        seedTransform = ::enrichOneTap
+    )
+
+    /**
+     * 一键优化的「内容感知增强」层：在纯参数化的全局/分区求解结果上叠加
+     * 人像美颜美白，并把三大分组写进摘要。同时供一键优化按钮（作为 [optimize]
+     * 的 seed 钩子）与直方图卡片的快速提示使用，保证两处结论一致。
+     */
+    fun enrichOneTap(
+        seed: AutoEnhanceResult,
+        stats: ImageStats,
+        current: EditAdjustments
+    ): AutoEnhanceResult {
+        val portrait = solvePortrait(stats, current)
+        val beautyApplied = !portrait.isOff() && portrait != current.portrait
+        // 影调已经很好且不是人像：保持 Lightroom「好照片精确不动」语义。
+        if (!seed.changed && !beautyApplied) return seed
+
+        val next = if (beautyApplied) seed.adjustments.copy(portrait = portrait) else seed.adjustments
+        val label = buildString {
+            append("智能优化 · 影调氛围 · 光感质感")
+            if (beautyApplied) append(" · 人像美颜美白")
+            append("（参数已同步，可二次调整）")
+        }
+        return seed.copy(adjustments = next, summary = label, changed = true)
+    }
+
+    /**
+     * 内容感知人像美颜美白：把实测肤色占比映射到磨皮 / 美白 / 红润 / 立体
+     * 四个现有滑杆上。数值刻意保守（对照 [PortraitStyle.NATURAL]），避免
+     * 「塑料感」；脸部偏暗时略多给一点美白。非人像照返回用户原有设置，
+     * 绝不覆盖手动编辑。
+     */
+    private fun solvePortrait(stats: ImageStats, current: EditAdjustments): PortraitRetouch {
+        val skin = stats.skinCoverage
+        if (skin < ONE_TAP_MIN_SKIN) return current.portrait
+        val confidence = ramp(skin, ONE_TAP_MIN_SKIN, 0.30f)
+        val darkFace = ramp(0.46f - stats.meanLuma, 0f, 0.28f)
+        return PortraitRetouch(
+            style = PortraitStyle.CUSTOM.id,
+            smooth = (16f + confidence * 20f).coerceIn(0f, 36f),
+            whiten = (9f + confidence * 9f + darkFace * 10f).coerceIn(0f, 28f),
+            blush = (5f + confidence * 8f).coerceIn(0f, 14f),
+            contour = (4f + confidence * 6f).coerceIn(0f, 12f)
+        ).normalized()
+    }
+
     // ------------------------------- 通透胶片 + RGB 直方图一键优化 (1.6.39)
+    // 保留为可调用的历史算法（含完整回归测试），但 1.6.53 起 UI 的「一键
+    // 优化」不再使用它——见 [optimizeOneTap]。
 
     private data class RgbTone(
         val p5: Float,

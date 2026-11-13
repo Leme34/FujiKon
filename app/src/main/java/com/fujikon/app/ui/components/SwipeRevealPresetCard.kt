@@ -64,6 +64,8 @@ fun SwipeRevealPresetCard(
     onRestore: (() -> Unit)? = null,
     thumbnailStore: PresetThumbnailStore? = null,
     photo: PhotoItem? = null,
+    /** 1.6.53：为 true 时缩略图固定用 4K 风景壁纸套预设，忽略 [photo]。 */
+    wallpaper: Boolean = false,
     onFavoriteClick: (() -> Unit)? = null,
     deleted: Boolean = false,
     testTag: String? = null
@@ -157,6 +159,7 @@ fun SwipeRevealPresetCard(
                 onFavoriteClick = onFavoriteClick,
                 thumbnailStore = thumbnailStore,
                 photo = photo,
+                wallpaper = wallpaper,
                 deleted = deleted,
                 onRestoreClick = onRestore
             )
