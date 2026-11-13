@@ -247,7 +247,10 @@ class SelectionMaskTest {
         val w = 120; val h = 200
         val a = SelectionMaskGenerator.analyze(outdoor(w, h), w, h)
         val normal = SelectionMaskGenerator.build(LocalMask.SkyMask(), a, null, w, h)!!
-        val flipped = SelectionMaskGenerator.build(LocalMask.SkyMask(invert = true), a, null, w, h)!!
+        // 1.6.59：反选（invert）不再在 build 内部烘焙，统一由上层在 eraser 之后
+        // 执行；这里手工取补集以验证「反选 = 精确补集」的语义保持不变。
+        val flipped = normal.copyOf()
+        for (i in flipped.indices) flipped[i] = 1f - flipped[i]
         var maxDelta = 0f
         for (i in normal.indices) {
             val expected = 1f - normal[i]

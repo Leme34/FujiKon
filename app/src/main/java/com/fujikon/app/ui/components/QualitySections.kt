@@ -258,6 +258,10 @@ internal fun buildSelectionOverlay(
     // The eraser is layer-scoped: punch the painted areas out of the red wash
     // too, so the preview matches the scope actually applied at render time.
     LocalMaskRenderer.applyEraser(values, analysis.w, analysis.h, eraser)
+    // 1.6.59：反选必须在 eraser 之后执行，否则被擦除的洞在反选后仍不被选中。
+    if (mask.isInverted) {
+        for (i in values.indices) values[i] = (1f - values[i]).coerceIn(0f, 1f)
+    }
     val argb = SelectionMaskGenerator.toOverlay(values, analysis.w, analysis.h)
     return Bitmap.createBitmap(argb, analysis.w, analysis.h, Bitmap.Config.ARGB_8888)
         .asImageBitmap()

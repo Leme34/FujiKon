@@ -243,15 +243,15 @@ object SelectionMaskGenerator {
         targetW: Int = 64, targetH: Int = 64
     ): FloatArray? = when (mask) {
         is LocalMask.SubjectMask -> {
-            if (a == null) disc(targetW, targetH, mask.seedX, mask.seedY, 0.34f, mask.feather, mask.invert)
+            if (a == null) disc(targetW, targetH, mask.seedX, mask.seedY, 0.34f, mask.feather)
             else subject(a, mask, job)
         }
         is LocalMask.SkyMask -> {
-            if (a == null) topGradient(targetW, targetH, mask.feather, mask.invert)
+            if (a == null) topGradient(targetW, targetH, mask.feather)
             else sky(a, mask, job)
         }
         is LocalMask.ColorRangeMask -> {
-            if (a == null) disc(targetW, targetH, mask.seedX, mask.seedY, 0.30f, mask.feather, mask.invert)
+            if (a == null) disc(targetW, targetH, mask.seedX, mask.seedY, 0.30f, mask.feather)
             else colorRange(a, mask, job)
         }
         else -> null
@@ -308,7 +308,7 @@ object SelectionMaskGenerator {
         )
         val cleaned = clean(connected, w, h)
         val aligned = if (m.refine.detectEdges) guidedRefine(cleaned, a, 2, 0.0008f) else cleaned
-        return finish(aligned, w, h, m.feather, m.invert, m.refine, job)
+        return finish(aligned, w, h, m.feather, m.refine, job)
     }
 
     // -------------------------------------------------------------------- sky
@@ -380,13 +380,13 @@ object SelectionMaskGenerator {
             }
         }
         if (topSeeds.isEmpty()) {
-            return finish(FloatArray(n), w, h, m.feather, m.invert, m.refine, job)
+            return finish(FloatArray(n), w, h, m.feather, m.refine, job)
         }
         val seeds = IntArray(topSeeds.size) { topSeeds[it] }
         val connected = keepConnected(weight, w, h, seeds, 0.22f, null, 1f)
         val cleaned = clean(connected, w, h)
         val aligned = if (m.refine.detectEdges) guidedRefine(cleaned, a, 2, 0.0008f) else cleaned
-        return finish(aligned, w, h, m.feather, m.invert, m.refine, job)
+        return finish(aligned, w, h, m.feather, m.refine, job)
     }
 
     // ------------------------------------------------------------ colour range
@@ -440,7 +440,7 @@ object SelectionMaskGenerator {
         } else weight.copyOf()
         val cleaned = if (m.contiguous) clean(out, w, h) else out
         val aligned = if (m.refine.detectEdges) guidedRefine(cleaned, a, 2, 0.0012f) else cleaned
-        return finish(aligned, w, h, m.feather, m.invert, m.refine, job)
+        return finish(aligned, w, h, m.feather, m.refine, job)
     }
 
     /** ΔE-like distance in OKLab; chroma is scaled by the "色相范围" slider. */
@@ -542,7 +542,7 @@ object SelectionMaskGenerator {
      * parameters, so preview and export rebuild the exact same grid.
      */
     private fun finish(
-        values: FloatArray, w: Int, h: Int, feather: Float, invert: Boolean,
+        values: FloatArray, w: Int, h: Int, feather: Float,
         refine: SelectionRefine, job: Job?
     ): FloatArray {
         checkCancelled(job)
@@ -552,10 +552,8 @@ object SelectionMaskGenerator {
         if (smoothRadius > 0) boxBlur(values, w, h, smoothRadius)
         val radius = (feather.coerceIn(0f, 1f) * 6f).roundToInt().coerceIn(0, 6)
         if (radius > 0) boxBlur(values, w, h, radius)
-        for (i in values.indices) {
-            val v = values[i].coerceIn(0f, 1f)
-            values[i] = if (invert) 1f - v else v
-        }
+        // 1.6.59：反选（invert）不再在此处烘焙，统一由上层在 eraser 之后执行，
+        // 以保证反选覆盖当前选区（含被擦除的洞）之外的全部区域。
         return values
     }
 
@@ -822,7 +820,7 @@ object SelectionMaskGenerator {
 
     /** Well-defined geometric fallback used when no original photo is supplied. */
     private fun disc(
-        w: Int, h: Int, cx: Float, cy: Float, radius: Float, feather: Float, invert: Boolean
+        w: Int, h: Int, cx: Float, cy: Float, radius: Float, feather: Float
     ): FloatArray {
         val out = FloatArray(w * h)
         val inner = 1f - feather.coerceIn(0.05f, 0.95f)
@@ -833,16 +831,16 @@ object SelectionMaskGenerator {
                 out[y * w + x] = 1f - smoothstep(inner, 1f, d)
             }
         }
-        if (invert) for (i in out.indices) out[i] = 1f - out[i]
+        // 1.6.59：反选由上层在 eraser 之后统一执行。
         return out
     }
 
-    private fun topGradient(w: Int, h: Int, feather: Float, invert: Boolean): FloatArray {
+    private fun topGradient(w: Int, h: Int, feather: Float): FloatArray {
         val out = FloatArray(w * h)
         for (y in 0 until h) {
             val ny = y.toFloat() / (h - 1)
             val v = 1f - smoothstep(0.45f - feather * 0.1f, 0.75f + feather * 0.1f, ny)
-            for (x in 0 until w) out[y * w + x] = if (invert) 1f - v else v
+            for (x in 0 until w) out[y * w + x] = v
         }
         return out
     }

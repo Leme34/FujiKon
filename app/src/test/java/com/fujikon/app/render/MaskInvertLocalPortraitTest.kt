@@ -4,6 +4,7 @@ import com.fujikon.app.data.LocalAdjustments
 import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
+import com.fujikon.app.data.EraserStroke
 import com.fujikon.app.data.PortraitRetouch
 import com.fujikon.app.data.isInverted
 import com.fujikon.app.data.withInverted
@@ -75,18 +76,77 @@ class MaskInvertLocalPortraitTest {
 
     @Test
     fun controlPointInvertIsExactComplementInGrid() {
-        val normal = LocalMaskRenderer.buildGrid(LocalMask.ControlPoint(), 64, 64)
-        val inverted = LocalMaskRenderer.buildGrid(LocalMask.ControlPoint(invert = true), 64, 64)
-        assertEquals(normal.values.size, inverted.values.size)
+        val base = LocalMaskRenderer.buildGrid(LocalMask.ControlPoint(), 64, 64)
+        // 反选由 prepare 在 eraser 之后统一执行，这里验证其结果为精确补集。
+        val layer = LocalLayer(
+            id = "p", mask = LocalMask.ControlPoint(invert = true),
+            params = LocalParams(brightness = 5f)
+        )
+        val prepared = LocalMaskRenderer.prepare(LocalAdjustments(listOf(layer)), 64, 64, null)
+        val inverted = prepared[0].grid
+        assertEquals(base.values.size, inverted.values.size)
         var maxDelta = 0f
-        for (i in normal.values.indices) {
-            maxDelta = maxOf(maxDelta, kotlin.math.abs((1f - normal.values[i]) - inverted.values[i]))
+        for (i in base.values.indices) {
+            maxDelta = maxOf(maxDelta, kotlin.math.abs((1f - base.values[i]) - inverted.values[i]))
         }
         assertTrue("控制点反选必须是精确补集: maxDelta=$maxDelta", maxDelta < 0.001f)
         // 中心：正常为 1（选区内），反选为 0；角落相反。
-        assertTrue("正常控制点中心应命中", normal.sample(0.5f, 0.5f) > 0.9f)
+        assertTrue("正常控制点中心应命中", base.sample(0.5f, 0.5f) > 0.9f)
         assertTrue("反选控制点中心应为 0", inverted.sample(0.5f, 0.5f) < 0.1f)
         assertTrue("反选控制点角落应命中", inverted.sample(0f, 0f) > 0.9f)
+    }
+
+    /**
+     * 1.6.59 回归：选中蒙版区域后用橡皮擦擦除局部，再反选，被擦除的「洞」必须
+     * 包含在反选结果中（即反选 = 选中当前蒙版覆盖范围之外的所有区域）。
+     */
+    @Test
+    fun invertedSelectionIncludesErasedHole() {
+        val eraser = listOf(
+            EraserStroke(
+                points = listOf(0.5f, 0.5f, 0.52f, 0.5f),
+                radius = 0.1f, feather = 0.1f, strength = 1f
+            )
+        )
+        val layer = LocalLayer(
+            id = "p",
+            mask = LocalMask.ControlPoint(x = 0.5f, y = 0.5f, radius = 0.4f, feather = 0.1f, invert = true),
+            eraser = eraser,
+            params = LocalParams(brightness = 5f)
+        )
+        val prepared = LocalMaskRenderer.prepare(LocalAdjustments(listOf(layer)), 128, 128, null)
+        val grid = prepared[0].grid
+
+        // 被擦除的洞（原选区内中心）：反选后必须选中。
+        assertTrue("被擦除的洞在反选后应被选中", grid.sample(0.5f, 0.5f) > 0.8f)
+        // 原选区、但不在擦除范围内的区域：反选后必须不选中。
+        assertTrue("原选区未被擦除处反选后不选", grid.sample(0.5f, 0.75f) < 0.2f)
+        // 原选区之外：反选后必须选中。
+        assertTrue("原选区之外反选后选中", grid.sample(0f, 0f) > 0.8f)
+    }
+
+    /**
+     * 反向对照：未反选时，被擦除的洞应保持不被选中（覆盖区域之外）。
+     */
+    @Test
+    fun nonInvertedMaskKeepsErasedHoleUnselected() {
+        val eraser = listOf(
+            EraserStroke(
+                points = listOf(0.5f, 0.5f, 0.52f, 0.5f),
+                radius = 0.1f, feather = 0.1f, strength = 1f
+            )
+        )
+        val layer = LocalLayer(
+            id = "p",
+            mask = LocalMask.ControlPoint(x = 0.5f, y = 0.5f, radius = 0.4f, feather = 0.1f, invert = false),
+            eraser = eraser,
+            params = LocalParams(brightness = 5f)
+        )
+        val prepared = LocalMaskRenderer.prepare(LocalAdjustments(listOf(layer)), 128, 128, null)
+        val grid = prepared[0].grid
+        assertTrue("被擦除的洞应不被选中", grid.sample(0.5f, 0.5f) < 0.2f)
+        assertTrue("原选区未被擦除处仍选中", grid.sample(0.5f, 0.75f) > 0.8f)
+        assertTrue("原选区之外不选", grid.sample(0f, 0f) < 0.2f)
     }
 
     // --------------------------------------------------------- portrait layer

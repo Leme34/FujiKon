@@ -143,16 +143,23 @@ class QualityPipelineTest {
 
     @Test
     fun radialInvertAndLinearGradientBehave() {
-        val radial = LocalMaskRenderer.buildGrid(
-            LocalMask.RadialGradient(0.5f, 0.5f, 0.25f, 0.25f, 0.6f, invert = true), 100, 100
+        // 1.6.59：反选由 prepare 在 eraser 之后统一执行，这里用真实执行路径验证。
+        val radial = LocalLayer(
+            "r",
+            mask = LocalMask.RadialGradient(0.5f, 0.5f, 0.25f, 0.25f, 0.6f, invert = true),
+            params = LocalParams(brightness = 1f)
         )
-        assertTrue("反选径向：中心为 0", radial.sample(0.5f, 0.5f) < 0.05f)
-        assertTrue("反选径向：角落为 1", radial.sample(0f, 0f) > 0.9f)
+        val radialGrid = LocalMaskRenderer.prepare(LocalAdjustments(listOf(radial)), 100, 100, null)[0].grid
+        assertTrue("反选径向：中心为 0", radialGrid.sample(0.5f, 0.5f) < 0.05f)
+        assertTrue("反选径向：角落为 1", radialGrid.sample(0f, 0f) > 0.9f)
 
-        val linear = LocalMaskRenderer.buildGrid(
-            LocalMask.LinearGradient(0.5f, 0f, 0.5f, 1f, 0.4f, invert = true), 100, 100
+        val linear = LocalLayer(
+            "l",
+            mask = LocalMask.LinearGradient(0.5f, 0f, 0.5f, 1f, 0.4f, invert = true),
+            params = LocalParams(brightness = 1f)
         )
-        assertTrue("线性渐变上部权重更高", linear.sample(0.5f, 0.05f) > linear.sample(0.5f, 0.95f))
+        val linGrid = LocalMaskRenderer.prepare(LocalAdjustments(listOf(linear)), 100, 100, null)[0].grid
+        assertTrue("线性渐变上部权重更高", linGrid.sample(0.5f, 0.05f) > linGrid.sample(0.5f, 0.95f))
     }
 
     @Test

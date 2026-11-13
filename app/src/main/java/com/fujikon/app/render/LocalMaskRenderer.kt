@@ -7,6 +7,7 @@ import com.fujikon.app.data.LocalMask
 import com.fujikon.app.data.LocalParams
 import com.fujikon.app.data.PortraitRetouch
 import com.fujikon.app.data.isContentAware
+import com.fujikon.app.data.isInverted
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlin.math.abs
@@ -120,9 +121,10 @@ object LocalMaskRenderer {
                     for (x in 0 until w) {
                         val nx = x.toFloat() / (w - 1)
                         val d = hypot((nx - mask.x) * aspect.coerceAtMost(2f), ny - mask.y) / radius
-                        // 1.6.58：与其它几何/内容感知蒙版一致，控制点也支持反选。
-                        val inside = 1f - smoothstep(inner, 1f, d)
-                        values[y * w + x] = if (mask.invert) 1f - inside else inside
+                        // 1.6.59：反选不再在此处烘焙，统一在 prepare() 的 eraser
+                        // 之后执行（见 applyInversion），保证反选覆盖「当前选区之外
+                        // 的全部区域」（含被橡皮擦擦除的洞）。
+                        values[y * w + x] = 1f - smoothstep(inner, 1f, d)
                     }
                 }
             }
@@ -150,9 +152,9 @@ object LocalMaskRenderer {
                         // so existing auto-zone/linear recipes keep their look.
                         val ramp = smoothstep(0f, feather, t)
                         val gate = smoothstep(-edge, 0f, t) * (1f - smoothstep(1f, 1f + edge, t))
-                        // invert flips the direction INSIDE the band only; the
-                        // gate keeps everything outside the endpoints at 0.
-                        values[y * w + x] = (if (mask.invert) 1f - ramp else ramp) * gate
+                        // 1.6.59：方向翻转（反选）统一在 prepare() 的 eraser 之后
+                        // 执行，这里只负责带 gate 的软斜坡本身。
+                        values[y * w + x] = ramp * gate
                     }
                 }
             }
@@ -165,16 +167,14 @@ object LocalMaskRenderer {
                         // Rotation-aware distance: the ellipse can now be spun
                         // with its handle; raster and outline share the maths.
                         val d = mask.rotatedDistance(nx, ny, aspect)
-                        val inside = 1f - smoothstep(inner, 1f, d)
-                        values[y * w + x] = if (mask.invert) 1f - inside else inside
+                        // 1.6.59：反选统一在 prepare() 的 eraser 之后执行。
+                        values[y * w + x] = 1f - smoothstep(inner, 1f, d)
                     }
                 }
             }
             is LocalMask.Brush -> {
+                // 1.6.59：反选统一在 prepare() 的 eraser 之后执行。
                 rasteriseBrush(values, w, h, mask, aspect)
-                if (mask.invert) {
-                    for (i in values.indices) values[i] = 1f - values[i]
-                }
             }
             // Content-aware masks are returned early above when an analysis is
             // available. This fallback (a soft disc / top gradient around the
@@ -336,6 +336,17 @@ object LocalMaskRenderer {
      * pixels and shared by every content-aware layer, so a preset with several
      * selections does not re-analyse the photo for each one.
      */
+    /**
+     * 1.6.59：把已构建（且已擦除）的蒙版 grid 整体取补集，作为「反选」的最后一步。
+     * 关键顺序：必须在 [applyEraser] 之后执行，否则反选只会翻转原始选区、而用户
+     * 用橡皮擦擦出的「洞」因在原选区内（翻转后为 0）再被擦除乘法清零，导致洞内区域
+     * 在反选后仍然未被选中。改在 eraser 之后取补集后，反选即覆盖「当前选区（含被擦
+     * 除区域之外）的全部区域」，符合「选中蒙版覆盖范围之外所有区域」的语义。
+     */
+    fun invertGrid(values: FloatArray) {
+        for (i in values.indices) values[i] = (1f - values[i]).coerceIn(0f, 1f)
+    }
+
     fun prepare(
         local: LocalAdjustments,
         width: Int,
@@ -351,6 +362,9 @@ object LocalMaskRenderer {
             // The eraser is layer-scoped and mask-agnostic: apply it to the
             // final grid so geometric shapes and AI selections behave alike.
             applyEraser(grid.values, grid.width, grid.height, layer.eraser)
+            // 1.6.59：反选必须放在 eraser 之后执行（见 [invertGrid]），
+            // 否则被擦除的洞在反选后不会被选中。
+            if (layer.mask.isInverted) invertGrid(grid.values)
             // 1.6.58：仅「选择主体」图层可带局部人像美颜。作用域取自已经过
             // eraser / 反选 / 精修 / 羽化的最终 grid，并叠加图层强度，保证
             // 美颜与影调落在完全相同的区域、浓淡随图层强度一致。

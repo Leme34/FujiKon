@@ -1,7 +1,10 @@
 package com.fujikon.app
 
 import com.fujikon.app.data.BrushStroke
+import com.fujikon.app.data.LocalAdjustments
+import com.fujikon.app.data.LocalLayer
 import com.fujikon.app.data.LocalMask
+import com.fujikon.app.data.LocalParams
 import com.fujikon.app.render.LocalMaskRenderer
 import com.fujikon.app.ui.components.appendBrushStroke
 import com.fujikon.app.ui.components.fitImageRect
@@ -51,14 +54,19 @@ class MaskGeometryTest {
     }
 
     @Test
-    fun invertedLinearGradientDoesNotLeakOutsideEndpoints() {
-        val grid = LocalMaskRenderer.buildGrid(
-            LocalMask.LinearGradient(0.5f, 0.4f, 0.5f, 0.6f, 0.4f, invert = true),
-            100, 100
+    fun invertedLinearGradientSelectsOutsideTheBand() {
+        // 1.6.59：反选 = 选中当前蒙版覆盖范围之外所有区域（与 Lightroom 一致）。
+        // 线性渐变的「覆盖范围」是两端点之间的条带，因此反选后条带外变为选中，
+        // 条带内与未反选互补。反选在 prepare 的 eraser 之后执行。
+        val layer = LocalLayer(
+            "l",
+            mask = LocalMask.LinearGradient(0.5f, 0.4f, 0.5f, 0.6f, 0.4f, invert = true),
+            params = LocalParams(brightness = 1f)
         )
-        assertTrue("invert 带内仍有作用", grid.sample(0.5f, 0.42f) > 0.5f)
-        assertTrue("invert 在 start 之外不外溢", grid.sample(0.5f, 0.15f) < 0.05f)
-        assertTrue("invert 在 end 之外不外溢", grid.sample(0.5f, 0.9f) < 0.05f)
+        val grid = LocalMaskRenderer.prepare(LocalAdjustments(listOf(layer)), 100, 100, null)[0].grid
+        assertTrue("invert 后条带外（start 端外）应被选中", grid.sample(0.5f, 0.15f) > 0.9f)
+        assertTrue("invert 后条带外（end 端外）应被选中", grid.sample(0.5f, 0.9f) > 0.9f)
+        assertTrue("invert 后条带内与未反选互补", grid.sample(0.5f, 0.42f) > 0.5f)
     }
 
     // ---------------------------------------------------------- requirement 2
