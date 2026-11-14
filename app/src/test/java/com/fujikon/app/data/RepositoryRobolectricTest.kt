@@ -44,7 +44,7 @@ class RepositoryRobolectricTest {
 
     /**
      * 首次启动播种总数 = 4 个 sample assets + 官方真实方案（99 个官方命名 NP3
-     * + 2 个独立 NP3 + 9 个 3D LUT）+ 与官方身份不重复的原有内置。
+     * + 2 个独立 NP3）+ 与官方身份不重复的原有内置。
      *
      * 1.6.47 起旧内置在线预置「Vitality Film by Peng Mango」与官方 NP3 方案
      * 共用 `nic:<recipeId>`，播种时按 contentHash 去重，只保留真实 NP3 版本，
@@ -63,7 +63,7 @@ class RepositoryRobolectricTest {
         repository.load()
 
         assertTrue(repository.ready.value)
-        // 4 sample assets + 99 官方命名方案 + 2 独立 NP3 + 9 LUT + 9 原有内置。
+        // 4 sample assets + 99 官方命名方案 + 2 独立 NP3 + 9 原有内置。
         assertEquals(seededCount(), repository.presets.value.size)
         // 99 个官方方案已统一为 nic:<recipeId>；2 个无官方对应的仍是 cloudrecipe:。
         assertEquals(99, repository.presets.value.count {
@@ -71,9 +71,6 @@ class RepositoryRobolectricTest {
         })
         assertEquals(2, repository.presets.value.count {
             it.contentHash.startsWith("cloudrecipe:")
-        })
-        assertEquals(9, repository.presets.value.count {
-            it.contentHash.startsWith("cloudlut:")
         })
         assertTrue(repository.presets.value.any { it.name == "Agfa Optima" })
         assertTrue(repository.presets.value.any { it.name == "NC 400" })
@@ -602,7 +599,7 @@ class RepositoryRobolectricTest {
         val kept = org.json.JSONArray()
         for (i in 0 until array.length()) {
             val item = array.getJSONObject(i)
-            if (!item.optString("contentHash").startsWith("cloudlut:")) kept.put(item)
+            if (!item.optString("contentHash").startsWith("cloudrecipe:")) kept.put(item)
         }
         root.put("presets", kept)
         index.writeText(root.toString())

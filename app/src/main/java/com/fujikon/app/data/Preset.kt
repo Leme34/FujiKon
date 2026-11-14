@@ -62,13 +62,6 @@ data class Preset(
      */
     val lumaToneLut: IntArray? = null,
     /**
-     * 可选 3D LUT 的 assets 路径（如 `cloud_luts/cloud_lut_01.bin`）。非空时
-     * [com.fujikon.app.render.ImageRenderer] 通过
-     * [com.fujikon.app.render.CubeLutProvider] 加载对应 LUT，用亮度锚定的相对
-     * 变换叠加官方色彩风格。仅云创 LUT 方案使用，其余预置为 null，行为不变。
-     */
-    val cubeLutAsset: String? = null,
-    /**
      * 软删除标记。删除预设时不再立即抹掉数据与二进制文件，而是移入「已删除」
      * 列表，用户可随时恢复；[deletedAt] 让已删除列表按删除时间倒序展示。
      * 只有真正「彻底删除」才会移除索引与文件。旧版本索引没有这两个键，
@@ -171,8 +164,6 @@ data class Preset(
         if (lumaToneLut != null && lumaToneLut.size >= 256) {
             put("lumaToneLut", JSONArray().apply { lumaToneLut.forEach { put(it) } })
         }
-        // 3D LUT assets 路径：旧版本忽略该键，仍能正常读取其余字段。
-        if (!cubeLutAsset.isNullOrBlank()) put("cubeLutAsset", cubeLutAsset)
         // 软删除：仅在已删除时写入，未删除的预置保持与旧版一致的 JSON 形状。
         if (deleted) {
             put("deleted", true)
@@ -309,7 +300,6 @@ data class Preset(
                 if (array.length() >= 256) IntArray(256) { array.optInt(it).coerceIn(0, 255) }
                 else null
             },
-            cubeLutAsset = json.optString("cubeLutAsset", "").takeIf { it.isNotBlank() },
             deleted = json.optBoolean("deleted", false),
             deletedAt = json.optLong("deletedAt", 0L)
         )

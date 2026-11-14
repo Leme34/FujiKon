@@ -119,8 +119,9 @@ class PresetRepository(private val context: Context) {
      * Matching by name AND by content hash also catches entries the user
      * renamed. Only entries seeded by the app (`isSample`) are removed, so a
      * preset the user imported under the same name (or with identical bytes) is
-     * never touched. Idempotent: the index is written back only when rows were
-     * actually removed.
+     * never touched. 1.6.60 起一并退役已移除的云创 3D LUT 方案（`cloudlut:*`），
+     * 避免覆盖安装后旧索引里的坏滤镜残留。Idempotent: the index is written back
+     * only when rows were actually removed.
      */
     private fun dropRetiredSamplesLocked(list: List<Preset>): List<Preset> {
         val retiredNames = setOf("NC 400 MATCH")
@@ -129,7 +130,13 @@ class PresetRepository(private val context: Context) {
             "925f3ee0a142e3642df7c67e911e0d99169b11322af3c61801c9bf16db7efb16"
         )
         val retiredIds = list.filter {
-            it.isSample && (it.name in retiredNames || it.contentHash in retiredHashes)
+            it.isSample && (
+                it.name in retiredNames ||
+                    it.contentHash in retiredHashes ||
+                    // 1.6.60：9 个云创 3D LUT 方案已整体移除（N-Log 技术转换 LUT，
+                    // 套到 sRGB 照片会严重崩坏），旧索引里的 cloudlut:* 一并退役。
+                    it.contentHash.startsWith("cloudlut:")
+                )
         }.mapTo(mutableSetOf()) { it.id }
         if (retiredIds.isEmpty()) return list
         list.filter { it.id in retiredIds }.forEach { preset ->
@@ -584,8 +591,8 @@ class PresetRepository(private val context: Context) {
     }
 
     /**
-     * 全部内置预置：资料库附件逐一落地的 99 个官方命名 NP3 + 2 个独立 NP3 +
-     * 9 个 3D LUT，加上原有内置（社区近似 / 通透胶片 / 7 个 nikonpc 官方等）。
+     * 全部内置预置：资料库附件逐一落地的 99 个官方命名 NP3 + 2 个独立 NP3，
+     * 加上原有内置（社区近似 / 通透胶片 / 7 个 nikonpc 官方等）。
      *
      * 1.6.47 起官方方案优先：旧内置在线预置「Vitality Film by Peng Mango」与新
      * 的 `nic:<recipeId>` 指向同一官方滤镜，这里按 contentHash 排除重复项，让

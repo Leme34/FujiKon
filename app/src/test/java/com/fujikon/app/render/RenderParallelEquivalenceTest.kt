@@ -26,13 +26,13 @@ import org.robolectric.annotation.Config
  * 不允许改变「算出来的值」。
  *
  * 覆盖所有被并行化的 pass：主色彩、denoise 双边、detail 锐化、pointColor、
- * local 分区、grain、vignette、blend 强度、以及云创 3D LUT 分支。
+ * local 分区、grain、vignette、blend 强度。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class RenderParallelEquivalenceTest {
 
-    /** 确定性伪随机内容位图：涵盖各色相/亮度，触发 pointColor / cubeLut 各分支。 */
+    /** 确定性伪随机内容位图：涵盖各色相/亮度，触发各色彩分支。 */
     private fun contentBitmap(w: Int, h: Int): Bitmap {
         val px = IntArray(w * h)
         var seed = 987654321L
@@ -107,27 +107,6 @@ class RenderParallelEquivalenceTest {
             "并行渲染必须与串行逐像素一致（画质不变）",
             pixels(a), pixels(b)
         )
-    }
-
-    /** 云创 3D LUT 分支（cubeLut 每像素三线性插值）同样逐像素一致。 */
-    @Test
-    fun parallelAndSerialOutputsMatchForCubeLutPreset() = runBlocking {
-        val size = 17
-        val data = FloatArray(size * size * size * 3) { (it % 97) / 97f }
-        CubeLutProvider.register("equiv", CubeLut(size, data))
-        val preset = Preset.none().copy(
-            id = "lut", name = "lut", format = "LUT3D",
-            cubeLutAsset = "equiv", sharpening = 2f,
-            adjustments = EditAdjustments(denoise = 30f, grain = 25f, vignette = -30f, presetStrength = 80f)
-        )
-        val w = 100
-        val h = 160
-
-        val serial = ImageRenderer().apply { parallelRowsEnabled = false }
-        val parallel = ImageRenderer().apply { parallelRowsEnabled = true }
-        val a = serial.render(contentBitmap(w, h), preset, false)
-        val b = parallel.render(contentBitmap(w, h), preset, false)
-        assertArrayEquals("3D LUT 分支并行/串行必须逐像素一致", pixels(a), pixels(b))
     }
 
     /** 纯色彩（无质量算子）也保持一致，守护最常用的套预设路径。 */

@@ -2,14 +2,7 @@ package com.fujikon.app.nic
 
 import android.app.Application
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Color
 import androidx.test.core.app.ApplicationProvider
-import com.fujikon.app.data.Preset
-import com.fujikon.app.render.CubeLut
-import com.fujikon.app.render.CubeLutProvider
-import com.fujikon.app.render.ImageRenderer
-import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -24,8 +17,7 @@ import org.robolectric.annotation.Config
 
 /**
  * 「云创色彩预设.zip」逐一落地的回归测试：107 个真实 NP3 零拟合解析、
- * 9 个 3D LUT 可解码、contentHash 幂等、JSON 往返不丢 3D LUT 路径，
- * 以及渲染链路确实通过 CubeLutProvider 套用了官方 LUT。
+ * contentHash 幂等、官方说明与别名、以及编译官方 look 与曲线一致性。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -37,23 +29,19 @@ class OfficialCloudPresetsTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         OfficialCloudPresets.clearCache()
-        CubeLutProvider.clearCache()
     }
 
     @After
     fun tearDown() {
         OfficialCloudPresets.clearCache()
-        CubeLutProvider.clearCache()
-        CubeLutProvider.install { _: String -> null }
     }
 
     @Test
     fun allOfficialPresetsAreParsedZeroFitting() {
         val all = OfficialCloudPresets.all(context)
-        // 1.6.47：99 个官方命名 NP3（nic:<recipeId>）+ 2 个独立 NP3 + 9 个 3D LUT。
-        assertEquals(110, all.size)
+        // 1.6.60：移除 9 个 3D LUT 方案后，仅余 101 个官方 NP3。
+        assertEquals(101, all.size)
         assertEquals(101, all.count { it.sourceName == CloudRecipeCatalog.SOURCE_NAME })
-        assertEquals(9, all.count { it.sourceName == CloudLutCatalog.SOURCE_NAME })
         assertEquals(99, all.count { it.contentHash.startsWith("nic:") })
         assertEquals(2, all.count { it.contentHash.startsWith("cloudrecipe:") })
         assertEquals("contentHash 必须唯一", all.size, all.map { it.contentHash }.toSet().size)
@@ -61,8 +49,7 @@ class OfficialCloudPresetsTest {
         assertTrue(
             all.all {
                 it.contentHash.startsWith("nic:") ||
-                    it.contentHash.startsWith("cloudrecipe:") ||
-                    it.contentHash.startsWith("cloudlut:")
+                    it.contentHash.startsWith("cloudrecipe:")
             }
         )
     }
@@ -167,71 +154,4 @@ class OfficialCloudPresetsTest {
         assertEquals(256, warm.curve!!.size)
     }
 
-    @Test
-    fun lutAssetsDecodeTo33CubeAndLoadThroughProvider() {
-        val luts = OfficialCloudPresets.all(context)
-            .filter { !it.cubeLutAsset.isNullOrBlank() }
-        assertEquals(9, luts.size)
-        luts.forEach { preset ->
-            val bytes = context.assets.open(preset.cubeLutAsset!!).use { it.readBytes() }
-            val lut = CubeLut.decode(bytes)
-            assertNotNull("${preset.name} 的 FKL1 应能解码", lut)
-            assertEquals(33, lut!!.size)
-            assertEquals(33 * 33 * 33 * 3, lut.data.size)
-        }
-        CubeLutProvider.install { asset ->
-            runCatching { context.assets.open(asset).use { it.readBytes() } }.getOrNull()
-        }
-        val loaded = CubeLutProvider.get(luts.first().cubeLutAsset!!)
-        assertNotNull("渲染器应能通过 asset 路径加载 3D LUT", loaded)
-        assertEquals(33, loaded!!.size)
-    }
-
-    @Test
-    fun cubeLutAssetSurvivesJsonRoundTrip() {
-        val p = OfficialCloudPresets.all(context).first { !it.cubeLutAsset.isNullOrBlank() }
-        val restored = Preset.fromJson(p.toJson())
-        assertEquals(p.cubeLutAsset, restored.cubeLutAsset)
-        assertNull(
-            "清空 3D LUT 路径后不应残留",
-            Preset.fromJson(p.copy(cubeLutAsset = null).toJson()).cubeLutAsset
-        )
-    }
-
-    @Test
-    fun rendererAppliesOfficialLutWithBrightnessAnchor() = runBlocking {
-        val preset = OfficialCloudPresets.all(context)
-            .first { !it.cubeLutAsset.isNullOrBlank() }
-        CubeLutProvider.install { asset ->
-            runCatching { context.assets.open(asset).use { it.readBytes() } }.getOrNull()
-        }
-
-        val source = Bitmap.createBitmap(2, 1, Bitmap.Config.ARGB_8888)
-        source.setPixel(0, 0, Color.rgb(128, 128, 128))
-        source.setPixel(1, 0, Color.rgb(200, 120, 60))
-        val output = ImageRenderer().render(source, preset, forExport = false)
-
-        val gray = output.getPixel(0, 0)
-        val colorPixel = output.getPixel(1, 0)
-        // 中性灰严格恒等：LUT 不得提亮 / 发灰 / 偏色。
-        assertEquals(128, (gray shr 16) and 0xFF)
-        assertEquals(128, (gray shr 8) and 0xFF)
-        assertEquals(128, gray and 0xFF)
-        // 彩色像素应被官方 LUT 改变（证明 3D LUT 分支确实生效）。
-        val changed = (colorPixel and 0xFFFFFF) != Color.rgb(200, 120, 60)
-        assertTrue("官方 LUT 应改变彩色像素", changed)
-        // 亮度被锚定，不能整体过曝。
-        val lin = 0.299f * 200 + 0.587f * 120 + 0.114f * 60
-        val r = (colorPixel shr 16) and 0xFF
-        val g = (colorPixel shr 8) and 0xFF
-        val b = colorPixel and 0xFF
-        val lout = 0.299f * r + 0.587f * g + 0.114f * b
-        assertTrue(
-            "渲染后亮度应被锚定（±12，含其它画质算子），实际 $lout vs $lin",
-            kotlin.math.abs(lout - lin) <= 12f
-        )
-
-        output.recycle()
-        source.recycle()
-    }
 }

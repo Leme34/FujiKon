@@ -61,12 +61,12 @@ class PresetSearchTest {
             note = "婚礼跟拍备用",
             sourceName = "尼康云创官方 · 真实 NP3",
             baseProfileName = "Flexible Color",
-            format = "LUT3D"
+            format = "NCP"
         )
         assertTrue(PresetSearch.matches(p, "婚礼跟拍"))
         assertTrue(PresetSearch.matches(p, "云创官方"))
         assertTrue(PresetSearch.matches(p, "flexible"))
-        assertTrue(PresetSearch.matches(p, "lut3d"))
+        assertTrue(PresetSearch.matches(p, "ncp"))
     }
 
     @Test
