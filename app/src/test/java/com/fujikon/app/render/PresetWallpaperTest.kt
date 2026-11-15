@@ -54,6 +54,23 @@ class PresetWallpaperTest {
     }
 
     @Test
+    fun wallpaperSourceIsDownscaledForThumbnailRendering() {
+        // 1.6.61：每个预设都要对共享源跑一遍完整渲染管线。若源按 960 最长边
+        // 解码，上百个预设在滑动时会把 CPU 占满而严重掉帧；源必须按缩略图
+        // 显示尺寸解码，且缓存键随尺寸变更升版，避免与旧结果混淆。
+        val context: Context = ApplicationProvider.getApplicationContext()
+        val source = PresetWallpaper.get(context)!!
+        assertTrue(
+            "共享源应按缩略图尺寸解码（≤360），而不是 960",
+            maxOf(source.width, source.height) <= 360
+        )
+        assertTrue(
+            "源尺寸变更后缓存键必须升版",
+            PresetWallpaper.SOURCE_KEY.endsWith("v2")
+        )
+    }
+
+    @Test
     fun everyPresetUsesTheFixedWallpaperAndIsCachedPerPreset() = runBlocking {
         val context: Context = ApplicationProvider.getApplicationContext()
         val repository = PresetRepository(context)

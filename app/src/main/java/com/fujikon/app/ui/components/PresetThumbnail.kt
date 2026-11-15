@@ -24,6 +24,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
+/** 卡片进入屏幕后延迟启动渲染，让快速滑过的卡片在离屏取消时不产生渲染任务。 */
+private const val SCROLL_SETTLE_DELAY_MS = 64L
+
 /**
  * Shows a preset applied to the current photo (or the built-in sample scene).
  * Falls back to [placeholder] until the off-main-thread render is ready.
@@ -46,28 +49,34 @@ fun PresetThumbnail(
     val signature = remember(preset) { store.visualSignature(preset) }
     val sourceKey = sourceKeyOverride
         ?: if (wallpaper) PresetWallpaper.SOURCE_KEY else photo?.let { "${it.id}:${it.uri}" } ?: "sample"
+    // 1.6.61：主线程缓存查询复用上面已算好的 signature，不再重复序列化预设。
     var bitmap by remember(signature, sourceKey, targetSize, sourceBitmap, wallpaper) {
         mutableStateOf(
             when {
-                wallpaper -> store.cachedFromWallpaper(preset, targetSize)
-                sourceBitmap != null -> store.cachedFromSource(sourceKey, preset, targetSize)
-                else -> store.cached(photo, preset, targetSize)
+                wallpaper -> store.cachedFromWallpaperBySignature(signature, targetSize)
+                sourceBitmap != null ->
+                    store.cachedFromSourceBySignature(sourceKey, signature, targetSize)
+                else -> store.cachedBySignature(photo, signature, targetSize)
             }
         )
     }
 
     LaunchedEffect(signature, sourceKey, targetSize, sourceBitmap, wallpaper) {
         if (bitmap != null) return@LaunchedEffect
+        // 1.6.61：快速滑动时先让出几帧。卡片若在这段时间内滑出屏幕，
+        // LaunchedEffect 会被取消，根本不会启动一次昂贵的渲染；否则上百个
+        // 渲染任务会同时排队、占满 CPU 并拖慢主线程，正是首页掉帧的主因。
+        delay(SCROLL_SETTLE_DELAY_MS)
         // A render can be cancelled while the sheet is scrolling, or fail once
-        // while the photo is still being decoded. Retry a few times before
-        // settling on the curve placeholder.
-        repeat(3) { attempt ->
+        // while the photo is still being decoded. Retry once before settling
+        // on the curve placeholder.
+        repeat(2) { attempt ->
             val rendered = withContext(Dispatchers.Default) {
                 when {
-                    wallpaper -> store.thumbnailFromWallpaper(preset, targetSize)
+                    wallpaper -> store.thumbnailFromWallpaper(preset, targetSize, signature)
                     sourceBitmap != null ->
-                        store.thumbnailFromSource(sourceKey, sourceBitmap, preset, targetSize)
-                    else -> store.thumbnail(photo, preset, targetSize)
+                        store.thumbnailFromSource(sourceKey, sourceBitmap, preset, targetSize, signature)
+                    else -> store.thumbnail(photo, preset, targetSize, signature)
                 }
             }
             // Reject black tiles: a failed off-screen render can produce an
@@ -76,7 +85,7 @@ fun PresetThumbnail(
                 bitmap = rendered
                 return@LaunchedEffect
             }
-            delay(140L * (attempt + 1))
+            delay(120L * (attempt + 1))
         }
     }
 

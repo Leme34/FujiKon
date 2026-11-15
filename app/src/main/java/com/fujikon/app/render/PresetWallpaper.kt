@@ -6,25 +6,29 @@ import android.graphics.BitmapFactory
 import kotlin.math.max
 
 /**
- * 首页「我的预设」列表的固定缩略图源：一张从互联网平台（Unsplash）抓取的
- * 4K（3840×2560）高清风景照壁纸，随 APK 打包在 assets 中，完全离线可用。
+ * 首页「我的预设」列表的固定缩略图源：一张随 APK 打包在 assets 中的
+ * 4K（3840×2560）高清风景照壁纸，完全离线可用。
  *
  * 1.6.53 起主列表的每个预设缩略图都套用在这张**同一张**风景照上，让不同
  * 预设之间可以直接横向对比，而不再随用户最近选的照片或内置合成样张变化。
  *
- * 源图是 4K，但缩略图只需很小尺寸：这里按最长边 [SOURCE_DIMENSION] 下采样
- * 解码并单例缓存，**只解码一次、所有预设共享一份 source**（约 3MB），避免
- * 每张卡片都解一张 4K 图造成内存与耗时爆炸。
+ * 1.6.61 滑动性能修复：卡片预览实际只有约 150dp 高，旧实现却把共享源解码到
+ * 960 最长边，于是**每个预设**都要对 960×640 跑一遍完整多-pass 渲染管线，
+ * 再缩到 480 —— 上百个预设在滑动时排队渲染、把 CPU 占满，造成严重掉帧。
+ * 现在直接把共享源下采样到缩略图目标尺寸 [SOURCE_DIMENSION]：渲染像素量
+ * 从约 61 万降到约 8.6 万（约 7 倍），且仍然只解码一次、所有预设共享同一
+ * 份 source；最终缩略图尺寸不变，观感一致。
  */
 object PresetWallpaper {
 
     const val ASSET_NAME = "preset_wallpaper_4k.jpg"
 
-    /** 缓存键前缀：所有预设共用同一张壁纸，靠 visualSignature 区分效果。 */
-    const val SOURCE_KEY = "wallpaper4k:v1"
+    /** 缓存键前缀：所有预设共用同一张壁纸，靠 visualSignature 区分效果。
+     *  v2：共享源尺寸变更，避免与旧尺寸渲染出的缓存条目混淆。 */
+    const val SOURCE_KEY = "wallpaper4k:v2"
 
-    /** 壁纸源解码到的最长边：远高于任何缩略图目标尺寸，画质足够、内存可控。 */
-    private const val SOURCE_DIMENSION = 960
+    /** 壁纸源解码到的最长边：与首页缩略图目标尺寸对齐，画质足够、内存可控。 */
+    private const val SOURCE_DIMENSION = 360
 
     @Volatile
     private var cached: Bitmap? = null

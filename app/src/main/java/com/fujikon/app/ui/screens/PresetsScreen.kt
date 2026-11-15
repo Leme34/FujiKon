@@ -342,7 +342,11 @@ fun PresetsScreen(
                             )
                         }
                     }
-                    items(visiblePresets, key = { it.id }) { preset ->
+                    items(
+                        visiblePresets,
+                        key = { it.id },
+                        contentType = { "preset_card" }
+                    ) { preset ->
                         val isDeletedView = filter == PresetListFilter.DELETED
                         val restoreAction: (() -> Unit)? = if (isDeletedView) {
                             {

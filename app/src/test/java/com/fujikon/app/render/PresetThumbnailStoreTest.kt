@@ -140,6 +140,50 @@ class PresetThumbnailStoreTest {
     }
 
     @Test
+    fun signatureReuseHitsTheSameCacheEntry() = runBlocking {
+        // 1.6.61：Compose 卡片在主线程复用已算好的 visualSignature 查询缓存，
+        // 必须与默认路径命中同一条目，不能出现两套键导致重复渲染。
+        repository.load()
+        val preset = repository.presets.value.first()
+        val store = PresetThumbnailStore(context, ImageRenderer())
+        val sig = store.visualSignature(preset)
+
+        val rendered = store.thumbnailFromWallpaper(preset, 96)
+        assertNotNull(rendered)
+        assertSame(rendered, store.cachedFromWallpaper(preset, 96))
+        assertSame(rendered, store.cachedFromWallpaperBySignature(sig, 96))
+        assertSame(rendered, store.thumbnailFromWallpaper(preset, 96, sig))
+    }
+
+    @Test
+    fun cacheHoldsEveryBuiltInPresetWithoutEviction() = runBlocking {
+        // 1.6.61 核心回归：旧缓存按「条目数」只留 48 张，而内置预设超过
+        // 100 个，滑动时不断淘汰 → 滑回就重渲染，正是首页卡顿的主因之一。
+        // 现在按字节预算缓存，必须能一次容纳全部内置预设。
+        repository.load()
+        val presets = repository.presets.value
+        assertTrue("内置预设数应超过旧的 48 条上限", presets.size > 48)
+        val store = PresetThumbnailStore(context, ImageRenderer())
+
+        // 用最小输出尺寸降低测试堆占用；缓存按字节计量，小图同样能验证
+        // 「条目数上限已移除」这一回归点（旧的 48 条上限会淘汰到第 49 张）。
+        val first = store.thumbnailFromWallpaper(presets.first(), 64)
+        assertNotNull(first)
+        presets.drop(1).forEach { preset ->
+            assertNotNull("${preset.name} 应产出缩略图", store.thumbnailFromWallpaper(preset, 64))
+        }
+
+        assertSame(
+            "全部预设渲染完后最早那张仍须命中缓存，否则滑回顶部会重新渲染",
+            first,
+            store.cachedFromWallpaper(presets.first(), 64)
+        )
+        val lastCached = store.cachedFromWallpaper(presets.last(), 64)
+        assertNotNull("最后一张也应留在缓存中", lastCached)
+        assertSame(lastCached, store.thumbnailFromWallpaper(presets.last(), 64))
+    }
+
+    @Test
     fun differentPhotoKeysNeverShareACachedPreview() = runBlocking {
         repository.load()
         val preset = repository.presets.value.first()

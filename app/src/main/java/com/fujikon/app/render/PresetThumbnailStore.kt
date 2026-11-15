@@ -34,11 +34,20 @@ class PresetThumbnailStore(
 
     private val appContext = context.applicationContext
 
-    private val cache = object : LruCache<String, Bitmap>(48) {
-        override fun sizeOf(key: String, value: Bitmap): Int = 1
+    // 1.6.61：旧实现按「条目数」只缓存 48 张，而内置预设超过 100 个，
+    // 滑动时不断淘汰 → 滑回就要重新跑一遍渲染，是卡顿的主要来源之一。
+    // 改为按字节计量的 40MB 预算：360 尺寸缩略图约 340KB/张，可容纳 120+
+    // 张，覆盖全部预设；同时保留明确的内存上限，不会无限增长。
+    private val cache = object : LruCache<String, Bitmap>(CACHE_MAX_KB) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            (value.byteCount / 1024).coerceAtLeast(1)
     }
 
-    private val renderSlots = Semaphore(2)
+    // 1.6.61：同一时刻只渲染 1 张缩略图。ImageRenderer 内部还会按行开
+    // 最多 8 个协程，若同时渲染 2 张就会占满 Dispatchers.Default、抢走
+    // 主线程的时间片导致滑动掉帧。配合「小尺寸源 + 缓存全覆盖 + 延迟
+    // 启动」，单并发既不拖慢出图，也不会与列表滚动争抢 CPU。
+    private val renderSlots = Semaphore(1)
     private val sourceMutex = Mutex()
     private val decodeMutex = Mutex()
     private var sourceKey: String? = null
@@ -47,26 +56,25 @@ class PresetThumbnailStore(
     suspend fun thumbnail(
         photo: PhotoItem?,
         preset: Preset,
-        targetSize: Int = 280
+        targetSize: Int = 280,
+        signature: String? = null
     ): Bitmap? {
         val size = targetSize.coerceIn(64, 512)
-        val key = cacheKey(photo, preset, size)
-        cache.get(key)?.let { cached ->
-            if (cached.hasVisiblePixels()) return cached
-            cache.remove(key)
-        }
+        val sig = signature ?: visualSignature(preset)
+        val key = "${sourceKey(photo)}|$sig|$size"
+        cachedByKey(key)?.let { return it }
 
         val source = sourceFor(photo, size)
         // A failed decode must NOT be cached under the real photo's key.
         // Re-picking photos often returns URIs that are not readable for a
         // moment; caching the sample fallback under that key would then
         // permanently shadow the real photo once the URI becomes readable.
-        val effectiveKey = if (source != null) key else cacheKey(null, preset, size)
+        val effectiveKey = if (source != null) key else "${sourceKey(null)}|$sig|$size"
         val base = source ?: withContext(Dispatchers.Default) {
             // Never leave the picker with an empty tile: fall back to the
             // built-in sample scene when the gallery photo cannot be decoded.
             val side = max(480, size * 2)
-            SamplePhoto.create(side, side)
+            SamplePhoto.create(side, side * 2 / 3)
         }
         return renderInto(base, preset, size, effectiveKey)
     }
@@ -79,45 +87,58 @@ class PresetThumbnailStore(
         sourceKey: String,
         source: Bitmap,
         preset: Preset,
-        targetSize: Int = 280
+        targetSize: Int = 280,
+        signature: String? = null
     ): Bitmap? {
         val size = targetSize.coerceIn(64, 512)
-        val key = "$sourceKey|${visualSignature(preset)}|$size"
-        cache.get(key)?.let { cached ->
-            if (cached.hasVisiblePixels()) return cached
-            cache.remove(key)
-        }
+        val sig = signature ?: visualSignature(preset)
+        val key = "$sourceKey|$sig|$size"
+        cachedByKey(key)?.let { return it }
         return renderInto(source, preset, size, key)
     }
 
     /** Cache hit for [thumbnailFromSource], without rendering. */
-    fun cachedFromSource(sourceKey: String, preset: Preset, targetSize: Int = 280): Bitmap? {
-        val key = "$sourceKey|${visualSignature(preset)}|${targetSize.coerceIn(64, 512)}"
-        val cached = cache.get(key) ?: return null
-        if (cached.hasVisiblePixels()) return cached
-        cache.remove(key)
-        return null
-    }
+    fun cachedFromSource(sourceKey: String, preset: Preset, targetSize: Int = 280): Bitmap? =
+        cachedFromSourceBySignature(sourceKey, visualSignature(preset), targetSize)
 
     /**
      * 1.6.53：首页「我的预设」列表固定使用 4K 风景壁纸套用预设后的缩略图。
      * 源永远是 [PresetWallpaper.get] 返回的同一张壁纸，缓存键按预设视觉签名
      * 区分，保证不同预设得到各自的效果图、同一预设命中缓存不重复渲染。
      */
-    suspend fun thumbnailFromWallpaper(preset: Preset, targetSize: Int = 280): Bitmap? {
+    suspend fun thumbnailFromWallpaper(
+        preset: Preset,
+        targetSize: Int = 280,
+        signature: String? = null
+    ): Bitmap? {
         val size = targetSize.coerceIn(64, 512)
-        val key = "${PresetWallpaper.SOURCE_KEY}|${visualSignature(preset)}|$size"
-        cache.get(key)?.let { cached ->
-            if (cached.hasVisiblePixels()) return cached
-            cache.remove(key)
-        }
+        val sig = signature ?: visualSignature(preset)
+        val key = "${PresetWallpaper.SOURCE_KEY}|$sig|$size"
+        cachedByKey(key)?.let { return it }
         val source = PresetWallpaper.get(appContext) ?: return null
         return renderInto(source, preset, size, key)
     }
 
     /** Cache hit for [thumbnailFromWallpaper], without rendering. */
-    fun cachedFromWallpaper(preset: Preset, targetSize: Int = 280): Bitmap? {
-        val key = "${PresetWallpaper.SOURCE_KEY}|${visualSignature(preset)}|${targetSize.coerceIn(64, 512)}"
+    fun cachedFromWallpaper(preset: Preset, targetSize: Int = 280): Bitmap? =
+        cachedFromWallpaperBySignature(visualSignature(preset), targetSize)
+
+    /**
+     * 1.6.61：以下三个 BySignature 变体供 Compose 卡片在**主线程**查询缓存时
+     * 复用已经算好的 visualSignature。旧路径每次组合都要重新把 EditAdjustments
+     * 序列化成 JSONObject（含曲线 / HSL / 局部图层等嵌套结构），上百张卡片
+     * 累积起来会明显拖慢滑动帧率。
+     */
+    fun cachedBySignature(photo: PhotoItem?, signature: String, targetSize: Int): Bitmap? =
+        cachedByKey("${sourceKey(photo)}|$signature|${targetSize.coerceIn(64, 512)}")
+
+    fun cachedFromSourceBySignature(sourceKey: String, signature: String, targetSize: Int): Bitmap? =
+        cachedByKey("$sourceKey|$signature|${targetSize.coerceIn(64, 512)}")
+
+    fun cachedFromWallpaperBySignature(signature: String, targetSize: Int): Bitmap? =
+        cachedByKey("${PresetWallpaper.SOURCE_KEY}|$signature|${targetSize.coerceIn(64, 512)}")
+
+    private fun cachedByKey(key: String): Bitmap? {
         val cached = cache.get(key) ?: return null
         if (cached.hasVisiblePixels()) return cached
         cache.remove(key)
@@ -156,13 +177,8 @@ class PresetThumbnailStore(
     }
 
     /** Cache hit without rendering, used to avoid flashing a placeholder. */
-    fun cached(photo: PhotoItem?, preset: Preset, targetSize: Int = 280): Bitmap? {
-        val key = cacheKey(photo, preset, targetSize.coerceIn(64, 512))
-        val cached = cache.get(key) ?: return null
-        if (cached.hasVisiblePixels()) return cached
-        cache.remove(key)
-        return null
-    }
+    fun cached(photo: PhotoItem?, preset: Preset, targetSize: Int = 280): Bitmap? =
+        cachedByKey(cacheKey(photo, preset, targetSize.coerceIn(64, 512)))
 
     private fun cacheKey(photo: PhotoItem?, preset: Preset, size: Int): String =
         "${sourceKey(photo)}|${visualSignature(preset)}|$size"
@@ -232,7 +248,11 @@ class PresetThumbnailStore(
 
             val decoded = withContext(Dispatchers.IO) {
                 if (photo == null) {
-                    SamplePhoto.create()
+                    // 1.6.61：内置样张也按缩略图目标尺寸生成。旧实现固定
+                    // 900×600，每个预设都要对 54 万像素跑完整渲染再缩到 96，
+                    // 既拖慢列表也推高内存峰值（多份全帧快照 + 输出位图）。
+                    val side = max(480, targetSize * 2)
+                    SamplePhoto.create(side, side * 2 / 3)
                 } else {
                     BitmapLoader.decodePreview(
                         appContext,
@@ -255,6 +275,11 @@ class PresetThumbnailStore(
                 decoded
             }
         }
+    }
+
+    private companion object {
+        /** 缩略图缓存预算（KB）。 */
+        const val CACHE_MAX_KB = 40 * 1024
     }
 }
 

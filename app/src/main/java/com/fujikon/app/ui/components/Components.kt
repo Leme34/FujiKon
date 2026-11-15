@@ -168,7 +168,7 @@ fun PresetCard(
                         preset = preset,
                         store = thumbnailStore,
                         modifier = Modifier.fillMaxSize(),
-                        targetSize = 480,
+                        targetSize = 360,
                         wallpaper = wallpaper,
                         placeholder = curveChart
                     )
