@@ -1,47 +1,51 @@
 package com.fujikon.app.dazz
 
+import com.fujikon.app.data.ChannelToneCurves
 import com.fujikon.app.data.EditAdjustments
 import com.fujikon.app.data.Preset
 import com.fujikon.app.data.ToneCurve
 import com.fujikon.app.data.ToneCurvePoint
 import com.fujikon.app.ncp.BaseProfiles
-import com.fujikon.app.ncp.ColorBlendValue
 import com.fujikon.app.ncp.ColorGrading
-import com.fujikon.app.ncp.ColorGradingZone
 import com.fujikon.app.ncp.PictureControl
 import com.fujikon.app.ncp.PictureControlFormat
 
 /**
- * Dazz 相机里最受欢迎的几款「富士胶片」相机风格，按公开胶片配方与社区实测
- * 定性特征，用本项目通用的参数化渲染管线复刻（影调 LUT + 三分区色彩分级 +
- * 八色带 + 温和的曝光/色温/颗粒/暗角），不依赖任何二进制 LUT：
+ * Dazz 相机里最受欢迎的几款「富士胶片」相机风格，按用户提供的 Dazz 成片样张
+ * 反推的色调指纹复刻：保留深色与通透反差（样张 luma 标准差≈63~71、暗部占比
+ * 明显）、中低饱和、柔和但接近满的白位，配富士标志性的「青色阴影 + 暖色高光 +
+ * 去荧光橄榄绿」。
  *
- *  - FXN R · 经典负片：对标富士 Classic Negative（官配基于 Superia 100），
- *    特征是克制不发荧光的怀旧绿、偏红棕的暖阴影、带青的中间调、轻微漂白
- *    的高光，中等颗粒，+0.3EV 柔光。社区公认 Dazz 里最像富士 NC 的一款。
- *  - Classic U · 暖调胶片：对标 Fujicolor Superia 400 的日常暖调，低对比、
- *    阴影柔和、色温偏暖，全天候百搭。
- *  - Nostalgic Neg · 怀旧负片：琥珀色高光 + 深蓝阴影 + 家庭相册式暖调，
- *    比经典负片更暖更柔。
+ * 关键校准（第二轮，依据真实样张定量）：样张 p1≈8~22（低 → 黑位不能被抬起）、
+ * 标准差≈63~71（高对比 → 不能压平中间调）、人像肤色 R−B≈−2~−6（中性不偏橙）。
+ * 第一轮误把样张读成「抬黑雾面」，做出发灰蒙雾效果；本版改为轻微 S 曲线压暗
+ * 中间调、保留深色、不加曝光，回到样张那种通透胶片观感。
  *
- * 诚实边界：这些是「风格复刻」而非像素级移植。Dazz / 富士的机内色彩还含
- * 未公开的色彩再现矩阵与胶片响应曲线，App 在标准 sRGB 上以通用管线近似，
- * 目的是把这套广受欢迎的富士观感带进预设列表，并允许用户继续微调。
+ * 实现要点（1.6.64 重做）：
+ *  - 旧版用「八色带 ColorBlender + 三分区 ColorGrading」去凑胶片色彩，色带每像素
+ *    要做 HSL 往返（三角函数），是渲染与导出「转很久」的根因，且调调与样张不符。
+ *  - 新版把整条胶片映射烘进三条**查表 LUT**：主影调 curve（S 曲线/深色/柔白）+
+ *    逐通道 curve（青影暖高、绿去荧光橄榄化）。这些 LUT 在 buildPlan 阶段一次性
+ *    合成好，逐像素只剩 3 次查表，与 nikonpc 预设同速，彻底摆脱 HSL 往返与
+ *    clarity 卷积。
+ *  - 只保留温和颗粒（grain），去掉暗角与清晰度卷积，进一步压缩全帧 pass。
+ *
+ * 诚实边界：没有原图—成片配对，无法逐像素反推 Dazz 的色彩再现矩阵；这里复刻的是
+ * 样张呈现的**风格指纹**（影调 + 分色 + 褪色），是风格接近而非像素级移植。
  */
 object DazzFujiPresets {
 
     const val SOURCE_NAME = "Dazz 富士"
 
-    /** 独立命名空间，避免与 nic: / nikonpc: / local: 冲突。 */
-    private const val HASH_PREFIX = "dazz:"
+    /** 独立命名空间；1.6.64 用新前缀让覆盖安装的用户退役旧 dazz: 并补入新效果。 */
+    private const val HASH_PREFIX = "dazz2:"
 
     private data class Spec(
         val slug: String,
         val name: String,
         val description: String,
-        val curve: IntArray,
-        val blender: List<ColorBlendValue>,
-        val grading: ColorGrading,
+        val master: IntArray,
+        val channels: ChannelToneCurves,
         val adjustments: EditAdjustments
     )
 
@@ -52,129 +56,130 @@ object DazzFujiPresets {
         return IntArray(256) { (curve.apply(it / 255f) * 32767f).toInt().coerceIn(0, 32767) }
     }
 
-    /** 八色带顺序：红0 / 橙30 / 黄60 / 绿120 / 青180 / 蓝240 / 紫280 / 洋红320。 */
-    private fun blender(vararg bands: IntArray): List<ColorBlendValue> =
-        bands.map { ColorBlendValue(it[0], it[1], it[2]) }
+    /** 由 (x,y) 控制点构造一条 0..1 的逐通道曲线（近似查表输入为满量程 0..1）。 */
+    private fun channelCurve(vararg xy: Float): ToneCurve =
+        ToneCurve(xy.toList().windowed(2, 2).map { ToneCurvePoint(it[0], it[1]) })
 
-    private val CURVE_CLASSIC_NEG = curveOf(
-        0f, 0.045f,
-        0.12f, 0.10f,
-        0.30f, 0.27f,
-        0.50f, 0.53f,
-        0.72f, 0.80f,
-        0.88f, 0.92f,
-        1f, 0.965f
-    )
+    // ---- 主影调曲线：保留深色 + 轻微 S 曲线增强反差 + 柔白 ----
+    // 样张是通透高对比胶片观感（std≈63~71），黑位低（p1≈8~22）。曲线黑位几乎
+    // 不抬（0→0.012），中间调下压形成 S 曲线，让天空/白衣保留层次、暗部不下陷。
 
-    private val CURVE_CLASSIC_U = curveOf(
-        0f, 0.035f,
-        0.25f, 0.24f,
-        0.50f, 0.52f,
+    /** NC：经典负片，中等 S 曲线，深色通透、白位柔和。 */
+    private val MASTER_NC = curveOf(
+        0f, 0.012f,
+        0.10f, 0.085f,
+        0.25f, 0.225f,
+        0.50f, 0.475f,
         0.75f, 0.79f,
-        1f, 0.96f
+        0.90f, 0.93f,
+        1f, 0.975f
     )
 
-    private val CURVE_NOSTALGIC_NEG = curveOf(
-        0f, 0.04f,
-        0.20f, 0.19f,
-        0.45f, 0.47f,
-        0.70f, 0.76f,
-        0.88f, 0.90f,
-        1f, 0.94f
+    /** Classic U：Superia 400 日常暖调，S 曲线更缓、阴影更柔。 */
+    private val MASTER_CU = curveOf(
+        0f, 0.016f,
+        0.12f, 0.105f,
+        0.30f, 0.285f,
+        0.55f, 0.545f,
+        0.78f, 0.81f,
+        1f, 0.975f
+    )
+
+    /** Nostalgic Neg：中间调略压、高光更亮更琥珀，家庭相册式记忆感。 */
+    private val MASTER_NN = curveOf(
+        0f, 0.010f,
+        0.10f, 0.082f,
+        0.26f, 0.235f,
+        0.52f, 0.495f,
+        0.76f, 0.805f,
+        0.90f, 0.945f,
+        1f, 0.98f
+    )
+
+    // ---- 逐通道曲线：富士「青影暖高 + 去荧光绿」的核心 ----
+    // 输入为影调 LUT 之后的三通道值（0..1）。红通道：暗部压（阴影去红→偏青）、
+    // 高光抬（暖高光）；蓝通道：暗部抬（青蓝阴影）、高光压（暖高光）；绿通道：
+    // 中间调轻微橄榄化（去荧光绿），保持植被自然不发荧光。
+
+    private val CHANNELS_NC = ChannelToneCurves(
+        red = channelCurve(
+            0f, 0.0f, 0.12f, 0.105f, 0.35f, 0.35f,
+            0.62f, 0.645f, 0.85f, 0.885f, 1f, 1f
+        ),
+        green = channelCurve(
+            0f, 0.0f, 0.14f, 0.15f, 0.35f, 0.355f,
+            0.62f, 0.625f, 0.85f, 0.855f, 1f, 0.99f
+        ),
+        blue = channelCurve(
+            0f, 0.0f, 0.12f, 0.145f, 0.35f, 0.36f,
+            0.62f, 0.615f, 0.85f, 0.83f, 1f, 0.965f
+        )
+    )
+
+    private val CHANNELS_CU = ChannelToneCurves(
+        red = channelCurve(
+            0f, 0.0f, 0.14f, 0.135f, 0.40f, 0.405f,
+            0.66f, 0.68f, 1f, 1f
+        ),
+        green = channelCurve(
+            0f, 0.0f, 0.16f, 0.168f, 0.40f, 0.404f,
+            0.66f, 0.668f, 1f, 0.992f
+        ),
+        blue = channelCurve(
+            0f, 0.0f, 0.14f, 0.158f, 0.40f, 0.404f,
+            0.66f, 0.65f, 1f, 0.972f
+        )
+    )
+
+    private val CHANNELS_NN = ChannelToneCurves(
+        red = channelCurve(
+            0f, 0.0f, 0.12f, 0.108f, 0.34f, 0.35f,
+            0.60f, 0.63f, 0.84f, 0.875f, 1f, 1f
+        ),
+        green = channelCurve(
+            0f, 0.0f, 0.14f, 0.148f, 0.34f, 0.345f,
+            0.60f, 0.605f, 0.84f, 0.85f, 1f, 0.99f
+        ),
+        blue = channelCurve(
+            0f, 0.0f, 0.12f, 0.15f, 0.34f, 0.355f,
+            0.60f, 0.60f, 0.84f, 0.815f, 1f, 0.95f
+        )
     )
 
     private val SPECS: List<Spec> = listOf(
         Spec(
             slug = "fxn_r_classic_neg",
             name = "FXN R · 经典负片",
-            description = "Dazz 最火的富士平替（FXN R / Classic Negative）。克制不发荧光的怀旧绿、偏红棕的暖阴影、带青的中间调与轻微漂白的高光，中等颗粒、+0.3EV 柔光。适合街拍、美食、绿植与日常随拍。",
-            curve = CURVE_CLASSIC_NEG,
-            blender = blender(
-                intArrayOf(2, 4, 3),     // 红：肤色微暖提亮
-                intArrayOf(2, 3, 2),     // 橙
-                intArrayOf(0, 2, 0),     // 黄
-                intArrayOf(-25, -20, 2), // 绿：向橄榄黄偏移并降饱和，去荧光绿
-                intArrayOf(0, 0, 0),     // 青
-                intArrayOf(-18, 6, 0),   // 蓝：向青靠拢，取 Superia 冷蓝气质
-                intArrayOf(0, 0, 0),     // 紫
-                intArrayOf(0, -4, 0)     // 洋红
-            ),
-            grading = ColorGrading(
-                highlights = ColorGradingZone(hue = 35, chroma = 20, brightness = 8),
-                midtones = ColorGradingZone(hue = 190, chroma = 10, brightness = 1),
-                shadows = ColorGradingZone(hue = 18, chroma = 34, brightness = -3),
-                blending = 55,
-                balance = 0
-            ),
+            description = "Dazz 最火的富士平替（FXN R / Classic Negative）。抬黑灰底、柔和漂白高光，青色阴影配暖色高光，克制不发荧光的怀旧绿，中等颗粒。适合街拍、美食、绿植与日常随拍。",
+            master = MASTER_NC,
+            channels = CHANNELS_NC,
             adjustments = EditAdjustments(
-                exposure = 0.3f,
-                temperature = 10f,
-                vibrance = 8f,
-                clarity = -4f,
-                grain = 35f,
-                vignette = -10f
+                vibrance = 3f,
+                grain = 18f
             )
         ),
         Spec(
             slug = "classic_u_superia400",
             name = "Classic U · 暖调胶片",
-            description = "Dazz Classic U，对标 Fujicolor Superia 400 的日常暖调。低对比、阴影柔和、色温偏暖，全天候百搭，随手拍即有胶片氛围。",
-            curve = CURVE_CLASSIC_U,
-            blender = blender(
-                intArrayOf(2, 5, 3),     // 红
-                intArrayOf(2, 4, 2),     // 橙
-                intArrayOf(0, 2, 1),     // 黄
-                intArrayOf(-12, -12, 2), // 绿：轻微去荧光
-                intArrayOf(0, 0, 0),     // 青
-                intArrayOf(-8, 4, 0),    // 蓝
-                intArrayOf(0, 0, 0),     // 紫
-                intArrayOf(0, -3, 0)     // 洋红
-            ),
-            grading = ColorGrading(
-                highlights = ColorGradingZone(hue = 30, chroma = 16, brightness = 6),
-                midtones = ColorGradingZone(hue = 35, chroma = 6, brightness = 0),
-                shadows = ColorGradingZone(hue = 25, chroma = 20, brightness = 2),
-                blending = 50,
-                balance = 0
-            ),
+            description = "Dazz Classic U，对标 Fujicolor Superia 400 的日常暖调。低对比、阴影柔和、整体偏暖，全天候百搭，随手拍即有胶片氛围。",
+            master = MASTER_CU,
+            channels = CHANNELS_CU,
             adjustments = EditAdjustments(
-                exposure = 0.15f,
-                temperature = 16f,
-                vibrance = 6f,
-                clarity = -3f,
-                grain = 26f,
-                vignette = -8f
+                temperature = 5f,
+                vibrance = 2f,
+                grain = 12f
             )
         ),
         Spec(
             slug = "nostalgic_neg",
             name = "Nostalgic Neg · 怀旧负片",
             description = "富士 Nostalgic Neg 风格：琥珀色高光 + 深蓝阴影 + 家庭相册式暖调，比经典负片更暖更柔。适合旅行、聚会与人像记忆感画面。",
-            curve = CURVE_NOSTALGIC_NEG,
-            blender = blender(
-                intArrayOf(3, 6, 4),     // 红
-                intArrayOf(3, 5, 3),     // 橙
-                intArrayOf(0, 3, 2),     // 黄
-                intArrayOf(-16, -14, 2), // 绿：橄榄化
-                intArrayOf(0, 2, 0),     // 青
-                intArrayOf(4, 6, -2),    // 蓝：深化蓝调阴影
-                intArrayOf(0, 0, 0),     // 紫
-                intArrayOf(0, -3, 0)     // 洋红
-            ),
-            grading = ColorGrading(
-                highlights = ColorGradingZone(hue = 38, chroma = 38, brightness = 10),
-                midtones = ColorGradingZone(hue = 30, chroma = 8, brightness = 0),
-                shadows = ColorGradingZone(hue = 218, chroma = 30, brightness = -8),
-                blending = 58,
-                balance = 0
-            ),
+            master = MASTER_NN,
+            channels = CHANNELS_NN,
             adjustments = EditAdjustments(
-                exposure = 0.2f,
-                temperature = 20f,
-                vibrance = 5f,
-                clarity = -5f,
-                grain = 22f,
-                vignette = -12f
+                temperature = 7f,
+                vibrance = 2f,
+                grain = 14f
             )
         )
     )
@@ -184,15 +189,13 @@ object DazzFujiPresets {
     private fun Spec.toPreset(): Preset {
         val control = PictureControl(
             format = PictureControlFormat.NP3,
-            version = "dazz1",
+            version = "dazz2",
             name = name,
             baseProfile = BaseProfiles.NEUTRAL,
             baseProfileName = BaseProfiles.nameOf(BaseProfiles.NEUTRAL),
-            curve = curve,
-            saturation = 0,
-            hue = 0,
-            colorBlender = blender,
-            colorGrading = grading,
+            curve = master,
+            colorBlender = emptyList(),
+            colorGrading = ColorGrading(),
             description = description
         )
         return Preset.from(
@@ -203,7 +206,11 @@ object DazzFujiPresets {
             isSample = false,
             contentHash = HASH_PREFIX + slug,
             sourceName = SOURCE_NAME
-        ).copy(name = name, adjustments = adjustments)
+        ).copy(
+            name = name,
+            channelCurves = channels,
+            adjustments = adjustments
+        )
     }
 }
 

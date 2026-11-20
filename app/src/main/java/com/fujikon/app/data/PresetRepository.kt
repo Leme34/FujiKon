@@ -136,6 +136,10 @@ class PresetRepository(private val context: Context) {
                     // 1.6.60：9 个云创 3D LUT 方案已整体移除（N-Log 技术转换 LUT，
                     // 套到 sRGB 照片会严重崩坏），旧索引里的 cloudlut:* 一并退役。
                     it.contentHash.startsWith("cloudlut:")
+                        // 1.6.64：Dazz 富士预置重做为「影调 LUT + 逐通道曲线」，
+                        // 旧的八色带/三分区版本调调与样张不符且渲染慢，整体退役，
+                        // 由新的 dazz2:* 版本补入。
+                        || it.contentHash.startsWith("dazz:")
                 )
         }.mapTo(mutableSetOf()) { it.id }
         if (retiredIds.isEmpty()) return list

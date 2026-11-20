@@ -10,15 +10,15 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 1.6.63 性能回归防线：Dazz 富士 look 曾因八色带 blender + 三分区 grading +
- * grain/vignette 全部逐像素重算（含 HSL 往返、smoothstep、hypot/sqrt），
- * 在预览分辨率下耗时约为纯曲线预设的 4~5 倍，滑动套用时"一直加载中"。
+ * 性能回归防线：Dazz 富士 look 曾因八色带 blender（逐像素 HSL 往返）+ 三分区
+ * grading + clarity 卷积在预览分辨率下耗时约为纯曲线预设的 4~5 倍，套用/导出
+ * "一直加载中"。1.6.63 先把这些量查表化，1.6.64 进一步把整条胶片映射烘进
+ * 主影调 LUT + 逐通道 LUT（buildPlan 阶段合成，热循环仅 3 次查表），彻底移除
+ * blender/grading/clarity 重路径，速度与 nikonpc 纯曲线预设相当。
  *
- * 现把这些只依赖色相/亮度/坐标的量预计算成查找表。本测试用一个非常宽松的
- * 绝对上界拦截"退化回逐像素重算导致的数量级暴增"，不追求精确计时（JVM 的
- * wall-clock 会随机器负载波动，故阈值放大到基线 35ms 的 ~6 倍），只保证
- * 不会退回 200ms+ 的灾难区间。画质等价性由 [DazzFujiPresetsTest] 的渲染
- * 健全性用例守护。
+ * 本测试用一个非常宽松的绝对上界拦截"退化回逐像素重算导致的数量级暴增"，
+ * 不追求精确计时（JVM wall-clock 随机器负载波动，阈值放大到约 200ms），只保证
+ * 不会退回灾难区间。画质/风格健全性由 [DazzFujiPresetsTest] 守护。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])

@@ -50,22 +50,27 @@ class DazzFujiPresetsTest {
             for (i in 1 until t.size) {
                 assertTrue("${p.name} 曲线必须单调不减 @$i", t[i] >= t[i - 1])
             }
-            // 抬黑 + 高光滚降：端点不应被顶死，保留胶片式柔和层次
-            assertTrue("${p.name} 黑位应轻微抬起", t[0] in 500..2000)
-            assertTrue("${p.name} 高光应柔和滚降", t[255] in 30000..32000)
+            // 样张是通透高对比观感（p1=8~22 深色保留），黑位几乎不抬：
+            // 曲线输入 0 的输出应接近 0（≤0.03 → 983），保留深色不发灰。
+            assertTrue("${p.name} 黑位应保持深色不被抬起", t[0] in 0..1000)
+            assertTrue("${p.name} 高光应柔和滚降", t[255] in 31000..32767)
         }
     }
 
     @Test
-    fun colourWorkIsPresentAndAdjustmentsAreGentle() {
+    fun colourWorkIsBakedIntoChannelCurvesAndHeavyPathsRemoved() {
         presets.forEach { p ->
-            assertEquals("八色带必须齐全", 8, p.colorBlender.size)
-            assertTrue("必须启用三分区色彩分级", p.hasColorGrading)
+            // 性能回归：绝不能回退到逐像素 HSL 往返的八色带/三分区重路径。
+            assertTrue("${p.name} 必须移除八色带 blender", !p.hasColorBlender)
+            assertTrue("${p.name} 必须移除三分区 grading", !p.hasColorGrading)
+            // 胶片分色烘进逐通道 LUT（buildPlan 阶段合成，热循环零额外开销）。
+            assertTrue("${p.name} 必须有逐通道曲线", !p.channelCurves.isNeutral)
             val a = p.adjustments
             assertTrue("曝光应温和", a.exposure in 0f..0.5f)
             assertTrue("色温应温和", a.temperature in 0f..25f)
-            assertTrue("颗粒应温和", a.grain in 0f..45f)
-            assertTrue("暗角应为轻度压暗", a.vignette in -15f..0f)
+            assertTrue("颗粒应温和", a.grain in 0f..30f)
+            assertEquals("不应保留暗角 pass", 0f, a.vignette)
+            assertEquals("不应保留清晰度卷积", 0f, a.clarity)
             assertTrue("强度为满档", a.presetStrength == 100f)
         }
     }
@@ -74,12 +79,12 @@ class DazzFujiPresetsTest {
     fun contentHashesAreStableUniqueAndNamespaced() {
         val hashes = presets.map { it.contentHash }
         assertEquals(3, hashes.toSet().size)
-        assertTrue(hashes.all { it.startsWith("dazz:") })
+        assertTrue(hashes.all { it.startsWith("dazz2:") })
         assertTrue(hashes.none {
             it.startsWith("nic:") || it.startsWith("nikonpc:") || it.startsWith("cloudlut:")
         })
         assertEquals(
-            listOf("dazz:fxn_r_classic_neg", "dazz:classic_u_superia400", "dazz:nostalgic_neg"),
+            listOf("dazz2:fxn_r_classic_neg", "dazz2:classic_u_superia400", "dazz2:nostalgic_neg"),
             hashes
         )
     }
@@ -97,14 +102,17 @@ class DazzFujiPresetsTest {
     }
 
     @Test
-    fun jsonRoundTripKeepsCurveBlenderGradingAndAdjustments() = runBlocking {
+    fun jsonRoundTripKeepsCurveChannelsAndAdjustments() = runBlocking {
         presets.forEach { p ->
             val restored = Preset.fromJson(p.toJson())
             assertEquals(p.name, restored.name)
             assertEquals(p.contentHash, restored.contentHash)
             assertEquals(p.curve!!.toList(), restored.curve!!.toList())
-            assertEquals(p.colorBlender, restored.colorBlender)
-            assertEquals(p.colorGrading, restored.colorGrading)
+            assertEquals(p.channelCurves.isNeutral, restored.channelCurves.isNeutral)
+            assertEquals(restored.channelCurves.red.normalizedPoints, p.channelCurves.red.normalizedPoints)
+            assertEquals(restored.channelCurves.green.normalizedPoints, p.channelCurves.green.normalizedPoints)
+            assertEquals(restored.channelCurves.blue.normalizedPoints, p.channelCurves.blue.normalizedPoints)
+            assertTrue(restored.channelCurves.red.normalizedPoints.size >= 2)
             assertEquals(p.adjustments.exposure, restored.adjustments.exposure, 0.0001f)
             assertEquals(p.adjustments.grain, restored.adjustments.grain, 0.0001f)
         }
