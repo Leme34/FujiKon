@@ -195,7 +195,7 @@ class RepositoryRobolectricTest {
         val first = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
         val second = com.fujikon.app.nic.builtInCloudPresets().map { it.contentHash }
         assertEquals(first, second)
-        assertEquals(10, first.size)
+        assertEquals(13, first.size)
         assertEquals(
             listOf(
                 "nic:01JSBM30XWQ6GG4XK0KSZ3FQEK",
@@ -207,7 +207,10 @@ class RepositoryRobolectricTest {
                 "nikonpc:fuji_velvia_neutral",
                 "nikonpc:kodak_portra_160nc",
                 "nikonpc:pt_mode2",
-                "nikonpc:st_g1_47"
+                "nikonpc:st_g1_47",
+                "dazz:fxn_r_classic_neg",
+                "dazz:classic_u_superia400",
+                "dazz:nostalgic_neg"
             ),
             first
         )
