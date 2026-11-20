@@ -5,7 +5,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlin.math.abs
 import kotlin.math.exp
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -40,6 +39,20 @@ object CpuRenderBackend : RenderBackend {
  * of banding in dark gradients).
  */
 object QualityOperators {
+
+    /**
+     * 1.6.63 性能：把每像素重复的 smoothstep 查表化。grain 的影调权重只依赖
+     * 0..255 亮度，vignette 的平滑权重只依赖 0..255 归一化距离，二者都可在
+     * 进入像素循环前一次性算好（256 桶，0.25 灰阶精度，量化不可见）。
+     */
+    private const val LUT_SIZE = 256
+    private val GRAIN_WEIGHT_LUT = FloatArray(LUT_SIZE) { i ->
+        val luma = i / (LUT_SIZE - 1).toFloat()
+        0.35f + 0.65f * (1f - smoothstep(0.55f, 1f, luma))
+    }
+    private val VIGNETTE_WEIGHT_LUT = FloatArray(LUT_SIZE) { i ->
+        smoothstep(0.32f, 1.05f, i / (LUT_SIZE - 1).toFloat())
+    }
 
     /**
      * Edge-preserving denoise: a small bilateral filter whose colour-distance
@@ -157,10 +170,10 @@ object QualityOperators {
                 val r = ((c shr 16) and 0xFF).toFloat()
                 val g = ((c shr 8) and 0xFF).toFloat()
                 val b = (c and 0xFF).toFloat()
-                val luma = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
-                // Film grain reads strongest in mid-tones; keep highlights clean.
-                val weight = 0.35f + 0.65f * (1f - smoothstep(0.55f, 1f, luma))
-                val add = noise * amplitude * weight
+                // 影调权重只依赖亮度，查表取代每像素 smoothstep。
+                val lumaIdx = (r * 0.299f + g * 0.587f + b * 0.114f).toInt()
+                    .coerceIn(0, LUT_SIZE - 1)
+                val add = noise * amplitude * GRAIN_WEIGHT_LUT[lumaIdx]
                 pixels[i] = pack(r + add, g + add, b + add)
                 i++
             }
@@ -174,14 +187,19 @@ object QualityOperators {
     ) {
         val strength = (amount / 100f).coerceIn(-1f, 1f)
         if (abs(strength) <= 0.001f) return
+        // 归一化坐标只依赖 x/y，每行/每列各算一次；距离与 smoothstep 合并查表，
+        // 省掉每像素 hypot + sqrt + smoothstep。d∈[0,1] 直接映射 256 桶。
+        val invW = 2f / (width - 1).coerceAtLeast(1)
+        val invH = 2f / (height - 1).coerceAtLeast(1)
+        val invSqrt2 = 1f / sqrt(2f)
+        val colNx = FloatArray(width) { x -> (x * invW - 1f) }
         for (y in fromRow until toRow) {
             if ((y and 0x0F) == 0) checkCancelled(job)
+            val ny = y * invH - 1f
             var i = y * width
             for (x in 0 until width) {
-                val nx = (x.toFloat() / (width - 1).coerceAtLeast(1) - 0.5f) * 2f
-                val ny = (y.toFloat() / (height - 1).coerceAtLeast(1) - 0.5f) * 2f
-                val d = hypot(nx, ny) / sqrt(2f)
-                val w = smoothstep(0.32f, 1.05f, d)
+                val d = sqrt(colNx[x] * colNx[x] + ny * ny) * invSqrt2
+                val w = VIGNETTE_WEIGHT_LUT[(d * (LUT_SIZE - 1)).toInt().coerceIn(0, LUT_SIZE - 1)]
                 val factor = 1f + strength * 0.62f * w
                 val c = pixels[i]
                 val r = ((c shr 16) and 0xFF) * factor

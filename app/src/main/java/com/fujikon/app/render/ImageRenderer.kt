@@ -402,12 +402,18 @@ open class ImageRenderer {
         val monoWeights: FloatArray,
         val toningTint: FloatArray?,
         val toningStrength: Float,
-        val blender: FloatArray?,
-        val gradingChroma: FloatArray?,
-        val gradingBright: FloatArray?,
-        val gradingTint: FloatArray?,
-        val gradingBlend: Float,
-        val gradingBalance: Float,
+        /**
+         * 八色带 blender 预计算表：色相 bin(0..[BLENDER_BINS)-1, 0.25°) →
+         * (hueShift, chromaAdd, brightAdd)。八色带权重只依赖色相，与 s/l 无关，
+         * 故可在 buildPlan 阶段一次性算好，热循环内由 8 次循环降为 3 次查表。
+         */
+        val blenderLut: FloatArray?,
+        /**
+         * 三分区色彩分级预计算表：亮度 bin(0..[GRADING_BINS)-1, 0.25 灰阶) →
+         * (dr, dg, db)，已乘 255，热循环内直接相加。分区权重只依赖亮度，
+         * 消除逐像素 2 次 smoothstep 与全部乘加。
+         */
+        val gradingLut: FloatArray?,
         val sharpenFine: Float,
         val sharpenClarity: Float,
         val clarityRadius: Int,
@@ -423,7 +429,7 @@ open class ImageRenderer {
     ) {
         val needsColor: Boolean
             get() = monochrome || abs(saturation - 1f) > 0.001f || hueMatrix != null ||
-                blender != null || gradingChroma != null || hsl != null ||
+                blenderLut != null || gradingLut != null || hsl != null ||
                 shadowTint > 0.001f || filter != null
 
         val needsDetail: Boolean
@@ -484,8 +490,11 @@ open class ImageRenderer {
         val hueDegrees = if (isNcp) preset.hue / 3f * 10f else preset.hue / 100f * 30f
         val hueMatrix = if (abs(hueDegrees) > 0.1f) buildHueMatrix(hueDegrees) else null
 
-        val blender = if (preset.colorBlender.size >= 8 && preset.hasColorBlender) {
-            FloatArray(24) { i ->
+        // 八色带权重只依赖色相 h，与饱和度/亮度无关。预先把每个色相桶的
+        // (hueShift, chromaAdd, brightAdd) 累加和算好，热循环内只做一次查表，
+        // 省掉每像素 8 次 abs/分支/除法。量化到 0.25°，肉眼不可见。
+        val blenderLut = if (preset.colorBlender.size >= 8 && preset.hasColorBlender) {
+            val cfg = FloatArray(24) { i ->
                 val value = preset.colorBlender[i / 3]
                 when (i % 3) {
                     0 -> value.hue / 100f
@@ -493,15 +502,36 @@ open class ImageRenderer {
                     else -> value.brightness / 100f
                 }
             }
+            FloatArray(BLENDER_BINS * 3) { idx ->
+                val h = (idx / 3) * (360f / BLENDER_BINS)
+                var hueShift = 0f
+                var chromaAdd = 0f
+                var brightAdd = 0f
+                for (band in 0 until 8) {
+                    var diff = abs(h - BAND_CENTERS[band])
+                    if (diff > 180f) diff = 360f - diff
+                    if (diff >= BAND_WIDTH) continue
+                    val weight = 1f - diff / BAND_WIDTH
+                    hueShift += cfg[band * 3] * weight
+                    chromaAdd += cfg[band * 3 + 1] * weight
+                    brightAdd += cfg[band * 3 + 2] * weight
+                }
+                when (idx % 3) {
+                    0 -> hueShift
+                    1 -> chromaAdd
+                    else -> brightAdd
+                }
+            }
         } else null
 
+        // 三分区权重（high/mid/shadow）只依赖亮度与固定的 blend/balance/chroma。
+        // 预先把每个亮度桶的三通道最终加数（已乘 255）算好，热循环内直接相加，
+        // 省掉每像素 2 次 smoothstep + 约 30 次乘加。0.25 灰阶量化不可见。
         val grading = preset.colorGrading
-        val gradingActive = preset.hasColorGrading
-        val gradingTint = if (gradingActive) {
+        val gradingLut = if (preset.hasColorGrading) {
             val zones = listOf(grading.highlights, grading.midtones, grading.shadows)
-            FloatArray(9) { i ->
-                val zone = zones[i / 3]
-                val packed = hslToRgb(zone.hue.toFloat(), 0.78f, 0.5f)
+            val tint = FloatArray(9) { i ->
+                val packed = hslToRgb(zones[i / 3].hue.toFloat(), 0.78f, 0.5f)
                 val channel = when (i % 3) {
                     0 -> (packed shr 16) and 0xFF
                     1 -> (packed shr 8) and 0xFF
@@ -509,14 +539,44 @@ open class ImageRenderer {
                 }
                 channel / 255f
             }
-        } else null
-        val gradingChroma = if (gradingActive) {
-            val zones = listOf(grading.highlights, grading.midtones, grading.shadows)
-            FloatArray(3) { zones[it].chroma / 100f }
-        } else null
-        val gradingBright = if (gradingActive) {
-            val zones = listOf(grading.highlights, grading.midtones, grading.shadows)
-            FloatArray(3) { zones[it].brightness / 100f }
+            val chroma = FloatArray(3) { zones[it].chroma / 100f }
+            val bright = FloatArray(3) { zones[it].brightness / 100f }
+            val blend = grading.blending / 100f
+            val balance = grading.balance / 100f
+            FloatArray(GRADING_BINS * 3) { idx ->
+                val luma = (idx / 3) / (GRADING_BINS - 1).toFloat()
+                val adjusted = (luma + balance * 0.18f).coerceIn(0f, 1f)
+                val soft = 0.18f + blend * 0.42f
+                val high = smoothstep(0.58f - soft * 0.35f, 1f, adjusted)
+                val shadow = 1f - smoothstep(0f, 0.42f + soft * 0.35f, adjusted)
+                val mid = (1f - high - shadow).coerceAtLeast(0f)
+                val s0 = chroma[0] * high
+                val s1 = chroma[1] * mid
+                val s2 = chroma[2] * shadow
+                var dr = 0f
+                var dg = 0f
+                var db = 0f
+                dr += (tint[0] - 0.5f) * s0 * 0.55f
+                dg += (tint[1] - 0.5f) * s0 * 0.55f
+                db += (tint[2] - 0.5f) * s0 * 0.55f
+                dr += (tint[3] - 0.5f) * s1 * 0.55f
+                dg += (tint[4] - 0.5f) * s1 * 0.55f
+                db += (tint[5] - 0.5f) * s1 * 0.55f
+                dr += (tint[6] - 0.5f) * s2 * 0.55f
+                dg += (tint[7] - 0.5f) * s2 * 0.55f
+                db += (tint[8] - 0.5f) * s2 * 0.55f
+                val brightAdd = bright[0] * high + bright[1] * mid + bright[2] * shadow
+                if (brightAdd != 0f) {
+                    dr += brightAdd * 0.09f
+                    dg += brightAdd * 0.09f
+                    db += brightAdd * 0.09f
+                }
+                when (idx % 3) {
+                    0 -> dr * 255f
+                    1 -> dg * 255f
+                    else -> db * 255f
+                }
+            }
         } else null
 
         val monoWeights = when (preset.filter) {
@@ -592,12 +652,8 @@ open class ImageRenderer {
             monoWeights = monoWeights,
             toningTint = toning,
             toningStrength = toningStrength,
-            blender = blender,
-            gradingChroma = gradingChroma,
-            gradingBright = gradingBright,
-            gradingTint = gradingTint,
-            gradingBlend = grading.blending / 100f,
-            gradingBalance = grading.balance / 100f,
+            blenderLut = blenderLut,
+            gradingLut = gradingLut,
             sharpenFine = fineAmount,
             sharpenClarity = clarityAmount,
             clarityRadius = clarityRadius,
@@ -812,10 +868,8 @@ open class ImageRenderer {
         val monoWeights = plan.monoWeights
         val toningTint = plan.toningTint
         val toningStrength = plan.toningStrength
-        val blender = plan.blender
-        val gradingChroma = plan.gradingChroma
-        val gradingTint = plan.gradingTint
-        val gradingBright = plan.gradingBright
+        val blenderLut = plan.blenderLut
+        val gradingLut = plan.gradingLut
         val whiteBalance = plan.whiteBalance
         val adjustToneLut = plan.adjustToneLut
         val vibrance = plan.vibrance
@@ -860,68 +914,35 @@ open class ImageRenderer {
                         r = nr.roundToInt(); g = ng.roundToInt(); b = nb.roundToInt()
                     }
 
-                    if (blender != null) {
+                    if (blenderLut != null) {
                         rgbToHsl(r, g, b, hslScratch)
-                        var h = hslScratch[0]
-                        var s = hslScratch[1]
+                        val h = hslScratch[0]
+                        val s = hslScratch[1]
                         var l = hslScratch[2]
-                        var hueShift = 0f
-                        var chromaAdd = 0f
-                        var brightAdd = 0f
-                        for (band in 0 until 8) {
-                            var diff = abs(h - BAND_CENTERS[band])
-                            if (diff > 180f) diff = 360f - diff
-                            if (diff >= BAND_WIDTH) continue
-                            val weight = 1f - diff / BAND_WIDTH
-                            hueShift += blender[band * 3] * weight
-                            chromaAdd += blender[band * 3 + 1] * weight
-                            brightAdd += blender[band * 3 + 2] * weight
-                        }
+                        // 色相量化到色带表桶（0.25°）；一次查表取回三项累加和。
+                        val bin = (h * (BLENDER_BINS / 360f)).toInt().coerceIn(0, BLENDER_BINS - 1) * 3
+                        val hueShift = blenderLut[bin]
+                        val chromaAdd = blenderLut[bin + 1]
+                        val brightAdd = blenderLut[bin + 2]
                         if (hueShift != 0f || chromaAdd != 0f || brightAdd != 0f) {
-                            h = (h + hueShift * 28f + 360f) % 360f
-                            s = (s * (1f + chromaAdd * 0.75f)).coerceIn(0f, 1f)
+                            val shiftedH = (h + hueShift * 28f + 360f) % 360f
+                            val shiftedS = (s * (1f + chromaAdd * 0.75f)).coerceIn(0f, 1f)
                             l = (l + brightAdd * 0.075f).coerceIn(0f, 1f)
-                            val packed = hslToRgb(h, s, l)
+                            val packed = hslToRgb(shiftedH, shiftedS, l)
                             r = (packed shr 16) and 0xFF
                             g = (packed shr 8) and 0xFF
                             b = packed and 0xFF
                         }
                     }
 
-                    if (gradingChroma != null && gradingTint != null) {
-                        val luma = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
-                        val adjusted = (luma + plan.gradingBalance * 0.18f).coerceIn(0f, 1f)
-                        val soft = 0.18f + plan.gradingBlend * 0.42f
-                        val high = smoothstep(0.58f - soft * 0.35f, 1f, adjusted)
-                        val shadow = 1f - smoothstep(0f, 0.42f + soft * 0.35f, adjusted)
-                        val mid = (1f - high - shadow).coerceAtLeast(0f)
-                        val w0 = high
-                        val w1 = mid
-                        val w2 = shadow
-                        var dr = 0f
-                        var dg = 0f
-                        var db = 0f
-                        val s0 = gradingChroma[0] * w0
-                        val s1 = gradingChroma[1] * w1
-                        val s2 = gradingChroma[2] * w2
-                        dr += (gradingTint[0] - 0.5f) * s0 * 0.55f
-                        dg += (gradingTint[1] - 0.5f) * s0 * 0.55f
-                        db += (gradingTint[2] - 0.5f) * s0 * 0.55f
-                        dr += (gradingTint[3] - 0.5f) * s1 * 0.55f
-                        dg += (gradingTint[4] - 0.5f) * s1 * 0.55f
-                        db += (gradingTint[5] - 0.5f) * s1 * 0.55f
-                        dr += (gradingTint[6] - 0.5f) * s2 * 0.55f
-                        dg += (gradingTint[7] - 0.5f) * s2 * 0.55f
-                        db += (gradingTint[8] - 0.5f) * s2 * 0.55f
-                        val bright = gradingBright!![0] * w0 + gradingBright[1] * w1 + gradingBright[2] * w2
-                        if (bright != 0f) {
-                            dr += bright * 0.09f
-                            dg += bright * 0.09f
-                            db += bright * 0.09f
-                        }
-                        r = (r + dr * 255f).roundToInt()
-                        g = (g + dg * 255f).roundToInt()
-                        b = (b + db * 255f).roundToInt()
+                    if (gradingLut != null) {
+                        // 亮度量化到分级表桶（0.25 灰阶）；三通道加数已乘 255，
+                        // 直接 round 相加，热循环内不再有任何 smoothstep / 乘加。
+                        val lumaIdx = ((r * 0.299f + g * 0.587f + b * 0.114f) *
+                            ((GRADING_BINS - 1) / 255f)).toInt().coerceIn(0, GRADING_BINS - 1) * 3
+                        r = (r + gradingLut[lumaIdx]).roundToInt().coerceIn(0, 255)
+                        g = (g + gradingLut[lumaIdx + 1]).roundToInt().coerceIn(0, 255)
+                        b = (b + gradingLut[lumaIdx + 2]).roundToInt().coerceIn(0, 255)
                     }
                 }
 
@@ -1312,6 +1333,10 @@ open class ImageRenderer {
     companion object {
         private val BAND_CENTERS = floatArrayOf(0f, 30f, 60f, 120f, 180f, 240f, 280f, 320f)
         private const val BAND_WIDTH = 52f
+        /** 八色带 blender 色相查找表桶数：360° / 1440 = 0.25°/桶。 */
+        private const val BLENDER_BINS = 1440
+        /** 三分区 grading 亮度查找表桶数：255 灰阶 / 1023 ≈ 0.25/桶。 */
+        private const val GRADING_BINS = 1024
         /** 低于此行数不并行：协程调度开销会大于像素计算收益（缩略图/小图）。 */
         private const val PARALLEL_MIN_ROWS = 96
     }
