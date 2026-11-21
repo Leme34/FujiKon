@@ -1,0 +1,247 @@
+package com.fujikon.app.dazz
+
+import kotlin.math.exp
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * 富士/Dazz 胶片模拟的 3D 色彩查找表（sRGB 域，33³，三线性插值）。
+ *
+ * 为什么用 3D LUT：1D 逐通道曲线在数学上无法表达「阴影青绿 / 高光洋红」这种
+ * 随亮度耦合的色相分离，而这是富士胶片模拟的灵魂，也是三款 look 拉不开差距的
+ * 根因。3D LUT 把「影调 S 曲线 + 随亮度的色相分离 + 全局色温 + 饱和度 + 肤色
+ * 保护」一次性烘进 RGB→RGB 的映射，逐像素只剩固定次数的查表插值。
+ *
+ * 肤色保护是清透人像的关键：用 YCbCr 椭圆 + 暖色启发式识别肤色，对肤色区域
+ * 几乎不加胶片色偏，只做「提亮 / 去黄 / 增粉嫩」；同时对高光低饱和区（白衣、
+ * 天空、白墙）保护，避免泛粉泛黄。差异因此体现在环境色（背景、花、衣、木墙），
+ * 而肤色三款都保持干净通透。
+ *
+ * LUT 由 [build] 按 look 生成一次并缓存；3 款常驻约 1.3MB，属一次性开销。
+ */
+object DazzFilmLut {
+    const val N = 33
+    private const val SIZE = N * N * N * 3
+
+    const val LOOK_NONE = 0
+    const val LOOK_FXN_R = 1
+    const val LOOK_CLASSIC_U = 2
+    const val LOOK_NOSTALGIC_NEG = 3
+
+    private val cache = arrayOfNulls<FloatArray>(LOOK_NOSTALGIC_NEG + 1)
+
+    /** 返回对应 look 的 LUT；look 非法或无 LUT 时返回 null。线程安全（读多写少的幂等缓存）。 */
+    @Synchronized
+    fun get(look: Int): FloatArray? {
+        if (look <= LOOK_NONE || look > LOOK_NOSTALGIC_NEG) return null
+        return cache[look] ?: build(look).also { cache[look] = it }
+    }
+
+    private fun smoothstep(e0: Float, e1: Float, x: Float): Float {
+        val t = ((x - e0) / (e1 - e0)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
+    /** pts: [x0,y0, x1,y1, ...] 单调递增，线性插值（对应 Python np.interp）。 */
+    private fun toneMap(x: Float, pts: FloatArray): Float {
+        if (x <= pts[0]) return pts[1]
+        val n = pts.size / 2
+        for (i in 1 until n) {
+            val xi = pts[i * 2]
+            if (x <= xi) {
+                val x0 = pts[(i - 1) * 2]
+                val y0 = pts[(i - 1) * 2 + 1]
+                val y1 = pts[i * 2 + 1]
+                return y0 + (y1 - y0) * ((x - x0) / (xi - x0))
+            }
+        }
+        return pts[pts.size - 1]
+    }
+
+    private class Spec(
+        val tone: FloatArray,
+        val s0: Float, val s1: Float, val h0: Float, val h1: Float,
+        val shadow: FloatArray, val mid: FloatArray, val high: FloatArray,
+        val skinProtect: Float, val skinLift: Float,
+        val sat: Float, val skinSatDelta: Float, val hprot: Float,
+        val gcast: FloatArray, val redBoost: Float
+    )
+
+    private val FXN_R = Spec(
+        tone = floatArrayOf(0f, 0.008f, 0.10f, 0.070f, 0.25f, 0.215f, 0.50f, 0.455f, 0.75f, 0.815f, 0.90f, 0.945f, 1f, 0.975f),
+        s0 = 0.18f, s1 = 0.55f, h0 = 0.50f, h1 = 0.95f,
+        shadow = floatArrayOf(-0.030f, 0.010f, 0.075f),
+        mid = floatArrayOf(0f, 0f, 0.008f),
+        high = floatArrayOf(0.045f, -0.008f, 0.028f),
+        skinProtect = 0.92f, skinLift = 0.050f, sat = 0.88f, skinSatDelta = 0.03f,
+        hprot = 0.85f, gcast = floatArrayOf(-0.030f, -0.006f, 0.045f), redBoost = 0f
+    )
+
+    private val CLASSIC_U = Spec(
+        tone = floatArrayOf(0f, 0.015f, 0.12f, 0.100f, 0.30f, 0.285f, 0.55f, 0.555f, 0.78f, 0.805f, 1f, 0.955f),
+        s0 = 0.20f, s1 = 0.58f, h0 = 0.50f, h1 = 0.95f,
+        shadow = floatArrayOf(-0.045f, 0.020f, 0.080f),
+        mid = floatArrayOf(-0.012f, 0.006f, 0.022f),
+        high = floatArrayOf(-0.015f, 0.010f, 0.028f),
+        skinProtect = 0.90f, skinLift = 0.044f, sat = 1.05f, skinSatDelta = 0f,
+        hprot = 0.85f, gcast = floatArrayOf(-0.040f, 0.021f, 0.063f), redBoost = 0.75f
+    )
+
+    private val NOSTALGIC_NEG = Spec(
+        tone = floatArrayOf(0f, 0.022f, 0.10f, 0.100f, 0.28f, 0.275f, 0.50f, 0.490f, 0.72f, 0.745f, 0.90f, 0.915f, 1f, 0.952f),
+        s0 = 0.18f, s1 = 0.54f, h0 = 0.46f, h1 = 0.94f,
+        shadow = floatArrayOf(-0.020f, -0.010f, 0.070f),
+        mid = floatArrayOf(0.012f, 0.002f, 0f),
+        high = floatArrayOf(0.075f, 0.030f, -0.045f),
+        skinProtect = 0.88f, skinLift = 0.060f, sat = 1.06f, skinSatDelta = 0.02f,
+        hprot = 0.88f, gcast = floatArrayOf(0.060f, 0.024f, -0.040f), redBoost = 0f
+    )
+
+    private fun specOf(look: Int): Spec = when (look) {
+        LOOK_FXN_R -> FXN_R
+        LOOK_CLASSIC_U -> CLASSIC_U
+        LOOK_NOSTALGIC_NEG -> NOSTALGIC_NEG
+        else -> FXN_R
+    }
+
+    /** 肤色权重：YCbCr 椭圆（覆盖偏白亚洲肤色）+ 暖色启发式，取二者较大。 */
+    private fun skinWeight(r: Float, g: Float, b: Float, luma: Float): Float {
+        val cb = -0.169f * r - 0.331f * g + 0.500f * b + 0.5f
+        val cr = 0.500f * r - 0.419f * g - 0.081f * b + 0.5f
+        val dc = ((cb - 0.44f) / 0.11f).let { it * it } + ((cr - 0.54f) / 0.075f).let { it * it }
+        val ell = exp(-dc * 0.6f)
+        val mx = max(r, max(g, b))
+        val mn = min(r, min(g, b))
+        val sat = if (mx > 0f) (mx - mn) / mx else 0f
+        val warm = smoothstep(0.015f, 0.10f, r - b) * smoothstep(0f, 0.03f, g - b)
+        val hsv = warm * smoothstep(0.22f, 0.45f, luma) * (1f - smoothstep(0.55f, 0.85f, sat))
+        return max(ell, hsv).coerceIn(0f, 1f)
+    }
+
+    private fun build(look: Int): FloatArray {
+        val s = specOf(look)
+        val out = FloatArray(SIZE)
+        val step = 1f / (N - 1)
+        for (bi in 0 until N) {
+            val b0 = bi * step
+            for (gi in 0 until N) {
+                val g0 = gi * step
+                for (ri in 0 until N) {
+                    val r0 = ri * step
+                    val luma = 0.299f * r0 + 0.587f * g0 + 0.114f * b0
+
+                    // 1) 保色影调曲线
+                    val nl = toneMap(luma, s.tone)
+                    val scale = if (luma > 0.015f) nl / luma else 1f
+                    var r = r0 * scale
+                    var g = g0 * scale
+                    var b = b0 * scale
+
+                    // 2) 随亮度的色相分离
+                    val sw = 1f - smoothstep(s.s0, s.s1, luma)
+                    val hw = smoothstep(s.h0, s.h1, luma)
+                    val mw = (1f - sw - hw).coerceAtLeast(0f)
+                    var dr = sw * s.shadow[0] + mw * s.mid[0] + hw * s.high[0]
+                    var dg = sw * s.shadow[1] + mw * s.mid[1] + hw * s.high[1]
+                    var db = sw * s.shadow[2] + mw * s.mid[2] + hw * s.high[2]
+
+                    // 3) 肤色保护：去色偏 + 提亮去黄增粉嫩
+                    val sk = skinWeight(r0, g0, b0, luma)
+                    val prot = 1f - sk * s.skinProtect
+                    dr *= prot; dg *= prot; db *= prot
+                    val lift = sk * s.skinLift
+                    dr += lift * 0.7f; dg -= lift * 0.35f; db += lift * 0.5f
+
+                    // 4) 高光低饱和保护：白衣 / 天空 / 白墙保持干净
+                    val mx0 = max(r0, max(g0, b0))
+                    val mn0 = min(r0, min(g0, b0))
+                    val sat0 = if (mx0 > 0f) (mx0 - mn0) / mx0 else 0f
+                    val hprot = smoothstep(0.66f, 0.90f, luma) * (1f - smoothstep(0.10f, 0.32f, sat0)) * s.hprot
+                    val hp = 1f - hprot
+                    dr *= hp; dg *= hp; db *= hp
+
+                    // 4.5) 全局色温（非肤色区域）——三款差异的主要来源
+                    val nonSkin = (1f - sk) * (1f - hprot * 0.55f)
+                    dr += s.gcast[0] * nonSkin
+                    dg += s.gcast[1] * nonSkin
+                    db += s.gcast[2] * nonSkin
+
+                    // 5) 红色敏感（Classic U）
+                    if (s.redBoost > 0f) {
+                        val redness = smoothstep(0.03f, 0.18f, r0 - max(g0, b0)) * (1f - sk)
+                        r += redness * s.redBoost * 0.10f
+                        g -= redness * s.redBoost * 0.02f
+                    }
+
+                    r += dr; g += dg; b += db
+
+                    // 6) 饱和度（肤色保护）
+                    val l2 = 0.299f * r + 0.587f * g + 0.114f * b
+                    val sat = s.sat + sk * s.skinSatDelta
+                    r = l2 + (r - l2) * sat
+                    g = l2 + (g - l2) * sat
+                    b = l2 + (b - l2) * sat
+
+                    val idx = ((ri * N + gi) * N + bi) * 3
+                    out[idx] = r.coerceIn(0f, 1f)
+                    out[idx + 1] = g.coerceIn(0f, 1f)
+                    out[idx + 2] = b.coerceIn(0f, 1f)
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * 三线性插值采样。r/g/b 为 0..255，返回打包的 0xRRGGBB。
+     * 索引布局与 [build] 一致：idx = ((ri*N + gi)*N + bi)*3。
+     */
+    fun sample(lut: FloatArray, r: Int, g: Int, b: Int): Int {
+        val fr = r * (N - 1) / 255f
+        val fg = g * (N - 1) / 255f
+        val fb = b * (N - 1) / 255f
+        val r0 = fr.toInt(); val g0 = fg.toInt(); val b0 = fb.toInt()
+        val r1 = if (r0 >= N - 1) N - 1 else r0 + 1
+        val g1 = if (g0 >= N - 1) N - 1 else g0 + 1
+        val b1 = if (b0 >= N - 1) N - 1 else b0 + 1
+        val tr = fr - r0; val tg = fg - g0; val tb = fb - b0
+
+        // 8 个格点线性索引
+        val i000 = ((r0 * N + g0) * N + b0) * 3
+        val i100 = ((r1 * N + g0) * N + b0) * 3
+        val i010 = ((r0 * N + g1) * N + b0) * 3
+        val i110 = ((r1 * N + g1) * N + b0) * 3
+        val i001 = ((r0 * N + g0) * N + b1) * 3
+        val i101 = ((r1 * N + g0) * N + b1) * 3
+        val i011 = ((r0 * N + g1) * N + b1) * 3
+        val i111 = ((r1 * N + g1) * N + b1) * 3
+
+        // 沿 r 插值
+        var c00r = lut[i000] + (lut[i100] - lut[i000]) * tr
+        var c00g = lut[i000 + 1] + (lut[i100 + 1] - lut[i000 + 1]) * tr
+        var c00b = lut[i000 + 2] + (lut[i100 + 2] - lut[i000 + 2]) * tr
+        var c10r = lut[i010] + (lut[i110] - lut[i010]) * tr
+        var c10g = lut[i010 + 1] + (lut[i110 + 1] - lut[i010 + 1]) * tr
+        var c10b = lut[i010 + 2] + (lut[i110 + 2] - lut[i010 + 2]) * tr
+        var c01r = lut[i001] + (lut[i101] - lut[i001]) * tr
+        var c01g = lut[i001 + 1] + (lut[i101 + 1] - lut[i001 + 1]) * tr
+        var c01b = lut[i001 + 2] + (lut[i101 + 2] - lut[i001 + 2]) * tr
+        var c11r = lut[i011] + (lut[i111] - lut[i011]) * tr
+        var c11g = lut[i011 + 1] + (lut[i111 + 1] - lut[i011 + 1]) * tr
+        var c11b = lut[i011 + 2] + (lut[i111 + 2] - lut[i011 + 2]) * tr
+        // 沿 g
+        val c0r = c00r + (c10r - c00r) * tg
+        val c0g = c00g + (c10g - c00g) * tg
+        val c0b = c00b + (c10b - c00b) * tg
+        val c1r = c01r + (c11r - c01r) * tg
+        val c1g = c01g + (c11g - c01g) * tg
+        val c1b = c01b + (c11b - c01b) * tg
+        // 沿 b
+        val rr = (c0r + (c1r - c0r) * tb) * 255f
+        val gg = (c0g + (c1g - c0g) * tb) * 255f
+        val bb = (c0b + (c1b - c0b) * tb) * 255f
+        return (rr.toInt().coerceIn(0, 255) shl 16) or
+            (gg.toInt().coerceIn(0, 255) shl 8) or
+            bb.toInt().coerceIn(0, 255)
+    }
+}

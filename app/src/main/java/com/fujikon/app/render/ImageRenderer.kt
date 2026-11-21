@@ -394,6 +394,9 @@ open class ImageRenderer {
 
     private class Plan(
         val lut: IntArray,
+        /** Dazz 富士 3D LUT（33³，RGB→RGB）。非 null 时跳过 1D 预设颜色链，
+         *  直接三线性插值；用户调整（WB/影调/HSL）仍在其后叠加。 */
+        val filmToneLut: FloatArray?,
         /** Red / green / blue LUTs, or null when no per-channel curve is active. */
         val channelLuts: Array<IntArray>?,
         val saturation: Float,
@@ -643,8 +646,15 @@ open class ImageRenderer {
         val clarityRadius = (5f * unit).roundToInt().coerceIn(2, 18)
         val textureRadius = (2.2f * unit).roundToInt().coerceIn(1, 6)
 
+        // Dazz 富士 3D LUT：filmLook 非 0 时载入缓存的 33³ 映射。此映射已含
+        // 影调/色相分离/肤色保护，processRows 会跳过 1D 预设颜色链。
+        val filmToneLut = if (preset.filmLook != 0) {
+            com.fujikon.app.dazz.DazzFilmLut.get(preset.filmLook)
+        } else null
+
         return Plan(
             lut = lut,
+            filmToneLut = filmToneLut,
             channelLuts = channelLuts,
             saturation = saturation,
             hueMatrix = hueMatrix,
@@ -876,6 +886,7 @@ open class ImageRenderer {
         val userHsl = plan.hsl
         val shadowTint = plan.shadowTint
         val filter = plan.filter
+        val filmLut = plan.filmToneLut
 
         for (y in from until to) {
             if ((y and 0x0F) == 0) checkCancelled(job)
@@ -883,9 +894,22 @@ open class ImageRenderer {
             val end = index + width
             while (index < end) {
                 val color = pixels[index]
-                var r = redLut[(color shr 16) and 0xFF]
-                var g = greenLut[(color shr 8) and 0xFF]
-                var b = blueLut[color and 0xFF]
+                var r: Int
+                var g: Int
+                var b: Int
+                if (filmLut != null) {
+                    // Dazz 富士 3D LUT：影调/色相分离/肤色保护已全部烘进映射，
+                    // 一次三线性插值取代整条 1D 预设颜色链。用户调整在其后叠加。
+                    val packed = com.fujikon.app.dazz.DazzFilmLut.sample(
+                        filmLut, (color shr 16) and 0xFF, (color shr 8) and 0xFF, color and 0xFF
+                    )
+                    r = (packed shr 16) and 0xFF
+                    g = (packed shr 8) and 0xFF
+                    b = packed and 0xFF
+                } else {
+                    r = redLut[(color shr 16) and 0xFF]
+                    g = greenLut[(color shr 8) and 0xFF]
+                    b = blueLut[color and 0xFF]
 
                 if (mono) {
                     var luma = r * monoWeights[0] + g * monoWeights[1] + b * monoWeights[2]
@@ -945,6 +969,7 @@ open class ImageRenderer {
                         b = (b + gradingLut[lumaIdx + 2]).roundToInt().coerceIn(0, 255)
                     }
                 }
+                } // end of if (filmLut != null) / else
 
                 // User white balance is applied after the Picture Control
                 // colour work so it can also tint a monochrome preset.

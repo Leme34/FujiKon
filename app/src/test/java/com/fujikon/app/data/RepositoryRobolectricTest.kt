@@ -208,9 +208,9 @@ class RepositoryRobolectricTest {
                 "nikonpc:kodak_portra_160nc",
                 "nikonpc:pt_mode2",
                 "nikonpc:st_g1_47",
-                "dazz2:fxn_r_classic_neg",
-                "dazz2:classic_u_superia400",
-                "dazz2:nostalgic_neg"
+                "dazz3:fxn_r_classic_neg",
+                "dazz3:classic_u_superia400",
+                "dazz3:nostalgic_neg"
             ),
             first
         )

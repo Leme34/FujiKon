@@ -14,12 +14,14 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Dazz 富士风格预置的参数不变量与「套用后仍可看」渲染健全性。
+ * Dazz 富士风格预置的参数不变量 + 3D LUT 正确性 + 渲染健全性。
  *
- * 吸取此前 3D LUT 套用后色彩严重崩坏的教训：这里除锁定曲线/色带/分级/
- * 哈希等结构不变量外，还用真实渲染管线对一张中性偏冷的合成图套用每款
- * 富士 look，断言 ① 亮度落在合理区间（不整体死黑或惨白）、② 色相通道
- * 没有被严重拉偏（红蓝差不会离谱）、③ 颗粒/曝光温和不会整片 clamp。
+ * 针对用户反馈的两点做回归：
+ *  ① 「三款效果相差无几」→ [threeLooksAreDistinct] 断言三款 LUT 在代表性
+ *     颜色上输出拉得开（青影/冷绿/暖琥珀方向不同）。
+ *  ② 「皮肤太脏不够清透」→ [skinIsProtectedAcrossAllLooks] 断言肤色色样在三款
+ *     下都几乎不被染色（RGB 偏移很小），而环境色仍被明显着色。
+ * 另沿用「套用后仍可看」的渲染健全性，防止 3D LUT 出现此前 3D LUT 崩坏。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -29,7 +31,7 @@ class DazzFujiPresetsTest {
 
     private val expectedNames = listOf(
         "FXN R · 经典负片",
-        "Classic U · 暖调胶片",
+        "Classic U · 冷调胶片",
         "Nostalgic Neg · 怀旧负片"
     )
 
@@ -42,49 +44,36 @@ class DazzFujiPresetsTest {
     }
 
     @Test
-    fun eachLookHasMonotonic256PointCurveInRange() {
+    fun eachLookUsesA3dLutAndNoHeavy1dChains() {
         presets.forEach { p ->
-            val t = p.curve ?: throw AssertionError("${p.name} 缺少曲线")
-            assertEquals("${p.name} 曲线应为 256 点", 256, t.size)
-            assertTrue("${p.name} 曲线值域必须 0..32767", t.all { it in 0..32767 })
-            for (i in 1 until t.size) {
-                assertTrue("${p.name} 曲线必须单调不减 @$i", t[i] >= t[i - 1])
-            }
-            // 样张是通透高对比观感（p1=8~22 深色保留），黑位几乎不抬：
-            // 曲线输入 0 的输出应接近 0（≤0.03 → 983），保留深色不发灰。
-            assertTrue("${p.name} 黑位应保持深色不被抬起", t[0] in 0..1000)
-            assertTrue("${p.name} 高光应柔和滚降", t[255] in 31000..32767)
-        }
-    }
-
-    @Test
-    fun colourWorkIsBakedIntoChannelCurvesAndHeavyPathsRemoved() {
-        presets.forEach { p ->
-            // 性能回归：绝不能回退到逐像素 HSL 往返的八色带/三分区重路径。
-            assertTrue("${p.name} 必须移除八色带 blender", !p.hasColorBlender)
-            assertTrue("${p.name} 必须移除三分区 grading", !p.hasColorGrading)
-            // 胶片分色烘进逐通道 LUT（buildPlan 阶段合成，热循环零额外开销）。
-            assertTrue("${p.name} 必须有逐通道曲线", !p.channelCurves.isNeutral)
+            assertEquals("${p.name} filmLook 应为 1/2/3", true, p.filmLook in 1..3)
+            assertTrue("${p.name} 必须挂载 3D LUT", DazzFilmLut.get(p.filmLook) != null)
+            // 3D LUT 已含影调：1D curve 必须为 null，避免二次施加。
+            assertEquals("${p.name} 不应再带 1D 曲线", null, p.curve)
+            assertTrue("${p.name} 通道曲线应保持中性", p.channelCurves.isNeutral)
+            assertTrue("${p.name} 不应有八色带", !p.hasColorBlender)
+            assertTrue("${p.name} 不应有三分区分级", !p.hasColorGrading)
             val a = p.adjustments
-            assertTrue("曝光应温和", a.exposure in 0f..0.5f)
-            assertTrue("色温应温和", a.temperature in 0f..25f)
+            assertTrue("曝光应为 0（烘进 LUT）", a.exposure == 0f)
             assertTrue("颗粒应温和", a.grain in 0f..30f)
             assertEquals("不应保留暗角 pass", 0f, a.vignette)
             assertEquals("不应保留清晰度卷积", 0f, a.clarity)
             assertTrue("强度为满档", a.presetStrength == 100f)
         }
+        assertEquals("三款 filmLook 应互不相同", 3, presets.map { it.filmLook }.toSet().size)
     }
 
     @Test
     fun contentHashesAreStableUniqueAndNamespaced() {
         val hashes = presets.map { it.contentHash }
         assertEquals(3, hashes.toSet().size)
-        assertTrue(hashes.all { it.startsWith("dazz2:") })
+        assertTrue(hashes.all { it.startsWith("dazz3:") })
         assertTrue(hashes.none {
-            it.startsWith("nic:") || it.startsWith("nikonpc:") || it.startsWith("cloudlut:")
+            it.startsWith("nic:") || it.startsWith("nikonpc:") ||
+                it.startsWith("cloudlut:") || it.startsWith("dazz:")
         })
         assertEquals(
-            listOf("dazz2:fxn_r_classic_neg", "dazz2:classic_u_superia400", "dazz2:nostalgic_neg"),
+            listOf("dazz3:fxn_r_classic_neg", "dazz3:classic_u_superia400", "dazz3:nostalgic_neg"),
             hashes
         )
     }
@@ -94,7 +83,6 @@ class DazzFujiPresetsTest {
         val all = builtInCloudPresets()
         val names = all.map { it.name }
         expectedNames.forEach { assertTrue("内置列表应包含 $it", it in names) }
-        // 按内容哈希去重：每款富士 look 只播种一次
         expectedNames.forEach { name ->
             assertEquals("${name} 不应重复", 1, names.count { it == name })
         }
@@ -102,19 +90,73 @@ class DazzFujiPresetsTest {
     }
 
     @Test
-    fun jsonRoundTripKeepsCurveChannelsAndAdjustments() = runBlocking {
+    fun jsonRoundTripKeepsFilmLookAndAdjustments() = runBlocking {
         presets.forEach { p ->
             val restored = Preset.fromJson(p.toJson())
             assertEquals(p.name, restored.name)
             assertEquals(p.contentHash, restored.contentHash)
-            assertEquals(p.curve!!.toList(), restored.curve!!.toList())
-            assertEquals(p.channelCurves.isNeutral, restored.channelCurves.isNeutral)
-            assertEquals(restored.channelCurves.red.normalizedPoints, p.channelCurves.red.normalizedPoints)
-            assertEquals(restored.channelCurves.green.normalizedPoints, p.channelCurves.green.normalizedPoints)
-            assertEquals(restored.channelCurves.blue.normalizedPoints, p.channelCurves.blue.normalizedPoints)
-            assertTrue(restored.channelCurves.red.normalizedPoints.size >= 2)
-            assertEquals(p.adjustments.exposure, restored.adjustments.exposure, 0.0001f)
+            assertEquals(p.filmLook, restored.filmLook)
             assertEquals(p.adjustments.grain, restored.adjustments.grain, 0.0001f)
+        }
+    }
+
+    /** 代表性色样：阴影环境色、肤色、蓝天、绿叶、白墙。 */
+    private data class Swatch(val name: String, val r: Int, val g: Int, val b: Int)
+
+    private val swatches = listOf(
+        Swatch("shadow", 60, 70, 80),
+        Swatch("skin", 205, 168, 140),
+        Swatch("blueSky", 120, 170, 225),
+        Swatch("green", 70, 120, 60),
+        Swatch("whiteWall", 235, 230, 225),
+        Swatch("midGray", 128, 128, 128)
+    )
+
+    private fun sampleRgb(look: Int, r: Int, g: Int, b: Int): IntArray {
+        val lut = DazzFilmLut.get(look)!!
+        val packed = DazzFilmLut.sample(lut, r, g, b)
+        return intArrayOf((packed shr 16) and 0xFF, (packed shr 8) and 0xFF, packed and 0xFF)
+    }
+
+    @Test
+    fun threeLooksAreDistinct() {
+        // 取几个非肤色色样，三款两两之间必须拉开明显差异（任一通道差 > 6）。
+        val env = swatches.filter { it.name in setOf("shadow", "blueSky", "green", "whiteWall") }
+        val looks = presets.map { it.filmLook }
+        var distinctPairs = 0
+        for (i in looks.indices) for (j in i + 1 until looks.size) {
+            var maxDiff = 0
+            env.forEach { s ->
+                val a = sampleRgb(looks[i], s.r, s.g, s.b)
+                val c = sampleRgb(looks[j], s.r, s.g, s.b)
+                for (k in 0..2) maxDiff = maxOf(maxDiff, kotlin.math.abs(a[k] - c[k]))
+            }
+            if (maxDiff > 6) distinctPairs++
+        }
+        assertTrue("三款 LUT 两两之间都应有明显差异（实际对数=$distinctPairs）", distinctPairs == 3)
+    }
+
+    @Test
+    fun skinIsProtectedAcrossAllLooks() {
+        // 肤色色样在三款下的通道偏移都应很小（<= 22），且不会被染成青绿或惨黄：
+        // R-B 保持为正（暖调），不会出现 R-B 接近 0 或负值（发青发灰）。
+        val skin = swatches.first { it.name == "skin" }
+        val origRB = skin.r - skin.b
+        looks@ for (p in presets) {
+            val out = sampleRgb(p.filmLook, skin.r, skin.g, skin.b)
+            val maxShift = maxOf(kotlin.math.abs(out[0] - skin.r), kotlin.math.abs(out[1] - skin.g), kotlin.math.abs(out[2] - skin.b))
+            assertTrue("${p.name} 肤色不应被大改（shift=$maxShift）", maxShift <= 24)
+            val rb = out[0] - out[2]
+            assertTrue("${p.name} 肤色应保持暖调不泛青（R-B=$rb vs 原 $origRB）", rb >= origRB - 12)
+        }
+    }
+
+    @Test
+    fun lutIsFiniteAndInRange() {
+        presets.forEach { p ->
+            val lut = DazzFilmLut.get(p.filmLook)!!
+            assertEquals("LUT 长度", DazzFilmLut.N * DazzFilmLut.N * DazzFilmLut.N * 3, lut.size)
+            assertTrue("LUT 应全为有限值且落在 0..1", lut.all { it >= 0f && it <= 1f && !it.isNaN() })
         }
     }
 
@@ -136,38 +178,17 @@ class DazzFujiPresetsTest {
         }
     }
 
-    @Test
-    fun fujiLooksAreVisuallyDistinctFromNeutral() = runBlocking {
-        val source = neutralSource()
-        val renderer = ImageRenderer()
-        val neutral = renderer.render(source, Preset.none(), forExport = false)
-        val warmNeutral = renderer.render(
-            source,
-            Preset.none().copy(adjustments = EditAdjustments.Neutral),
-            forExport = false
-        )
-        assertEquals(averageLuma(neutral), averageLuma(warmNeutral), 0.5f)
-        // 经典负片应比原图更暖（红蓝差更大）
-        val fxn = renderer.render(source, presets[0], forExport = false)
-        assertTrue(
-            "经典负片应带来暖调偏移",
-            (averageChannel(fxn, 16) - averageChannel(fxn, 0)) >
-                (averageChannel(neutral, 16) - averageChannel(neutral, 0))
-        )
-    }
-
     private fun neutralSource(): Bitmap {
         val width = 32
         val height = 32
         val pixels = IntArray(width * height)
         for (y in 0 until height) {
             for (x in 0 until width) {
-                // 中性灰阶 + 轻度冷色，覆盖暗/中/亮三种影调
                 val base = 40 + x * 6
-                val r = base.coerceAtMost(255)
-                val g = base.coerceAtMost(255)
-                val b = (base + 8).coerceAtMost(255)
-                pixels[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                pixels[y * width + x] = (0xFF shl 24) or
+                    (base.coerceAtMost(255) shl 16) or
+                    (base.coerceAtMost(255) shl 8) or
+                    ((base + 8).coerceAtMost(255))
             }
         }
         return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)

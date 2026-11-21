@@ -12,9 +12,9 @@ import org.robolectric.annotation.Config
 /**
  * 性能回归防线：Dazz 富士 look 曾因八色带 blender（逐像素 HSL 往返）+ 三分区
  * grading + clarity 卷积在预览分辨率下耗时约为纯曲线预设的 4~5 倍，套用/导出
- * "一直加载中"。1.6.63 先把这些量查表化，1.6.64 进一步把整条胶片映射烘进
- * 主影调 LUT + 逐通道 LUT（buildPlan 阶段合成，热循环仅 3 次查表），彻底移除
- * blender/grading/clarity 重路径，速度与 nikonpc 纯曲线预设相当。
+ * "一直加载中"。1.6.65 起整条胶片映射（影调 + 色相分离 + 肤色保护）烘进一张
+ * 33³ 3D LUT，逐像素只做一次三线性插值，彻底移除 blender/grading/clarity
+ * 重路径。本测试拦截"退化回逐像素重算导致的数量级暴增"。
  *
  * 本测试用一个非常宽松的绝对上界拦截"退化回逐像素重算导致的数量级暴增"，
  * 不追求精确计时（JVM wall-clock 随机器负载波动，阈值放大到约 200ms），只保证
