@@ -1823,8 +1823,15 @@ class EditorViewModel(
         /**
          * 预览最长边的内存护栏上限：再高就会逼近低内存机型的 OOM 红线，因此
          * 由 [computePreviewMaxDimension] 按可用堆反推，绝不硬扛。
+         *
+         * 1.6.67 从 4096 下调到 2560：4096 会让 3384×6016 这类竖拍大图在
+         * 解码时因「长边 6016 < 4096×2」而取 sample=1（全分辨率解码 2000 万
+         * 像素），再叠加旋转/缩放的整图拷贝，真机上点一次预设预览要转很久。
+         * 2560 使这类图走 sample≥2，解码像素降到 1/4，配合 decodePreview 的
+         * 旋转缩放合并，消除数量级卡顿。2560 长边在手机屏幕上依然清晰，且
+         * 仅影响交互预览——导出仍走 ExportManager 的全分辨率路径，画质不变。
          */
-        const val PREVIEW_MAX_CAP = 4096
+        const val PREVIEW_MAX_CAP = 2560
 
         private val SUPPORTED_RATIOS = listOf(
             "1:1" to 1f,

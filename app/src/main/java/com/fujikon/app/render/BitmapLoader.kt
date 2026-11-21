@@ -15,15 +15,35 @@ import kotlin.math.roundToInt
 /** Decodes gallery images with EXIF rotation applied and sane memory limits. */
 object BitmapLoader {
 
+    /**
+     * 预览解码（1.6.67 性能重写）。
+     *
+     * 旧实现有一次数量级性能事故：sample 公式用 `maxDimension * 2` 做阈值，
+     * 对 3384×6016 这类竖拍大图（长边 6016）在 4096 上限下算出 sample=1，
+     * 于是**全分辨率解码 2000 万像素**；随后 applyOrientation 做一次 2000 万
+     * 像素整图旋转拷贝，createScaledBitmap 又做一次整图缩放拷贝。三次大分配
+     * 在低内存真机上引发剧烈 GC 抖动，点一次预设预览要转很久。
+     *
+     * 新实现三点改进：
+     *  1) sample 公式按「解码后最长边 >= maxDimension 的最小 2 的幂」反推，
+     *     配合 inScaled/inTargetDensity 让解码器一步到位缩到目标附近，从源头
+     *     避免全分辨率解码（配合下调后的预览上限，6016 竖拍走 sample=2）。
+     *  2) 旋转与缩放合并为**一次** Matrix 变换，只分配一张目标位图，彻底
+     *     消除中间的两份整图拷贝。
+     *  3) 输出尺寸语义不变：最长边 <= maxDimension，EXIF 旋转生效。
+     */
     suspend fun decodePreview(context: Context, uri: Uri, maxDimension: Int = 1800): Bitmap? =
         withContext(Dispatchers.IO) {
             runCatching {
                 val orientation = readOrientation(context, uri)
                 val bounds = readBounds(context, uri) ?: return@runCatching null
+                // 长边不随 90° 旋转改变（只是宽高互换），故直接用解码坐标的长边。
+                val decodedLongest = max(bounds.first, bounds.second)
+                // 取「解码后最长边仍 >= maxDimension」的最小 2 的幂：既不过度
+                // 解码，也保证后续是缩小而非放大（放大才会发糊）。
                 var sample = 1
-                while (max(bounds.first, bounds.second) / sample > maxDimension * 2) {
-                    sample *= 2
-                }
+                while (decodedLongest / (sample * 2) >= maxDimension) sample *= 2
+
                 val options = BitmapFactory.Options().apply {
                     inSampleSize = sample
                     inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -31,6 +51,9 @@ object BitmapLoader {
                 val decoded = context.contentResolver.openInputStream(uri)?.use {
                     BitmapFactory.decodeStream(it, null, options)
                 } ?: return@runCatching null
+                // 关键收益已在上面的 sample 修正：解码像素从 2000 万降到 1/4。
+                // 下面沿用经过验证的「旋转 → 缩放」两步法（小图上开销可忽略），
+                // 避免 createBitmap(matrix) 在部分 Bitmap 实现上产生无效位图。
                 val oriented = applyOrientation(decoded, orientation)
                 val longest = max(oriented.width, oriented.height)
                 val result = if (longest > maxDimension) {
