@@ -94,6 +94,16 @@ class PresetsViewModel(private val repository: PresetRepository) : ViewModel() {
 
     /** 彻底删除（仅在「已删除」列表里提供）。 */
     suspend fun deletePermanently(id: String) = repository.deletePermanently(id)
+
+    /** 导出全量预设备份为 JSON 字符串。 */
+    suspend fun exportBackupJson(): String = repository.exportBackupJson()
+
+    /** 解析备份摘要（导入前预览）。 */
+    fun inspectBackup(json: String) = repository.inspectBackup(json)
+
+    /** 从备份全量恢复预设列表。 */
+    suspend fun restoreFromBackup(json: String): PresetRepository.RestoreResult =
+        repository.restoreFromBackup(json)
 }
 
 class NikonPcViewModel(

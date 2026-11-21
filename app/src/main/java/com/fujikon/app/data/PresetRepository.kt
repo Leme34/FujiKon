@@ -34,6 +34,24 @@ class PresetRepository(private val context: Context) {
         val total: Int get() = imported.size + duplicates.size + errors.size
     }
 
+    /** 导出备份的摘要信息（供 UI 展示"已备份 N 个预设"）。 */
+    data class BackupResult(
+        val countAll: Int,
+        val countActive: Int,
+        val countFavorite: Int,
+        val countDeleted: Int
+    )
+
+    /** 从备份恢复的结果。 */
+    data class RestoreResult(
+        val restored: Int,
+        val countActive: Int,
+        val countFavorite: Int,
+        val countDeleted: Int,
+        val binaryFilesRestored: Int,
+        val warnings: List<String>
+    )
+
     /**
      * A preset downloaded from outside the app. [key] lets a batch importer map
      * each result back to its remote row even when two presets share a name.
@@ -563,6 +581,90 @@ class PresetRepository(private val context: Context) {
     }
 
     fun fileFor(preset: Preset): File = File(filesDir, preset.fileName)
+
+    // ------------------------------------------------------------ backup / restore
+
+    /**
+     * 把当前全量预设（含软删除与收藏态）连同其 NP3/NCP 原二进制导出为一份自包含
+     * 的备份 JSON 字符串。调用方负责写入用户指定位置（SAF Uri）。
+     *
+     * 每个 fileName 只会被读取一次并做去重，避免同一二进制在备份里重复编码。
+     */
+    suspend fun exportBackupJson(): String {
+        load()
+        return mutex.withLock {
+            withContext(Dispatchers.IO) {
+                val snapshot = all
+                val binaries = HashMap<String, ByteArray>()
+                snapshot.forEach { p ->
+                    val name = p.fileName
+                    if (name.isNotBlank() && !binaries.containsKey(name)) {
+                        val file = File(filesDir, name)
+                        if (file.exists()) binaries[name] = file.readBytes()
+                    }
+                }
+                val version = runCatching {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                }.getOrDefault("")
+                PresetBackup.encode(snapshot, binaries, version ?: "")
+            }
+        }
+    }
+
+    /** 仅解析备份摘要，供导入前预览确认，不改动任何状态。 */
+    fun inspectBackup(json: String): PresetBackup.Info = PresetBackup.inspect(json)
+
+    /**
+     * 从备份 JSON 全量恢复预设列表到备份时点：还原所有原二进制文件，然后用备份
+     * 里的全量列表整体替换索引（含 favorite / deleted / note / importedAt），并
+     * 让「活跃」「已删除」两个对外列表与之完全一致。
+     *
+     * 为保证"一模一样"，恢复会清理 filesDir 中不再被备份引用的旧预设二进制，
+     * 但只清理看起来是本模块生成的预设文件（.ncp/.np3/.np2），绝不触碰其它文件。
+     */
+    suspend fun restoreFromBackup(json: String): RestoreResult {
+        load()
+        val payload = PresetBackup.decode(json) // 非法文件在锁外快速失败
+        val warnings = mutableListOf<String>()
+        if (payload.info.countAll >= 0 && payload.info.countAll != payload.presets.size) {
+            warnings.add("备份声称 ${payload.info.countAll} 个预设，实际解析到 ${payload.presets.size} 个")
+        }
+        return mutex.withLock {
+            withContext(Dispatchers.IO) {
+                // 1) 还原原二进制
+                var filesRestored = 0
+                payload.binaries.forEach { (name, bytes) ->
+                    runCatching { File(filesDir, name).writeBytes(bytes) }
+                        .onSuccess { filesRestored++ }
+                        .onFailure { warnings.add("二进制 $name 写入失败：${it.message ?: "未知错误"}") }
+                }
+                // 2) 清理不再被引用的旧预设二进制（仅限预设扩展名）
+                val referenced = payload.presets.map { it.fileName }.filter { it.isNotBlank() }.toSet()
+                filesDir.listFiles()?.forEach { file ->
+                    if (file.isFile &&
+                        file.name !in referenced &&
+                        (file.name.endsWith(".ncp", true) ||
+                            file.name.endsWith(".np3", true) ||
+                            file.name.endsWith(".np2", true))
+                    ) {
+                        file.delete()
+                    }
+                }
+                // 3) 全量替换：publish 会同步刷新活跃 / 已删除两个对外列表
+                val restored = payload.presets
+                publish(restored)
+                writeIndex(restored)
+                RestoreResult(
+                    restored = restored.size,
+                    countActive = restored.count { !it.deleted },
+                    countFavorite = restored.count { !it.deleted && it.favorite },
+                    countDeleted = restored.count { it.deleted },
+                    binaryFilesRestored = filesRestored,
+                    warnings = warnings
+                )
+            }
+        }
+    }
 
     // ------------------------------------------------------------ internals
 

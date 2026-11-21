@@ -1,5 +1,7 @@
 package com.fujikon.app.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -32,6 +35,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -87,6 +91,93 @@ fun SettingsScreen(
     var agnesRegion by remember { mutableStateOf(settings.agnesRegion) }
     var agnesImageUrl by remember { mutableStateOf(settings.agnesImagePublicUrl) }
     var keyCheck by remember { mutableStateOf<AgnesKeyCheckUiState>(AgnesKeyCheckUiState.Idle) }
+    var backingUp by remember { mutableStateOf(false) }
+    var restoring by remember { mutableStateOf(false) }
+    var pendingBackupJson by remember { mutableStateOf<String?>(null) }
+    var pendingBackupInfo by remember { mutableStateOf<com.fujikon.app.data.PresetBackup.Info?>(null) }
+
+    // 导出：让用户指定保存位置与文件名（SAF，无需存储权限）。
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            backingUp = true
+            val ok = runCatching {
+                val json = presetsViewModel.exportBackupJson()
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(json.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } ?: throw IllegalStateException("无法写入所选位置")
+                true
+            }.getOrElse { false }
+            backingUp = false
+            snackbar.showSnackbar(if (ok) "预设列表备份已保存" else "备份失败，请重试")
+        }
+    }
+
+    // 导入：选择备份文件 -> 解析摘要 -> 弹出确认 -> 全量恢复。
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val json = runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+            }.getOrNull()
+            if (json == null) {
+                snackbar.showSnackbar("无法读取备份文件")
+                return@launch
+            }
+            val info = runCatching { presetsViewModel.inspectBackup(json) }.getOrNull()
+            if (info == null || !info.isValid) {
+                snackbar.showSnackbar("备份文件无效或版本不受支持")
+                return@launch
+            }
+            pendingBackupJson = json
+            pendingBackupInfo = info
+        }
+    }
+
+    // 导入确认对话框
+    if (pendingBackupJson != null && pendingBackupInfo != null) {
+        val info = pendingBackupInfo!!
+        AlertDialog(
+            onDismissRequest = { pendingBackupJson = null; pendingBackupInfo = null },
+            title = { Text("恢复预设列表备份") },
+            text = {
+                Text(
+                    "该备份包含 ${info.countAll} 个预设（未删除 ${info.countActive}、已收藏 ${info.countFavorite}、已删除 ${info.countDeleted}）。" +
+                        "\n\n恢复后将用备份时点的列表整体替换当前预设，当前列表会被覆盖。请确认继续。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val json = pendingBackupJson
+                    pendingBackupJson = null
+                    pendingBackupInfo = null
+                    if (json != null) {
+                        scope.launch {
+                            restoring = true
+                            val result = runCatching { presetsViewModel.restoreFromBackup(json) }.getOrNull()
+                            restoring = false
+                            if (result != null) {
+                                snackbar.showSnackbar(
+                                    "已恢复 ${result.restored} 个预设（收藏 ${result.countFavorite}、已删除 ${result.countDeleted}）" +
+                                        if (result.warnings.isNotEmpty()) " · ${result.warnings.size} 条提示" else ""
+                                )
+                            } else {
+                                snackbar.showSnackbar("恢复失败，备份文件可能已损坏")
+                            }
+                        }
+                    }
+                }) { Text("确认恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingBackupJson = null; pendingBackupInfo = null }) { Text("取消") }
+            }
+        )
+    }
 
     Scaffold(
         containerColor = Ink,
@@ -306,6 +397,45 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = CardColor),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("备份与恢复", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                        Text(
+                            "导出会把全部预设（含已收藏、已删除）连同原始文件保存到你指定的位置；重装后可导入该备份，完整恢复到备份时的列表。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(
+                                onClick = {
+                                    val name = "FujiKon-预设备份-" + java.text.SimpleDateFormat(
+                                        "yyyyMMdd-HHmm", java.util.Locale.getDefault()
+                                    ).format(java.util.Date()) + ".json"
+                                    exportLauncher.launch(name)
+                                },
+                                enabled = !backingUp,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Amber, contentColor = Ink)
+                            ) {
+                                Text(if (backingUp) "备份中…" else "导出备份")
+                            }
+                            Button(
+                                onClick = { importBackupLauncher.launch(arrayOf("application/json", "*/*")) },
+                                enabled = !restoring,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = CardHigh, contentColor = TextPrimary)
+                            ) {
+                                Text(if (restoring) "恢复中…" else "导入恢复")
+                            }
+                        }
                     }
                 }
             }
