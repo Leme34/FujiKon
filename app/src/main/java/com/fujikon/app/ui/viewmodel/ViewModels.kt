@@ -1776,18 +1776,43 @@ class EditorViewModel(
         return result
     }
 
+    /** 导出全部照片（更多菜单「导出所有照片」）。 */
     fun export(options: ExportManager.Options) {
+        exportPhotos(options, onlyCurrent = false)
+    }
+
+    /** 仅导出当前预览的照片（更多菜单「导出当前照片」）。 */
+    fun exportCurrent(options: ExportManager.Options) {
+        exportPhotos(options, onlyCurrent = true)
+    }
+
+    private fun exportPhotos(options: ExportManager.Options, onlyCurrent: Boolean) {
         if (exportCoordinator.status.value is ExportCoordinator.Status.Running) return
         // Snapshot every photo's own grade before the (long) export starts.
+        // 即使只导出当前照片也要持久化会话：perPhoto 里携带该照片的独立编辑结果。
         val perPhoto = exportPresetsByPhoto()
         val fallback = _state.value.currentPreset
         if (fallback == null) {
             _state.update { it.copy(export = ExportState.Failed("请选择一个预设")) }
             return
         }
+        val targets = if (onlyCurrent) {
+            val current = _state.value.currentPhoto
+            if (current == null) {
+                _state.update { it.copy(export = ExportState.Failed("没有可导出的照片")) }
+                return
+            }
+            listOf(current)
+        } else {
+            _state.value.photos
+        }
+        if (targets.isEmpty()) {
+            _state.update { it.copy(export = ExportState.Failed("没有可导出的照片")) }
+            return
+        }
         // 委托给进程级协调器：任务运行于 Application 作用域，不随本页面销毁而取消。
         exportCoordinator.export(
-            photos = _state.value.photos,
+            photos = targets,
             preset = fallback,
             options = options,
             finalImageUris = _state.value.aiResultUris,

@@ -150,6 +150,8 @@ fun EditorScreen(
     var comparing by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
+    // 更多菜单导出拆分为「当前照片 / 所有照片」，此标志决定打开面板后的目标范围。
+    var exportCurrentOnly by remember { mutableStateOf(false) }
     var showCurve by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
     var showCrop by remember { mutableStateOf(false) }
@@ -165,13 +167,17 @@ fun EditorScreen(
     var savingAdjustments by remember { mutableStateOf(false) }
     var pendingOptions by remember { mutableStateOf<ExportManager.Options?>(null) }
 
+    fun dispatchExport(options: ExportManager.Options) {
+        if (exportCurrentOnly) viewModel.exportCurrent(options) else viewModel.export(options)
+    }
+
     val writePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         val options = pendingOptions
         pendingOptions = null
         if (granted && options != null) {
-            viewModel.export(options)
+            dispatchExport(options)
         } else if (!granted) {
             scope.launch { snackbar.showSnackbar("需要存储权限才能保存到相册") }
         }
@@ -185,7 +191,7 @@ fun EditorScreen(
             pendingOptions = options
             writePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         } else {
-            viewModel.export(options)
+            dispatchExport(options)
         }
     }
 
@@ -296,7 +302,8 @@ fun EditorScreen(
                                 scope.launch { snackbar.showSnackbar("已粘贴效果到当前照片") }
                             }
                         },
-                        onExport = { showExport = true }
+                        onExport = { exportCurrentOnly = false; showExport = true },
+                        onExportCurrent = { exportCurrentOnly = true; showExport = true }
                     )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink)
@@ -680,7 +687,8 @@ fun EditorScreen(
                 showExport = false
                 startExport(options)
             },
-            onDismiss = { showExport = false }
+            onDismiss = { showExport = false },
+            scopeLabel = if (exportCurrentOnly) "当前照片" else "所有照片"
         )
     }
 

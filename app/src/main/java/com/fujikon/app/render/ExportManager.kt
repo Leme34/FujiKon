@@ -7,9 +7,16 @@ import com.fujikon.app.data.PhotoItem
 import com.fujikon.app.data.Preset
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
 
 /** Renders and saves a batch of photos, each with its own resulting preset. */
@@ -38,6 +45,9 @@ class ExportManager(
         val failures: List<String>
     )
 
+    /** 批量导出的并发度与单张解码上限（内存安全前提下算得）。 */
+    private data class Parallelism(val permits: Int, val perLongest: Int)
+
     suspend fun export(
         photos: List<PhotoItem>,
         /** Fallback for photos without an entry in [presetsByPhoto]. */
@@ -59,22 +69,79 @@ class ExportManager(
         presetsByPhoto: Map<Long, Preset> = emptyMap(),
         onProgress: (Progress) -> Unit
     ): Result = withContext(Dispatchers.Default) {
-        val saved = mutableListOf<Uri>()
-        val failures = mutableListOf<String>()
-        // 初始最长边上限：由可用堆反推，内存够尽量保原分辨率，不够才降。
-        val maxLongest = BitmapLoader.maxExportLongest()
-        photos.forEachIndexed { index, photo ->
-            coroutineContext.ensureActive()
-            onProgress(Progress(index, photos.size, photo.displayName, ""))
-            val photoPreset = presetFor(photo.id, preset, presetsByPhoto)
-            when (val r = exportOne(photo, photoPreset, options, maxLongest, finalImageUris, index, photos.size, onProgress)) {
-                is OneResult.Saved -> saved.add(r.uri)
-                is OneResult.Failed -> failures.add(r.message)
-            }
-            onProgress(Progress(index + 1, photos.size, photo.displayName, ""))
+        // 1.6.68: 批量导出由「逐张串行」改为「受内存约束的有界并发」。
+        // 旧实现一张一张走完 解码→渲染→JPEG100 编码→写相册，多核完全闲置，
+        // 十几张大图要累加十几张的单张耗时。
+        //
+        // 关键约束：单张全分辨率导出峰值约占可用堆的 55%（见
+        // BitmapLoader.maxExportPixels），直接并发多张必然 OOM。这里按
+        // 「并发数 P × 单张像素 ≈ 原单张像素」把单张解码最长边下调 √P，
+        // 使总内存基本恒定，却让多张的单线程阶段（JPEG 解码 / quality100
+        // 编码 / 相册写入）在多个核心上重叠。render 内部本就多核并行，
+        // 外层并发的主要收益来自这些原本串行的单线程阶段。
+        //
+        // 每张仍独立走 [exportOne] 的 OOM 逐级降级重试，因此并发不会牺牲
+        // 成功率；信号量限制在途张数，进度用原子计数只增不减。
+        val parallel = parallelism()
+        val saved = Collections.synchronizedList(mutableListOf<Uri>())
+        val failures = Collections.synchronizedList(mutableListOf<String>())
+        val doneCount = AtomicInteger(0)
+        val gate = Semaphore(parallel.permits)
+
+        onProgress(Progress(0, photos.size, "", ""))
+        coroutineScope {
+            photos.map { photo ->
+                async {
+                    gate.withPermit {
+                        coroutineContext.ensureActive()
+                        val inFlight = doneCount.get()
+                        onProgress(Progress(inFlight, photos.size, photo.displayName, ""))
+                        val photoPreset = presetFor(photo.id, preset, presetsByPhoto)
+                        val result = exportOne(
+                            photo, photoPreset, options, parallel.perLongest, finalImageUris,
+                            inFlight, photos.size, onProgress
+                        )
+                        when (result) {
+                            is OneResult.Saved -> saved.add(result.uri)
+                            is OneResult.Failed -> failures.add(result.message)
+                        }
+                        val finished = doneCount.incrementAndGet()
+                        onProgress(Progress(finished, photos.size, photo.displayName, ""))
+                    }
+                }
+            }.awaitAll()
         }
         onProgress(Progress(photos.size, photos.size, "", ""))
         Result(saved, failures)
+    }
+
+    /**
+     * 计算批量导出的 (并发度, 单张解码最长边上限)。
+     *
+     * - 并发度上限 4：render 内部已最多 8 协程并行，外层再高并发只会争抢
+     *   核心、加剧 GC 抖动，收益递减；单/双核退化为串行或低并发。
+     * - 单张上限按 √并发 下调，使 P × perLongest² ≈ singleLongest²，
+     *   总像素（也即峰值内存）与串行单张基本相当，不会因并发而 OOM。
+     * - perLongest 下限 1200：低于此时画质下降明显，宁可回退并发度。
+     */
+    private fun parallelism(): Parallelism {
+        val cpus = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val single = BitmapLoader.maxExportLongest()
+        var permits = when {
+            cpus >= 8 -> 4
+            cpus >= 4 -> 3
+            cpus == 3 -> 2
+            else -> 1
+        }
+        while (permits > 1 && single / kotlin.math.sqrt(permits.toDouble()) < 1200) {
+            permits--
+        }
+        val perLongest = if (permits <= 1) {
+            single
+        } else {
+            (single / kotlin.math.sqrt(permits.toDouble())).toInt().coerceAtLeast(1200)
+        }
+        return Parallelism(permits, perLongest)
     }
 
     private sealed interface OneResult {

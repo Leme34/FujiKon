@@ -323,7 +323,9 @@ fun PresetPickerSheet(
 fun ExportOptionsSheet(
     initial: ExportManager.Options,
     onStart: (ExportManager.Options) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** 导出范围说明，例如「当前照片」或「所有照片」，仅用于标题展示。 */
+    scopeLabel: String = "所有照片"
 ) {
     var format by remember { mutableStateOf(if (initial.format == "PNG") "PNG" else "JPEG") }
     var preserveExif by remember { mutableStateOf(initial.preserveExif) }
@@ -343,7 +345,7 @@ fun ExportOptionsSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "导出到相册",
+                    "导出${scopeLabel}到相册",
                     style = MaterialTheme.typography.headlineSmall,
                     color = TextPrimary,
                     modifier = Modifier.weight(1f)

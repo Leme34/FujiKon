@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Tune
@@ -133,12 +134,16 @@ fun EditorToolsRow(
 }
 
 /**
- * The three actions of the top-right "更多" menu, exposed as a [ColumnScope]
+ * The actions of the top-right "更多" menu, exposed as a [ColumnScope]
  * extension so it can be rendered both inside [EditorMoreMenu]'s
  * [DropdownMenu] and directly inside a plain Column in UI tests.
  *
  * "粘贴效果" is disabled (greyed out and unclickable) until at least one
  * "复制效果" has succeeded; the ViewModel enforces the same guard.
+ *
+ * 1.6.68: the single export item is split into two —
+ * "导出当前照片" (only the photo currently previewed) and
+ * "导出所有照片" (the whole selection, the pre-split behaviour).
  */
 @Composable
 fun ColumnScope.EditorMoreMenuItems(
@@ -146,7 +151,8 @@ fun ColumnScope.EditorMoreMenuItems(
     canExport: Boolean,
     onCopy: () -> Unit,
     onPaste: () -> Unit,
-    onExport: () -> Unit
+    onExport: () -> Unit,
+    onExportCurrent: () -> Unit = {}
 ) {
     val dimmed = TextSecondary.copy(alpha = 0.45f)
     DropdownMenuItem(
@@ -171,7 +177,20 @@ fun ColumnScope.EditorMoreMenuItems(
         modifier = Modifier.testTag("editor_more_paste")
     )
     DropdownMenuItem(
-        text = { Text("导出", color = if (canExport) Amber else dimmed) },
+        text = { Text("导出当前照片", color = if (canExport) Amber else dimmed) },
+        leadingIcon = {
+            Icon(
+                Icons.Filled.Image,
+                contentDescription = null,
+                tint = if (canExport) Amber else dimmed
+            )
+        },
+        enabled = canExport,
+        onClick = onExportCurrent,
+        modifier = Modifier.testTag("editor_more_export_current")
+    )
+    DropdownMenuItem(
+        text = { Text("导出所有照片", color = if (canExport) Amber else dimmed) },
         leadingIcon = {
             Icon(
                 Icons.Filled.Download,
@@ -193,6 +212,7 @@ fun EditorMoreMenu(
     onCopy: () -> Unit,
     onPaste: () -> Unit,
     onExport: () -> Unit,
+    onExportCurrent: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -213,7 +233,8 @@ fun EditorMoreMenu(
                 canExport = canExport,
                 onCopy = { expanded = false; onCopy() },
                 onPaste = { expanded = false; onPaste() },
-                onExport = { expanded = false; onExport() }
+                onExport = { expanded = false; onExport() },
+                onExportCurrent = { expanded = false; onExportCurrent() }
             )
         }
     }

@@ -181,4 +181,52 @@ class EditorToolsAndMoreMenuTest {
         }
         rule.onNodeWithTag("editor_more_button").assertExists()
     }
+
+    /**
+     * 1.6.68: 导出按钮一分为二——「导出当前照片」只导出当前预览那张，
+     * 「导出所有照片」保持拆分前行为。两者是独立可点击项、回调互不串扰。
+     */
+    @Test
+    fun exportIsSplitIntoCurrentAndAllWithIndependentCallbacks() {
+        var current = 0
+        var all = 0
+        rule.setContent {
+            FujiKonTheme {
+                Column {
+                    EditorMoreMenuItems(
+                        canPaste = false,
+                        canExport = true,
+                        onCopy = {},
+                        onPaste = {},
+                        onExport = { all++ },
+                        onExportCurrent = { current++ }
+                    )
+                }
+            }
+        }
+        rule.onNodeWithTag("editor_more_export_current").assertIsEnabled().performClick()
+        rule.onNodeWithTag("editor_more_export").assertIsEnabled().performClick()
+        assertEquals("导出当前只触发当前回调", 1, current)
+        assertEquals("导出所有只触发全部回调", 1, all)
+    }
+
+    @Test
+    fun bothExportItemsAreDisabledWhenExportNotAllowed() {
+        rule.setContent {
+            FujiKonTheme {
+                Column {
+                    EditorMoreMenuItems(
+                        canPaste = false,
+                        canExport = false,
+                        onCopy = {},
+                        onPaste = {},
+                        onExport = {},
+                        onExportCurrent = {}
+                    )
+                }
+            }
+        }
+        rule.onNodeWithTag("editor_more_export_current").assertIsNotEnabled()
+        rule.onNodeWithTag("editor_more_export").assertIsNotEnabled()
+    }
 }
