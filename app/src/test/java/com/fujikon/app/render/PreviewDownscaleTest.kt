@@ -60,4 +60,42 @@ class PreviewDownscaleTest {
         decoded.recycle()
         file.delete()
     }
+
+    /**
+     * 1.6.70 回归：长边落在「1×~2× 上限」之间的常见手机原图（如 4032×3024、
+     * 上限 2560）。旧 sample 公式会算出 sample=1 → 全分辨率解码 12MP，再叠加
+     * 旋转/缩放拷贝，在低内存真机上 GC 抖动导致打开/套用预设转一分钟。
+     * 新的密度缩放必须在**解码期**一步到位把最长边压到上限，输出不能有全尺寸位图。
+     */
+    @Test
+    fun midSizeCameraPhotoIsDownsampledAtDecodeTime(): Unit = runBlocking {
+        val ctx: Context = ApplicationProvider.getApplicationContext()
+        val bigW = 1512
+        val bigH = 2016 // 长边 2016，介于 1×2560 之下但远高于「2×上限才采样」的阈值
+        val maxDim = 1920
+        val file = File(ctx.cacheDir, "mid_preview_source.jpg")
+        val pixels = IntArray(bigW * bigH) { i ->
+            val x = i % bigW; val y = i / bigW
+            (0xFF shl 24) or ((x and 0xFF) shl 16) or ((y and 0xFF) shl 8) or ((x + y) and 0xFF)
+        }
+        val bmp = Bitmap.createBitmap(pixels, bigW, bigH, Bitmap.Config.ARGB_8888)
+        java.io.FileOutputStream(file).use { out ->
+            bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        }
+        bmp.recycle()
+
+        val decoded = BitmapLoader.decodePreview(ctx, Uri.fromFile(file), maxDim)
+        assertNotNull("中等尺寸相机图预览解码不应失败", decoded)
+        val longest = maxOf(decoded!!.width, decoded.height)
+        assertTrue("预览最长边($longest)不得超过上限($maxDim)", longest <= maxDim)
+        // 若旧公式生效（sample=1），密度缩放会把它压到上限；无论如何输出都
+        // 必须明显小于原图面积，证明没有把全分辨率位图交给上层。
+        val outPixels = decoded.width.toLong() * decoded.height
+        assertTrue(
+            "预览输出像素($outPixels)应小于原图(${bigW * bigH})，解码期必须缩放",
+            outPixels < bigW.toLong() * bigH
+        )
+        decoded.recycle()
+        file.delete()
+    }
 }

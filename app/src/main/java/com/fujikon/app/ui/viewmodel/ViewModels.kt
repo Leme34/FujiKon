@@ -1688,6 +1688,15 @@ class EditorViewModel(
                         ) ?: throw IllegalStateException("无法读取 AI 修图结果")
                         return@withContext RenderOutcome.Ai(original, finalImage, aiUri)
                     }
+                    // 1.6.70：预设「无」且没有任何调节时没有可施加的处理，解码出的
+                    // 预览本身就是成片。直接复用，跳过整条多 pass 渲染管线及其多份
+                    // 全帧拷贝（这也是截图里「无」预设仍转圈一分钟的元凶之一）。
+                    // 解码位图只读共享：渲染严格产生新位图，缩放/裁剪不改变源像素。
+                    if (preset.isNone && snapshot.adjustments.isNeutral() &&
+                        !snapshot.hasToneCurve
+                    ) {
+                        return@withContext RenderOutcome.Frame(original, original, original)
+                    }
                     // Render the uncropped frame once: it is both the base for
                     // the interactive crop editor and the source of the crop.
                     val basePreset = if (crop.isFull()) {

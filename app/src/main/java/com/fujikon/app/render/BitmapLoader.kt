@@ -44,16 +44,33 @@ object BitmapLoader {
                 var sample = 1
                 while (decodedLongest / (sample * 2) >= maxDimension) sample *= 2
 
+                // 1.6.70：上面公式对「长边在 1×~2× 上限之间」的常见手机原图
+                // （3024/4032/4608，8~16MP）仍会算出 sample=1，从而把整张原图
+                // 全分辨率解码成 ARGB（一张 12MP≈48MB），再叠加旋转拷贝 + 缩放
+                // 拷贝，在低内存真机上引发剧烈 GC 抖动 —— 这就是「打开/套用转
+                // 一分钟」的真正根因。这里让解码器用 inDensity/inTargetDensity
+                // 在**同一次解码**里直接缩到目标尺寸，不再先分配全分辨率位图。
+                val sampledLongest = decodedLongest / sample
+                val densityBase = 1000
+                // 仅当采样后仍超过上限才缩小；永不放大（放大只会发糊）。
+                val targetDensity = if (sampledLongest > maxDimension) {
+                    (densityBase.toFloat() * maxDimension / sampledLongest)
+                        .roundToInt().coerceAtLeast(1)
+                } else densityBase
                 val options = BitmapFactory.Options().apply {
                     inSampleSize = sample
                     inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inScaled = true
+                    inDensity = densityBase
+                    inTargetDensity = targetDensity
                 }
                 val decoded = context.contentResolver.openInputStream(uri)?.use {
                     BitmapFactory.decodeStream(it, null, options)
                 } ?: return@runCatching null
-                // 关键收益已在上面的 sample 修正：解码像素从 2000 万降到 1/4。
-                // 下面沿用经过验证的「旋转 → 缩放」两步法（小图上开销可忽略），
+                // 密度缩放已让解码一步到位到目标附近；旋转仍走经过验证的两步法，
                 // 避免 createBitmap(matrix) 在部分 Bitmap 实现上产生无效位图。
+                // 下面的 createScaledBitmap 仅作兜底：个别解码器忽略 density 缩放时
+                // 才需要真正缩放，绝大多数情况下 longest<=maxDimension 直接跳过。
                 val oriented = applyOrientation(decoded, orientation)
                 val longest = max(oriented.width, oriented.height)
                 val result = if (longest > maxDimension) {
