@@ -27,13 +27,15 @@ object DazzFilmLut {
     const val LOOK_FXN_R = 1
     const val LOOK_CLASSIC_U = 2
     const val LOOK_NOSTALGIC_NEG = 3
+    /** Dazz 最火的理光负片 OFM R：低饱和、褪色抬黑、中性偏暖浅黄（1.6.69）。 */
+    const val LOOK_OFM_R = 4
 
-    private val cache = arrayOfNulls<FloatArray>(LOOK_NOSTALGIC_NEG + 1)
+    private val cache = arrayOfNulls<FloatArray>(LOOK_OFM_R + 1)
 
     /** 返回对应 look 的 LUT；look 非法或无 LUT 时返回 null。线程安全（读多写少的幂等缓存）。 */
     @Synchronized
     fun get(look: Int): FloatArray? {
-        if (look <= LOOK_NONE || look > LOOK_NOSTALGIC_NEG) return null
+        if (look <= LOOK_NONE || look > LOOK_OFM_R) return null
         return cache[look] ?: build(look).also { cache[look] = it }
     }
 
@@ -97,10 +99,32 @@ object DazzFilmLut {
         hprot = 0.88f, gcast = floatArrayOf(0.060f, 0.024f, -0.040f), redBoost = 0f
     )
 
+    /**
+     * 理光负片 OFM R：和三款富士是两种审美——三款富士「浓郁 + 影调分离」，
+     * OFM R 是「寡淡 + 褪色」。指纹来自 Dazz 官方样张与多篇实测评测的一致描述：
+     *  - 低对比 + 抬黑（faded/matte）：黑位整体抬起、白位略压，动态范围收窄，
+     *    形成温柔的「空气感 / 回忆感」，阴天废片也能救回。用 tone 曲线直接实现。
+     *  - 低饱和：sat 显著低于三款富士，画面寡淡。
+     *  - 中性偏暖浅黄 + 黄蓝分离：阴影带一点青蓝、高光带浅黄，但幅度都很轻，
+     *    不像 Nostalgic Neg 那样琥珀/深蓝对撞。
+     *  - 肤色：理光负片自带柔和磨皮、肤色干净；继续复用椭圆肤色保护，避免发黄发脏。
+     */
+    private val OFM_R = Spec(
+        // 抬黑 + 压白：黑位 0→0.040，中段略降对比，白位 1→0.955。
+        tone = floatArrayOf(0f, 0.040f, 0.12f, 0.142f, 0.28f, 0.292f, 0.50f, 0.492f, 0.72f, 0.705f, 0.90f, 0.895f, 1f, 0.955f),
+        s0 = 0.20f, s1 = 0.60f, h0 = 0.52f, h1 = 0.96f,
+        shadow = floatArrayOf(-0.014f, 0.004f, 0.030f),
+        mid = floatArrayOf(0f, 0f, -0.006f),
+        high = floatArrayOf(0.030f, 0.022f, -0.030f),
+        skinProtect = 0.90f, skinLift = 0.052f, sat = 0.78f, skinSatDelta = 0.10f,
+        hprot = 0.90f, gcast = floatArrayOf(0.014f, 0.010f, -0.024f), redBoost = 0f
+    )
+
     private fun specOf(look: Int): Spec = when (look) {
         LOOK_FXN_R -> FXN_R
         LOOK_CLASSIC_U -> CLASSIC_U
         LOOK_NOSTALGIC_NEG -> NOSTALGIC_NEG
+        LOOK_OFM_R -> OFM_R
         else -> FXN_R
     }
 

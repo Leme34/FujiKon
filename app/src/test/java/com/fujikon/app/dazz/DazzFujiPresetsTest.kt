@@ -17,9 +17,9 @@ import org.robolectric.annotation.Config
  * Dazz 富士风格预置的参数不变量 + 3D LUT 正确性 + 渲染健全性。
  *
  * 针对用户反馈的两点做回归：
- *  ① 「三款效果相差无几」→ [threeLooksAreDistinct] 断言三款 LUT 在代表性
- *     颜色上输出拉得开（青影/冷绿/暖琥珀方向不同）。
- *  ② 「皮肤太脏不够清透」→ [skinIsProtectedAcrossAllLooks] 断言肤色色样在三款
+ *  ① 「效果相差无几」→ [allLooksAreDistinct] 断言四款 LUT 在代表性
+ *     颜色上输出拉得开（青影/冷绿/暖琥珀/褪色浅黄方向不同）。
+ *  ② 「皮肤太脏不够清透」→ [skinIsProtectedAcrossAllLooks] 断言肤色色样在四款
  *     下都几乎不被染色（RGB 偏移很小），而环境色仍被明显着色。
  * 另沿用「套用后仍可看」的渲染健全性，防止 3D LUT 出现此前 3D LUT 崩坏。
  */
@@ -32,12 +32,13 @@ class DazzFujiPresetsTest {
     private val expectedNames = listOf(
         "FXN R · 经典负片",
         "Classic U · 冷调胶片",
-        "Nostalgic Neg · 怀旧负片"
+        "Nostalgic Neg · 怀旧负片",
+        "OFM R · 理光负片"
     )
 
     @Test
-    fun exposesExactlyThreeFujiLooksInOrder() {
-        assertEquals(3, presets.size)
+    fun exposesExactlyFourDazzLooksInOrder() {
+        assertEquals(4, presets.size)
         assertEquals(expectedNames, presets.map { it.name })
         assertTrue(presets.all { it.sourceName == DazzFujiPresets.SOURCE_NAME })
         assertTrue(presets.all { it.format == "NP3" })
@@ -46,7 +47,7 @@ class DazzFujiPresetsTest {
     @Test
     fun eachLookUsesA3dLutAndNoHeavy1dChains() {
         presets.forEach { p ->
-            assertEquals("${p.name} filmLook 应为 1/2/3", true, p.filmLook in 1..3)
+            assertEquals("${p.name} filmLook 应为 1/2/3/4", true, p.filmLook in 1..4)
             assertTrue("${p.name} 必须挂载 3D LUT", DazzFilmLut.get(p.filmLook) != null)
             // 3D LUT 已含影调：1D curve 必须为 null，避免二次施加。
             assertEquals("${p.name} 不应再带 1D 曲线", null, p.curve)
@@ -60,20 +61,23 @@ class DazzFujiPresetsTest {
             assertEquals("不应保留清晰度卷积", 0f, a.clarity)
             assertTrue("强度为满档", a.presetStrength == 100f)
         }
-        assertEquals("三款 filmLook 应互不相同", 3, presets.map { it.filmLook }.toSet().size)
+        assertEquals("四款 filmLook 应互不相同", 4, presets.map { it.filmLook }.toSet().size)
     }
 
     @Test
     fun contentHashesAreStableUniqueAndNamespaced() {
         val hashes = presets.map { it.contentHash }
-        assertEquals(3, hashes.toSet().size)
+        assertEquals(4, hashes.toSet().size)
         assertTrue(hashes.all { it.startsWith("dazz3:") })
         assertTrue(hashes.none {
             it.startsWith("nic:") || it.startsWith("nikonpc:") ||
                 it.startsWith("cloudlut:") || it.startsWith("dazz:")
         })
         assertEquals(
-            listOf("dazz3:fxn_r_classic_neg", "dazz3:classic_u_superia400", "dazz3:nostalgic_neg"),
+            listOf(
+                "dazz3:fxn_r_classic_neg", "dazz3:classic_u_superia400",
+                "dazz3:nostalgic_neg", "dazz3:ofm_r_ricoh_neg"
+            ),
             hashes
         )
     }
@@ -119,8 +123,8 @@ class DazzFujiPresetsTest {
     }
 
     @Test
-    fun threeLooksAreDistinct() {
-        // 取几个非肤色色样，三款两两之间必须拉开明显差异（任一通道差 > 6）。
+    fun allLooksAreDistinct() {
+        // 取几个非肤色色样，四款两两之间必须拉开明显差异（任一通道差 > 6）。
         val env = swatches.filter { it.name in setOf("shadow", "blueSky", "green", "whiteWall") }
         val looks = presets.map { it.filmLook }
         var distinctPairs = 0
@@ -133,7 +137,7 @@ class DazzFujiPresetsTest {
             }
             if (maxDiff > 6) distinctPairs++
         }
-        assertTrue("三款 LUT 两两之间都应有明显差异（实际对数=$distinctPairs）", distinctPairs == 3)
+        assertTrue("四款 LUT 两两之间都应有明显差异（实际对数=$distinctPairs）", distinctPairs == 6)
     }
 
     @Test

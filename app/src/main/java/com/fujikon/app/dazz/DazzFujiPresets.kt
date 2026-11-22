@@ -22,6 +22,10 @@ import com.fujikon.app.ncp.PictureControlFormat
  *    高对比）、Classic U（80s 冷调蓝绿、红色敏感、浓郁）、Nostalgic Neg（琥珀
  *    高光 + 深蓝阴影、柔和低对比）。肤色区域三款都做保护，保持清透通透。
  *
+ * 1.6.69 新增理光负片 OFM R：与三款富士是两种审美——寡淡、低饱和、褪色抬黑、
+ * 中性偏暖浅黄，是 Dazz 近期最火的理光 GR 平替。同样烘成 33³ 3D LUT，套用/导出
+ * 与三款一致的速度。
+ *
  * 诚实边界：没有原图—成片配对，无法逐像素反推 Dazz 的内部 LUT；这里复刻的是
  * 样张呈现的风格指纹 + 富士公开色彩科学，属风格接近而非像素级移植。
  */
@@ -61,6 +65,13 @@ object DazzFujiPresets {
             description = "富士 Nostalgic Neg 风格：琥珀色高光 + 深蓝阴影，柔和低对比但色彩浓郁，家庭相册式暖调记忆感。适合旅行、聚会与人像。",
             filmLook = DazzFilmLut.LOOK_NOSTALGIC_NEG,
             grain = 10f
+        ),
+        Spec(
+            slug = "ofm_r_ricoh_neg",
+            name = "OFM R · 理光负片",
+            description = "Dazz 近期最火的理光 GR 平替（OFM R）：低饱和、低对比、轻微褪色抬黑，中性偏暖的浅黄调，过渡柔和自带氛围感。适合日常随拍、街景建筑、静物与暖色室内。",
+            filmLook = DazzFilmLut.LOOK_OFM_R,
+            grain = 8f
         )
     )
 
