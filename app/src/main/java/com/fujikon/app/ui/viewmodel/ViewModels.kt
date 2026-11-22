@@ -1448,12 +1448,17 @@ class EditorViewModel(
         } else {
             _state.value.presets.firstOrNull { it.id == id }
         }
-        _state.update {
-            it.copy(
+        _state.update { current ->
+            // 1.6.72：切换预设只替换「滤镜/色调」类参数，几何构图（裁剪）是
+            // 正交的用户编辑，必须保留。旧实现用 preset.adjustments 整体覆盖，
+            // 把 crop 重置成 EditCrop.Full，导致「裁剪后换预设裁剪丢失」。
+            // 预设自身若碰巧带 crop 也忽略——裁剪永远属于当前照片的编辑状态。
+            val incoming = preset?.adjustments ?: EditAdjustments.Neutral
+            current.copy(
                 presetId = id,
                 toneCurveOverride = null,
                 channelCurvesOverride = null,
-                adjustments = preset?.adjustments ?: EditAdjustments.Neutral
+                adjustments = incoming.copy(crop = current.adjustments.crop)
             )
         }
         selectionStore.setPreset(id)
