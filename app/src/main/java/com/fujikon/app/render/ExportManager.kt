@@ -82,66 +82,67 @@ class ExportManager(
         //
         // 每张仍独立走 [exportOne] 的 OOM 逐级降级重试，因此并发不会牺牲
         // 成功率；信号量限制在途张数，进度用原子计数只增不减。
-        val parallel = parallelism()
+        val parallel = parallelism(photos.size)
         val saved = Collections.synchronizedList(mutableListOf<Uri>())
         val failures = Collections.synchronizedList(mutableListOf<String>())
         val doneCount = AtomicInteger(0)
         val gate = Semaphore(parallel.permits)
 
-        onProgress(Progress(0, photos.size, "", ""))
+        // 1.6.71：并发下多张照片的进度回调可能乱序到达（实测 4→3），进度条倒退。
+        // 统一在此串行化并取 done 的历史最大值，保证对外发出的 done 单调不减。
+        val progressLock = Any()
+        var lastReported = 0
+        val emit: (Progress) -> Unit = { p ->
+            synchronized(progressLock) {
+                val monotonic = maxOf(p.done, lastReported)
+                lastReported = monotonic
+                onProgress(p.copy(done = monotonic))
+            }
+        }
+
+        emit(Progress(0, photos.size, "", ""))
         coroutineScope {
             photos.map { photo ->
                 async {
                     gate.withPermit {
                         coroutineContext.ensureActive()
                         val inFlight = doneCount.get()
-                        onProgress(Progress(inFlight, photos.size, photo.displayName, ""))
+                        emit(Progress(inFlight, photos.size, photo.displayName, ""))
                         val photoPreset = presetFor(photo.id, preset, presetsByPhoto)
                         val result = exportOne(
                             photo, photoPreset, options, parallel.perLongest, finalImageUris,
-                            inFlight, photos.size, onProgress
+                            inFlight, photos.size, emit
                         )
                         when (result) {
                             is OneResult.Saved -> saved.add(result.uri)
                             is OneResult.Failed -> failures.add(result.message)
                         }
                         val finished = doneCount.incrementAndGet()
-                        onProgress(Progress(finished, photos.size, photo.displayName, ""))
+                        emit(Progress(finished, photos.size, photo.displayName, ""))
                     }
                 }
             }.awaitAll()
         }
-        onProgress(Progress(photos.size, photos.size, "", ""))
+        emit(Progress(photos.size, photos.size, "", ""))
         Result(saved, failures)
     }
 
     /**
-     * 计算批量导出的 (并发度, 单张解码最长边上限)。
+     * 计算导出的 (并发度, 单张解码最长边上限)。
      *
-     * - 并发度上限 4：render 内部已最多 8 协程并行，外层再高并发只会争抢
-     *   核心、加剧 GC 抖动，收益递减；单/双核退化为串行或低并发。
-     * - 单张上限按 √并发 下调，使 P × perLongest² ≈ singleLongest²，
-     *   总像素（也即峰值内存）与串行单张基本相当，不会因并发而 OOM。
-     * - perLongest 下限 1200：低于此时画质下降明显，宁可回退并发度。
+     * 1.6.71 画质修复：旧实现把单张上限按 √并发下调（4 并发时
+     * 4900→2450），再叠加 [BitmapLoader.decodeFullLimited] 的 2 的幂降采样
+     * （2450→1225），十几 MP 的原图被缩到约 1.5MP，导出 JPG 仅几百 K。
+     * 现在画质作为硬指标，不再为了并发牺牲分辨率：
+     * - 单张上限恒为 [BitmapLoader.maxExportLongest]（约 4900），不缩水。
+     * - 并发度降到 2：既保留「张与张的解码/写入在双核上重叠」的提速
+     *   （1.6.68 的诉求），又把同时在堆的全分辨率位图压到 2 张以内，
+     *   避免触发 OOM 逐级降级（降级同样损画质）。render 内部本就多核并行。
      */
-    private fun parallelism(): Parallelism {
-        val cpus = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+    private fun parallelism(photoCount: Int): Parallelism {
         val single = BitmapLoader.maxExportLongest()
-        var permits = when {
-            cpus >= 8 -> 4
-            cpus >= 4 -> 3
-            cpus == 3 -> 2
-            else -> 1
-        }
-        while (permits > 1 && single / kotlin.math.sqrt(permits.toDouble()) < 1200) {
-            permits--
-        }
-        val perLongest = if (permits <= 1) {
-            single
-        } else {
-            (single / kotlin.math.sqrt(permits.toDouble())).toInt().coerceAtLeast(1200)
-        }
-        return Parallelism(permits, perLongest)
+        val permits = if (photoCount <= 1) 1 else 2
+        return Parallelism(permits = permits, perLongest = single)
     }
 
     private sealed interface OneResult {

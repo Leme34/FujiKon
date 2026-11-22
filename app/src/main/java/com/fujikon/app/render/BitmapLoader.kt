@@ -107,9 +107,17 @@ object BitmapLoader {
         }
 
     /**
-     * 把最长边缩放到 [maxLongest] 像素后解码整图。
-     * 用于大图导出失败时的逐级降级重试：相比按像素面积 [maxExportPixels]，
-     * 这里直接约束最长边，缩放更直观，且同样不会重新读盘。
+     * 把最长边缩放到 [maxLongest] 像素后解码整图，用于导出（含 OOM 降级重试）。
+     *
+     * 1.6.71 画质修复：旧实现只用 2 的幂采样
+     * `while (longest / sample > maxLongest) sample *= 2`，会把尺寸断崖式砍到
+     * 「大于 maxLongest 的最小 2 的幂分之一」。例如 6016 长图、上限 4900 时
+     * 算出 sample=2 → 实际只有 3008px（比上限少 39%），叠加旧并发再砍半后
+     * 十几 MP 原图只剩约 1.5MP，导出仅几百 K。
+     *
+     * 新实现两步：先用 2 的幂采样保证「解码后仍 >= 上限」（不过度解码），
+     * 再用 inDensity/inTargetDensity 在**同一次解码**里精确缩放到上限，
+     * 使输出最长边尽可能贴近 [maxLongest]，画质最大化。永不放大。
      */
     suspend fun decodeFullLimited(
         context: Context,
@@ -120,13 +128,22 @@ object BitmapLoader {
             val orientation = readOrientation(context, uri)
             val bounds = readBounds(context, uri) ?: return@runCatching null
             val longest = max(bounds.first, bounds.second)
+            // 采样后最长边仍 >= 上限的最小 2 的幂；长图不会一次解到全分辨率。
             var sample = 1
-            while (longest / sample > maxLongest) {
-                sample *= 2
-            }
+            while (longest / (sample * 2) >= maxLongest) sample *= 2
+            val sampledLongest = longest / sample
+            val densityBase = 1000
+            // 采样后仍超过上限时用密度精调到上限；否则保持原样（不放大）。
+            val targetDensity = if (sampledLongest > maxLongest) {
+                (densityBase.toFloat() * maxLongest / sampledLongest)
+                    .roundToInt().coerceAtLeast(1)
+            } else densityBase
             val options = BitmapFactory.Options().apply {
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
+                inScaled = true
+                inDensity = densityBase
+                inTargetDensity = targetDensity
             }
             val decoded = context.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, options)
