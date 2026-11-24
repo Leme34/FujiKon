@@ -85,7 +85,7 @@ class DazzFujiPresetsTest {
             listOf(
                 "dazz3:fxn_r_classic_neg", "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg", "dazz3:ofm_r_ricoh_neg",
-                "dazz3:film_flash_portrait_v3"
+                "dazz3:film_flash_portrait_v4"
             ),
             hashes
         )

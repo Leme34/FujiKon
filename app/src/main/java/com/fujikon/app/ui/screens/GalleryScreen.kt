@@ -22,8 +22,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -72,10 +74,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
+import kotlinx.coroutines.launch
 import com.fujikon.app.FujiKonApp
 import com.fujikon.app.data.Preset
 import com.fujikon.app.ui.Routes
+import com.fujikon.app.ui.components.DateScrubber
 import com.fujikon.app.ui.components.PhotoCell
+import com.fujikon.app.ui.components.buildDateTicks
 import com.fujikon.app.ui.components.PresetPickerSheet
 import com.fujikon.app.ui.components.SelectedPhotoTile
 import com.fujikon.app.ui.theme.Amber
@@ -157,6 +162,9 @@ fun GalleryScreen(
     val visible = remember(state.photos, albumFilter) {
         if (albumFilter == null) state.photos else state.photos.filter { it.bucketId == albumFilter }
     }
+    // 右侧日期快速定位轴：按可见照片的日期生成刻度，拖动即滚动网格到对应照片。
+    val gridState = rememberLazyGridState()
+    val dateTicks = remember(visible) { buildDateTicks(visible, System.currentTimeMillis()) }
     val selectionOrder = remember(orderedIds) {
         orderedIds.mapIndexed { index, id -> id to index + 1 }.toMap()
     }
@@ -422,19 +430,34 @@ fun GalleryScreen(
                             color = TextSecondary
                         )
                     }
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(visible, key = { it.id }) { photo ->
-                            PhotoCell(
-                                uri = photo.uri,
-                                selected = photo.id in selectedIds,
-                                selectionNumber = selectionOrder[photo.id],
-                                onClick = { viewModel.toggle(photo.id) }
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        LazyVerticalGrid(
+                            state = gridState,
+                            columns = GridCells.Fixed(3),
+                            contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            items(visible, key = { it.id }) { photo ->
+                                PhotoCell(
+                                    uri = photo.uri,
+                                    selected = photo.id in selectedIds,
+                                    selectionNumber = selectionOrder[photo.id],
+                                    onClick = { viewModel.toggle(photo.id) }
+                                )
+                            }
+                        }
+                        // 右侧日期轴：照片较多时显示，拖动快速按日期跳转。
+                        if (dateTicks.isNotEmpty() && visible.size > 12) {
+                            DateScrubber(
+                                photos = visible,
+                                ticks = dateTicks,
+                                onTargetIndex = { index ->
+                                    scope.launch {
+                                        gridState.animateScrollToItem(index.coerceIn(0, visible.size - 1))
+                                    }
+                                }
                             )
                         }
                     }

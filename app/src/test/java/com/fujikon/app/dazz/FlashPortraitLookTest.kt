@@ -87,4 +87,27 @@ class FlashPortraitLookTest {
         // 去红配比应把 R-G 从旧的 ~51 收到 ~36，肤色不再橙。
         assertTrue("肤色 R-G 应收敛（R-G=${c[0] - c[1]}，应 <45）", c[0] - c[1] < 45)
     }
+
+    /**
+     * 1.6.79 胶片氛围增强：非肤色区呈富士式青蓝影调（整体 B 相对 R 抬升），
+     * 并以抬黑+降饱和带出理光 matte 空气感，同时肤色/白墙仍干净不泛红。
+     */
+    @Test
+    fun filmAtmosphereCoolBlueCastOutsideSkin() {
+        // 中性灰 NonSkin 区应有可感知的青蓝偏移（R-B 明显为负）。
+        val gray = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 128, 128, 128)
+        assertTrue("中间调应带青蓝胶片色偏（R-B=${gray[0] - gray[2]}，应 <=-4）",
+            gray[0] - gray[2] <= -4)
+        // 蓝天/环境冷色被进一步强化（B 抬升）。
+        val sky = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 120, 160, 210)
+        assertTrue("环境冷色应更青蓝（B-R=${sky[2] - sky[0]}）", sky[2] - sky[0] >= 78)
+        // matte 抬黑：偏蓝暗部亮度被抬到 50 以上（旧版约 49，增强后更高）。
+        val shadow = luma(sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 40, 50, 66))
+        assertTrue("暗部应有 matte 空气感（shadow=$shadow，应 >50）", shadow > 50f)
+        // 关键约束：氛围不得让肤色或白墙泛红。
+        val skin = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 205, 168, 140)
+        assertTrue("肤色仍不泛红（R-B=${skin[0] - skin[2]}）", skin[0] - skin[2] < 62)
+        val wall = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 220, 218, 214)
+        assertTrue("白墙仍不泛红（R-B=${wall[0] - wall[2]}）", wall[0] - wall[2] <= 10)
+    }
 }
