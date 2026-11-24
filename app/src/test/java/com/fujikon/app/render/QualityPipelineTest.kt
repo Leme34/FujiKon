@@ -143,6 +143,35 @@ class QualityPipelineTest {
     }
 
     @Test
+    fun flashFactorProtectsHighlightsFromBlowingOut() {
+        // 同一闪光中心位置：中灰像素全额提亮，高光像素提亮被显著抑制。
+        val mid = QualityOperators.flashFactor(0f, 0.35f, 1f, luma = 0.3f)
+        val bright = QualityOperators.flashFactor(0f, 0.35f, 1f, luma = 0.9f)
+        assertTrue("中灰应全额提亮 (>1.25)：$mid", mid > 1.25f)
+        assertTrue("高光不应被明显提亮 (<1.06)：$bright", bright < 1.06f)
+        assertTrue("高光增益应显著小于中灰", bright < mid - 0.2f)
+        // 保护只削弱提亮正项，边缘压暗负项仍在。
+        val brightEdge = QualityOperators.flashFactor(-1f, -1f, 1f, luma = 0.9f)
+        assertTrue("高光区域边缘仍应压暗 (<1)：$brightEdge", brightEdge < 1f)
+    }
+
+    @Test
+    fun flashDoesNotBlowHighlightsToPureWhite() {
+        val w = 64; val h = 64
+        // 画面铺中亮高光（亮度≈232），若无保护，闪光中心×1.3 会溢出到 255 死白。
+        val px = flat(w, h, rgb(232, 232, 232))
+        QualityOperators.applyFlash(px, w, h, 100f, null)
+        val faceIdx = (h * 0.32f).toInt() * w + w / 2
+        val face = px[faceIdx]
+        val r = (face shr 16) and 0xFF
+        val g = (face shr 8) and 0xFF
+        val b = face and 0xFF
+        assertTrue("闪光后高光不应溢出死白：rgb($r,$g,$b)", maxOf(r, g, b) < 252)
+        // 高光不应被明显压暗（保护只削弱提亮，保留亮度层次）。
+        assertTrue("高光应保留原有亮度层次 (>218)：$r", r > 218)
+    }
+
+    @Test
     fun zeroFlashLeavesPixelsUntouched() {
         val w = 16; val h = 16
         val original = flat(w, h, rgb(120, 130, 140))

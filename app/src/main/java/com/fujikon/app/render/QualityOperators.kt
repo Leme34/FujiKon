@@ -214,21 +214,29 @@ object QualityOperators {
     /**
      * 全局闪光照明的亮度增益系数（纯函数，便于单测）。
      * [nx],[ny] 为 -1..1 的归一化坐标，原点在画面中心、ny 向上为正；
-     * [strength] 为 0..1 的闪光强度。闪光中心上移到 y=+0.35（人像面部通常
-     * 在上半部），中心最多提亮 +30%、边缘最多压暗 -18%，中间按 1.6 次幂平滑
-     * 衰减——形成「主体被打亮、背景随距离衰减」的真实机顶直闪光感。
+     * [strength] 为 0..1 的闪光强度。[luma] 为该像素归一化亮度（0..1），用于
+     * 高光保护：亮度超过 0.68 后提亮增益平滑衰减，到 0.92 完全不再提亮，
+     * 避免本就明亮的高光区（皮肤反光、背景亮部）被闪光乘法推到 255 死白。
+     * 闪光中心上移到 y=+0.35（人像面部通常在上半部），中心最多提亮 +30%、
+     * 边缘最多压暗 -18%，中间按 1.6 次幂平滑衰减——形成「主体被打亮、
+     * 背景随距离衰减」的真实机顶直闪光感。默认 [luma]=0 表示无高光保护，
+     * 兼容只考察空间光照分布的调用。
      */
-    fun flashFactor(nx: Float, ny: Float, strength: Float): Float {
+    fun flashFactor(nx: Float, ny: Float, strength: Float, luma: Float = 0f): Float {
         if (strength <= 0.001f) return 1f
         val dy = ny - 0.35f
         val d = (sqrt(nx * nx + dy * dy) / sqrt(2f)).coerceIn(0f, 1f)
         val w = (1f - d * d * sqrt(d)).coerceIn(0f, 1f) // 1.6 次幂近似：d²·√d
-        return 1f + strength * (0.30f * w - 0.18f * (1f - w))
+        // 高光保护：只衰减「提亮」正项，边缘「压暗」负项保留。
+        val highlightGuard = 1f - smoothstep(0.68f, 0.92f, luma)
+        return 1f + strength * (0.30f * w * highlightGuard - 0.18f * (1f - w))
     }
 
     /**
-     * 机顶闪光灯的径向光照：中心提亮、四周衰减。只依赖像素坐标，可安全按行并行；
-     * 每像素仅一次查表（距离 LUT）和一次乘加，成本与 vignette 相当。
+     * 机顶闪光灯的径向光照：中心提亮、四周衰减，并对高光做保护——亮度越高
+     * 闪光提亮越弱（0.68→0.92 平滑归零），避免高光区乘以增益后溢出死白，
+     * 保留亮部层次。只依赖像素坐标与亮度，可安全按行并行；每像素两次查表
+     * （距离 LUT + 高光保护 LUT）和一次乘加，成本与 vignette 相当。
      * [amount] 为 0..100，0 时早退、完全不改变画面。
      */
     fun applyFlash(
@@ -241,6 +249,10 @@ object QualityOperators {
         val wLut = FloatArray(LUT_SIZE) { i ->
             val d = i / (LUT_SIZE - 1).toFloat()
             (1f - d * d * sqrt(d)).coerceIn(0f, 1f)
+        }
+        // 高光保护 LUT：亮度桶(0..255) → 提亮保留系数，0.68→0.92 平滑衰减到 0。
+        val guardLut = FloatArray(LUT_SIZE) { i ->
+            1f - smoothstep(0.68f, 0.92f, i / (LUT_SIZE - 1).toFloat())
         }
         val invW = 2f / (width - 1).coerceAtLeast(1)
         val invH = 2f / (height - 1).coerceAtLeast(1)
@@ -255,12 +267,16 @@ object QualityOperators {
                 val nx = colNx[x]
                 val d = (sqrt(nx * nx + dy * dy) * invSqrt2).coerceIn(0f, 1f)
                 val w = wLut[(d * (LUT_SIZE - 1)).toInt().coerceIn(0, LUT_SIZE - 1)]
-                val factor = 1f + strength * (0.30f * w - 0.18f * (1f - w))
                 val c = pixels[i]
-                val r = ((c shr 16) and 0xFF) * factor
-                val g = ((c shr 8) and 0xFF) * factor
-                val b = (c and 0xFF) * factor
-                pixels[i] = pack(r, g, b)
+                val r8 = (c shr 16) and 0xFF
+                val g8 = (c shr 8) and 0xFF
+                val b8 = c and 0xFF
+                // 整数近似亮度 (0.299R+0.587G+0.114B)*256，避免每像素浮点除法。
+                val lumaBucket = ((r8 * 77 + g8 * 150 + b8 * 29) shr 8).coerceIn(0, LUT_SIZE - 1)
+                val lift = 0.30f * w * guardLut[lumaBucket]
+                val fall = 0.18f * (1f - w)
+                val factor = 1f + strength * (lift - fall)
+                pixels[i] = pack(r8 * factor, g8 * factor, b8 * factor)
                 i++
             }
         }
