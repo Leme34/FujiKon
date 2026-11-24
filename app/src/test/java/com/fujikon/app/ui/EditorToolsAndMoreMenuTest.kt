@@ -41,7 +41,7 @@ class EditorToolsAndMoreMenuTest {
     fun toolsAreExactlySevenInOrderAndContainNoExport() {
         assertEquals(7, EDITOR_TOOLS.size)
         assertEquals(
-            listOf("预设", "调节", "裁剪", "模糊", "曲线", "蒙版", "AI"),
+            listOf("预设", "调节", "裁剪", "曲线", "模糊", "蒙版", "AI"),
             EDITOR_TOOLS.map { it.label }
         )
         assertFalse("导出已从底部工具栏移到更多菜单", EDITOR_TOOLS.any { it.label == "导出" })

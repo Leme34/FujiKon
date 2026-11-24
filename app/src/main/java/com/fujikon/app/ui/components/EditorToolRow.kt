@@ -58,8 +58,8 @@ enum class EditorTool(val label: String, val icon: ImageVector) {
     PRESET("预设", Icons.Filled.Tune),
     ADJUST("调节", Icons.Filled.Equalizer),
     CROP("裁剪", Icons.Filled.Crop),
-    BLUR("模糊", Icons.Filled.BlurOn),
     CURVE("曲线", Icons.Filled.Timeline),
+    BLUR("模糊", Icons.Filled.BlurOn),
     MASK("蒙版", Icons.Filled.Brush),
     AI("AI", Icons.Filled.AutoAwesome)
 }

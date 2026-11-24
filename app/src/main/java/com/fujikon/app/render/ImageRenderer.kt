@@ -906,6 +906,14 @@ open class ImageRenderer {
                     r = (packed shr 16) and 0xFF
                     g = (packed shr 8) and 0xFF
                     b = packed and 0xFF
+                    // 用户手动曲线（主曲线 + 逐通道曲线）烘在 1D LUT 里。此前
+                    // 3D LUT 分支直接采用插值结果，跳过了这条链，导致套用 3D LUT
+                    // 胶片滤镜后调曲线完全无效。Dazz 等 3D LUT 预设自身影调已全部
+                    // 烘进映射、curve=null、其 1D 链为恒等，因此这里串接只会施加
+                    // 用户手调的曲线，不会二次叠加预设影调。
+                    r = redLut[r]
+                    g = greenLut[g]
+                    b = blueLut[b]
                 } else {
                     r = redLut[(color shr 16) and 0xFF]
                     g = greenLut[(color shr 8) and 0xFF]
