@@ -53,6 +53,14 @@ object QualityOperators {
     private val VIGNETTE_WEIGHT_LUT = FloatArray(LUT_SIZE) { i ->
         smoothstep(0.32f, 1.05f, i / (LUT_SIZE - 1).toFloat())
     }
+    /** 1.6.82：闪光距离/高光保护表提升为共享常量，合并 pass 与独立 pass 完全同源。 */
+    private val FLASH_WEIGHT_LUT = FloatArray(LUT_SIZE) { i ->
+        val d = i / (LUT_SIZE - 1).toFloat()
+        (1f - d * d * sqrt(d)).coerceIn(0f, 1f)
+    }
+    private val FLASH_GUARD_LUT = FloatArray(LUT_SIZE) { i ->
+        1f - smoothstep(0.68f, 0.92f, i / (LUT_SIZE - 1).toFloat())
+    }
 
     /**
      * Edge-preserving denoise: a small bilateral filter whose colour-distance
@@ -212,6 +220,86 @@ object QualityOperators {
     }
 
     /**
+     * 1.6.82 性能合并：把闪光 → 颗粒 → 暗角三个逐像素 pass 合并为一趟，
+     * 只读写一次整帧像素数组，省掉两轮全帧内存带宽（大图导出收益明显）。
+     *
+     * 逐像素严格模拟原先三次独立调用：每步都按原顺序取整并钳制到 0..255，
+     * 后一步读取的是前一步取整后的整数值，因此输出结果与原三趟完全一致，
+     * 画质无损。任一项为 0 时对应分支直接跳过，与独立算子的早退一致。
+     */
+    fun applyFinish(
+        pixels: IntArray, width: Int, height: Int,
+        flash: Float, grain: Float, vignette: Float, job: Job?,
+        fromRow: Int = 0, toRow: Int = height
+    ) {
+        val flashStrength = (flash / 100f).coerceIn(0f, 1f)
+        val grainStrength = (grain / 100f).coerceIn(0f, 1f)
+        val vigStrength = (vignette / 100f).coerceIn(-1f, 1f)
+        if (flashStrength <= 0.001f && grainStrength <= 0.001f && abs(vigStrength) <= 0.001f) return
+
+        // 分支条件在循环外固定，热循环里只做整数通道运算，避免逐像素 abs /
+        // float↔int 往返（这是合并 pass 初版偏慢的主因）。
+        val doFlash = flashStrength > 0.001f
+        val doGrain = grainStrength > 0.001f
+        val doVignette = abs(vigStrength) > 0.001f
+        val grainAmp = grainStrength * 17f
+        val invW = 2f / (width - 1).coerceAtLeast(1)
+        val invH = 2f / (height - 1).coerceAtLeast(1)
+        val invSqrt2 = 1f / sqrt(2f)
+        val colNx = FloatArray(width) { x -> (x * invW - 1f) }
+
+        for (y in fromRow until toRow) {
+            if ((y and 0x0F) == 0) checkCancelled(job)
+            val ny = y * invH - 1f
+            val flashDy = ny - 0.35f
+            var i = y * width
+            for (x in 0 until width) {
+                val c = pixels[i]
+                var r = (c shr 16) and 0xFF
+                var g = (c shr 8) and 0xFF
+                var b = c and 0xFF
+
+                // 1) 闪光：亮度桶取闪光前的整数通道，与独立算子一致。
+                if (doFlash) {
+                    val nx = colNx[x]
+                    val d = (sqrt(nx * nx + flashDy * flashDy) * invSqrt2).coerceIn(0f, 1f)
+                    val w = FLASH_WEIGHT_LUT[(d * (LUT_SIZE - 1)).toInt().coerceIn(0, LUT_SIZE - 1)]
+                    val lumaBucket = ((r * 77 + g * 150 + b * 29) shr 8).coerceIn(0, LUT_SIZE - 1)
+                    val factor = 1f + flashStrength *
+                        (0.30f * w * FLASH_GUARD_LUT[lumaBucket] - 0.18f * (1f - w))
+                    r = (r * factor).roundToInt().coerceIn(0, 255)
+                    g = (g * factor).roundToInt().coerceIn(0, 255)
+                    b = (b * factor).roundToInt().coerceIn(0, 255)
+                }
+
+                // 2) 颗粒：亮度权重取闪光后已取整的通道。
+                if (doGrain) {
+                    val add = hashNoise(x, y) * grainAmp *
+                        GRAIN_WEIGHT_LUT[(r * 0.299f + g * 0.587f + b * 0.114f)
+                            .toInt().coerceIn(0, LUT_SIZE - 1)]
+                    r = (r + add).roundToInt().coerceIn(0, 255)
+                    g = (g + add).roundToInt().coerceIn(0, 255)
+                    b = (b + add).roundToInt().coerceIn(0, 255)
+                }
+
+                // 3) 暗角：只依赖坐标，乘算后取整钳制。
+                if (doVignette) {
+                    val nx = colNx[x]
+                    val d = sqrt(nx * nx + ny * ny) * invSqrt2
+                    val w = VIGNETTE_WEIGHT_LUT[(d * (LUT_SIZE - 1)).toInt().coerceIn(0, LUT_SIZE - 1)]
+                    val factor = 1f + vigStrength * 0.62f * w
+                    r = (r * factor).roundToInt().coerceIn(0, 255)
+                    g = (g * factor).roundToInt().coerceIn(0, 255)
+                    b = (b * factor).roundToInt().coerceIn(0, 255)
+                }
+
+                pixels[i] = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b
+                i++
+            }
+        }
+    }
+
+    /**
      * 全局闪光照明的亮度增益系数（纯函数，便于单测）。
      * [nx],[ny] 为 -1..1 的归一化坐标，原点在画面中心、ny 向上为正；
      * [strength] 为 0..1 的闪光强度。[luma] 为该像素归一化亮度（0..1），用于
@@ -245,15 +333,9 @@ object QualityOperators {
     ) {
         val strength = (amount / 100f).coerceIn(0f, 1f)
         if (strength <= 0.001f) return
-        // d∈[0,1] → 闪光权重 w∈[0,1] 预计算到 LUT，省去每像素 pow/sqrt。
-        val wLut = FloatArray(LUT_SIZE) { i ->
-            val d = i / (LUT_SIZE - 1).toFloat()
-            (1f - d * d * sqrt(d)).coerceIn(0f, 1f)
-        }
-        // 高光保护 LUT：亮度桶(0..255) → 提亮保留系数，0.68→0.92 平滑衰减到 0。
-        val guardLut = FloatArray(LUT_SIZE) { i ->
-            1f - smoothstep(0.68f, 0.92f, i / (LUT_SIZE - 1).toFloat())
-        }
+        // d∈[0,1] → 闪光权重 w∈[0,1] 与高光保护系数均已预计算为共享 LUT。
+        val wLut = FLASH_WEIGHT_LUT
+        val guardLut = FLASH_GUARD_LUT
         val invW = 2f / (width - 1).coerceAtLeast(1)
         val invH = 2f / (height - 1).coerceAtLeast(1)
         val invSqrt2 = 1f / sqrt(2f)

@@ -8,6 +8,7 @@ import com.fujikon.app.data.FilterProfile
 import com.fujikon.app.data.Preset
 import com.fujikon.app.data.buildChannelLuts
 import com.fujikon.app.data.withFilterLook
+import com.fujikon.app.dazz.DazzFilmLut
 import com.fujikon.app.ncp.BaseProfiles
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -151,10 +152,12 @@ open class ImageRenderer {
         }
         if (adjustments.flash > 0f || adjustments.grain != 0f || adjustments.vignette != 0f) {
             parallelRows(height) { from, to ->
-                // 先模拟机顶闪光的径向照明（中心提亮、边缘衰减），再加颗粒与暗角。
-                QualityOperators.applyFlash(pixels, width, height, adjustments.flash, job, from, to)
-                QualityOperators.applyGrain(pixels, width, height, adjustments.grain, job, from, to)
-                QualityOperators.applyVignette(pixels, width, height, adjustments.vignette, job, from, to)
+                // 1.6.82：闪光 → 颗粒 → 暗角合并为一趟逐像素等价 pass，
+                // 每步取整/钳制顺序与原三次独立调用一致，画质无损、少两轮全帧读写。
+                QualityOperators.applyFinish(
+                    pixels, width, height, adjustments.flash,
+                    adjustments.grain, adjustments.vignette, job, from, to
+                )
             }
         }
 
@@ -399,6 +402,10 @@ open class ImageRenderer {
         /** Dazz 富士 3D LUT（33³，RGB→RGB）。非 null 时跳过 1D 预设颜色链，
          *  直接三线性插值；用户调整（WB/影调/HSL）仍在其后叠加。 */
         val filmToneLut: FloatArray?,
+        /** 与 [filmToneLut] 共享的线程安全色值缓存采样器；未命中时逐像素等价插值。 */
+        val filmSampler: DazzFilmLut.Sampler?,
+        /** 3D LUT 之后的 1D 链为恒等时可整段跳过（预设自身无 1D 处理且用户未动曲线）。 */
+        val filmChainIdentity: Boolean,
         /** Red / green / blue LUTs, or null when no per-channel curve is active. */
         val channelLuts: Array<IntArray>?,
         val saturation: Float,
@@ -650,13 +657,18 @@ open class ImageRenderer {
 
         // Dazz 富士 3D LUT：filmLook 非 0 时载入缓存的 33³ 映射。此映射已含
         // 影调/色相分离/肤色保护，processRows 会跳过 1D 预设颜色链。
-        val filmToneLut = if (preset.filmLook != 0) {
-            com.fujikon.app.dazz.DazzFilmLut.get(preset.filmLook)
-        } else null
+        val filmToneLut = if (preset.filmLook != 0) DazzFilmLut.get(preset.filmLook) else null
+        val filmSampler = if (preset.filmLook != 0) DazzFilmLut.sampler(preset.filmLook) else null
+        // 3D LUT 预设自身不带 1D 颜色链；只要用户没有逐通道曲线、主影调 LUT 为
+        // 恒等，其后那三次 redLut/greenLut/blueLut 查表就是纯空操作，可整段跳过。
+        val filmChainIdentity = filmToneLut != null && channelLuts == null &&
+            (0 until 256).all { lut[it] == it }
 
         return Plan(
             lut = lut,
             filmToneLut = filmToneLut,
+            filmSampler = filmSampler,
+            filmChainIdentity = filmChainIdentity,
             channelLuts = channelLuts,
             saturation = saturation,
             hueMatrix = hueMatrix,
@@ -889,6 +901,8 @@ open class ImageRenderer {
         val shadowTint = plan.shadowTint
         val filter = plan.filter
         val filmLut = plan.filmToneLut
+        val filmSampler = plan.filmSampler
+        val filmChainIdentity = plan.filmChainIdentity
 
         for (y in from until to) {
             if ((y and 0x0F) == 0) checkCancelled(job)
@@ -902,20 +916,26 @@ open class ImageRenderer {
                 if (filmLut != null) {
                     // Dazz 富士 3D LUT：影调/色相分离/肤色保护已全部烘进映射，
                     // 一次三线性插值取代整条 1D 预设颜色链。用户调整在其后叠加。
-                    val packed = com.fujikon.app.dazz.DazzFilmLut.sample(
-                        filmLut, (color shr 16) and 0xFF, (color shr 8) and 0xFF, color and 0xFF
-                    )
+                    val sr = (color shr 16) and 0xFF
+                    val sg = (color shr 8) and 0xFF
+                    val sb = color and 0xFF
+                    // 1.6.82：共享色值缓存命中时一次原子读取代整段插值；未命中
+                    // 走与原 sample 完全相同的插值路径，像素结果逐位一致。
+                    val packed = if (filmSampler != null) filmSampler.sample(sr, sg, sb)
+                    else DazzFilmLut.sample(filmLut, sr, sg, sb)
                     r = (packed shr 16) and 0xFF
                     g = (packed shr 8) and 0xFF
                     b = packed and 0xFF
                     // 用户手动曲线（主曲线 + 逐通道曲线）烘在 1D LUT 里。此前
                     // 3D LUT 分支直接采用插值结果，跳过了这条链，导致套用 3D LUT
                     // 胶片滤镜后调曲线完全无效。Dazz 等 3D LUT 预设自身影调已全部
-                    // 烘进映射、curve=null、其 1D 链为恒等，因此这里串接只会施加
-                    // 用户手调的曲线，不会二次叠加预设影调。
-                    r = redLut[r]
-                    g = greenLut[g]
-                    b = blueLut[b]
+                    // 烘进映射、curve=null、其 1D 链为恒等，因此恒等时整段跳过、
+                    // 非恒等时串接只会施加用户手调的曲线，不会二次叠加预设影调。
+                    if (!filmChainIdentity) {
+                        r = redLut[r]
+                        g = greenLut[g]
+                        b = blueLut[b]
+                    }
                 } else {
                     r = redLut[(color shr 16) and 0xFF]
                     g = greenLut[(color shr 8) and 0xFF]

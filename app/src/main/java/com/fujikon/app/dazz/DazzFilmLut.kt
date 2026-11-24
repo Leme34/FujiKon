@@ -1,5 +1,6 @@
 package com.fujikon.app.dazz
 
+import java.util.concurrent.atomic.AtomicLongArray
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -33,12 +34,60 @@ object DazzFilmLut {
     const val LOOK_FLASH_PORTRAIT = 5
 
     private val cache = arrayOfNulls<FloatArray>(LOOK_FLASH_PORTRAIT + 1)
+    private val samplers = arrayOfNulls<Sampler>(LOOK_FLASH_PORTRAIT + 1)
 
     /** 返回对应 look 的 LUT；look 非法或无 LUT 时返回 null。线程安全（读多写少的幂等缓存）。 */
     @Synchronized
     fun get(look: Int): FloatArray? {
         if (look <= LOOK_NONE || look > LOOK_FLASH_PORTRAIT) return null
         return cache[look] ?: build(look).also { cache[look] = it }
+    }
+
+    /**
+     * 返回该 look 的共享采样器。采样器内是一个「24bit RGB → 采样结果」的直接
+     * 映射缓存：同一张照片里大量像素色值重复（纯色背景、平坦肤色、压缩后
+     * 的 JPEG 色块），命中后一次原子读即可取回结果，省掉整段三线性插值。
+     * 缓存按 look 全局共享，跨预览/导出持续累积命中；用单个 long 原子写入
+     * key+value，保证渲染线程并行时不可能读到错配的色值与结果。
+     */
+    @Synchronized
+    fun sampler(look: Int): Sampler? {
+        if (look <= LOOK_NONE || look > LOOK_FLASH_PORTRAIT) return null
+        val lut = get(look) ?: return null
+        return samplers[look] ?: Sampler(lut).also { samplers[look] = it }
+    }
+
+    /**
+     * 线程安全的 3D LUT 采样器。缓存条目高 32 位是 key+1（0 表示空槽），
+     * 低 32 位是打包结果；单次原子读写避免并行渲染时出现「新 key + 旧值」。
+     * 缓存只做记忆化，命中与未命中得到的像素结果完全相同（画质无损）。
+     */
+    class Sampler internal constructor(private val lut: FloatArray) {
+        private val entries = AtomicLongArray(CACHE_SIZE)
+
+        fun sample(r: Int, g: Int, b: Int): Int {
+            val key = (r shl 16) or (g shl 8) or b
+            val slot = key and (CACHE_SIZE - 1)
+            val cached = entries.get(slot)
+            if (((cached ushr 32).toInt() - 1) == key) return cached.toInt()
+            val value = sampleCore(lut, r, g, b)
+            entries.set(slot, ((key + 1).toLong() shl 32) or (value.toLong() and 0xFFFFFFFFL))
+            return value
+        }
+    }
+
+    private const val CACHE_SIZE = 1 shl 18
+
+    /** 0..255 输入对应的格点下标与插值权重，只依赖 N，全局算一次。 */
+    private val SAMPLE_INDEX = IntArray(256)
+    private val SAMPLE_FRAC = FloatArray(256)
+
+    init {
+        for (i in 0 until 256) {
+            val f = i * (N - 1) / 255f
+            SAMPLE_INDEX[i] = f.toInt()
+            SAMPLE_FRAC[i] = f - SAMPLE_INDEX[i]
+        }
     }
 
     private fun smoothstep(e0: Float, e1: Float, x: Float): Float {
@@ -296,15 +345,15 @@ object DazzFilmLut {
      * 三线性插值采样。r/g/b 为 0..255，返回打包的 0xRRGGBB。
      * 索引布局与 [build] 一致：idx = ((ri*N + gi)*N + bi)*3。
      */
-    fun sample(lut: FloatArray, r: Int, g: Int, b: Int): Int {
-        val fr = r * (N - 1) / 255f
-        val fg = g * (N - 1) / 255f
-        val fb = b * (N - 1) / 255f
-        val r0 = fr.toInt(); val g0 = fg.toInt(); val b0 = fb.toInt()
+    fun sample(lut: FloatArray, r: Int, g: Int, b: Int): Int = sampleCore(lut, r, g, b)
+
+    /** 与 [sample] 完全等价的三线性插值，供采样器未命中时复用。 */
+    private fun sampleCore(lut: FloatArray, r: Int, g: Int, b: Int): Int {
+        val r0 = SAMPLE_INDEX[r]; val g0 = SAMPLE_INDEX[g]; val b0 = SAMPLE_INDEX[b]
         val r1 = if (r0 >= N - 1) N - 1 else r0 + 1
         val g1 = if (g0 >= N - 1) N - 1 else g0 + 1
         val b1 = if (b0 >= N - 1) N - 1 else b0 + 1
-        val tr = fr - r0; val tg = fg - g0; val tb = fb - b0
+        val tr = SAMPLE_FRAC[r]; val tg = SAMPLE_FRAC[g]; val tb = SAMPLE_FRAC[b]
 
         // 8 个格点线性索引
         val i000 = ((r0 * N + g0) * N + b0) * 3

@@ -29,34 +29,37 @@ import com.fujikon.app.ui.theme.Amber
 import com.fujikon.app.ui.theme.CardHigh
 import com.fujikon.app.ui.theme.TextPrimary
 import java.util.Calendar
+import kotlin.math.max
 
 /**
  * 照片日期快速定位轴的纯逻辑（不含 Compose，便于单元测试）。
  *
- * 照片列表按 dateAdded 倒序排列；这里把连续的同「年月」照片聚成一个刻度，
+ * 照片列表按 dateAdded 倒序排列；这里把连续的同「年月日」照片聚成一个刻度，
  * 刻度的 startIndex 是该日期段第一张照片在列表中的下标。拖动轴时按列表位置
  * 比例映射到目标照片下标，再据此滚动网格——因此跳转位置与拖动位置线性对应。
+ * 1.6.82：刻度由「年月」细化到「年月日」，可精确定位到某一天。
  */
 data class DateTick(val startIndex: Int, val label: String, val millis: Long)
 
 /**
- * 把日期标签格式化为紧凑形式：今年只显示「M月」，往年显示「YY/M」，
- * 同一年内首个月份额外带年份，保证跨年时用户能分辨年份。
+ * 把日期标签格式化为紧凑形式：今年显示「M/d」（如 11/24），往年显示「YY/M/d」，
+ * 保证跨年时用户能分辨年份，同时能一眼看出具体某一天。
  */
 fun formatDateTickLabel(millis: Long, nowMillis: Long): String {
     val cal = Calendar.getInstance()
     cal.timeInMillis = millis
     val year = cal.get(Calendar.YEAR)
     val month = cal.get(Calendar.MONTH) + 1
+    val day = cal.get(Calendar.DAY_OF_MONTH)
     val nowCal = Calendar.getInstance()
     nowCal.timeInMillis = nowMillis
     val nowYear = nowCal.get(Calendar.YEAR)
-    return if (year == nowYear) "${month}月" else "${year % 100}/${month}"
+    return if (year == nowYear) "$month/$day" else "${year % 100}/$month/$day"
 }
 
 /**
  * 从照片列表构建日期刻度。photos 应已按日期倒序；结果按列表顺序（新→旧）。
- * 仅当月份发生变化时生成一个新刻度，startIndex 指向该月第一张照片。
+ * 仅当「年月日」发生变化时生成一个新刻度，startIndex 指向该天第一张照片。
  * 若照片的日期无效（<=0），退化为用 dateAdded。
  */
 fun buildDateTicks(photos: List<PhotoItem>, nowMillis: Long): List<DateTick> {
@@ -67,7 +70,7 @@ fun buildDateTicks(photos: List<PhotoItem>, nowMillis: Long): List<DateTick> {
         val raw = photos[i].dateTaken.takeIf { it > 0 } ?: photos[i].dateAdded
         val cal = Calendar.getInstance()
         cal.timeInMillis = raw
-        val key = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.MONTH)}"
+        val key = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.MONTH)}-${cal.get(Calendar.DAY_OF_MONTH)}"
         if (key != lastKey) {
             ticks.add(DateTick(startIndex = i, label = formatDateTickLabel(raw, nowMillis), millis = raw))
             lastKey = key
@@ -87,8 +90,9 @@ fun fractionToPhotoIndex(fraction: Float, photoCount: Int): Int {
 }
 
 /**
- * 给定目标照片下标，返回当前所处的日期刻度（用于拖动时显示的日期气泡）。
- * 取 startIndex <= index 的最后一个刻度；若 index 在第一个刻度之前则取第一个。
+ * 给定目标照片下标，返回当前所处的日期刻度（用于拖动时显示的日期气泡，
+ * 以及松手时吸附到该天首张照片）。取 startIndex <= index 的最后一个刻度；
+ * 若 index 在第一个刻度之前则取第一个。
  */
 fun tickForPhotoIndex(ticks: List<DateTick>, index: Int): DateTick? {
     if (ticks.isEmpty()) return null
@@ -104,7 +108,8 @@ fun tickForPhotoIndex(ticks: List<DateTick>, index: Int): DateTick? {
  *
  * [photos] 为当前可见照片（已按日期倒序），[ticks] 由 [buildDateTicks] 生成。
  * 用户按下或沿轴拖动时，按触点 Y 比例映射到目标照片下标并通过
- * [onTargetIndex] 回调；调用方据此滚动网格。拖动中在触点处显示当前日期气泡。
+ * [onTargetIndex] 回调；调用方据此滚动网格。拖动中显示当前「具体日期」气泡；
+ * 松手时吸附到该天第一张照片，便于按某一天快速定位。
  * 轨道按照片实际位置比例绘制刻度，因此拖动位置与滚动进度线性对应。
  */
 @Composable
@@ -124,7 +129,7 @@ fun DateScrubber(
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .width(40.dp)
+            .width(52.dp)
             .pointerInput(photos.size) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -142,6 +147,10 @@ fun DateScrubber(
                         onTargetIndex(fractionToPhotoIndex(activeFraction, photos.size))
                         event.changes.forEach { it.consume() }
                     }
+                    // 松手吸附到当天的第一张照片，定位到「某一天」而不是含糊的
+                    // 相邻照片位置；拖动过程中仍保持连续滚动。
+                    val settled = fractionToPhotoIndex(activeFraction, photos.size)
+                    onTargetIndex(tickForPhotoIndex(ticks, settled)?.startIndex ?: settled)
                     dragging = false
                 }
             },
@@ -159,14 +168,17 @@ fun DateScrubber(
                 end = Offset(trackX, bottom),
                 strokeWidth = 3.dp.toPx()
             )
-            // 每个日期刻度一个点，位置按该段首张照片的下标比例。
+            // 每天一个刻度点，位置按该天首张照片的下标比例。照片跨很多天时
+            // 均匀抽稀绘制，避免点密集成一条实线；拖动气泡仍逐天显示精确日期。
             val last = (photos.size - 1).coerceAtLeast(1)
-            ticks.forEach { tick ->
+            val stride = max(1, (ticks.size + 47) / 48)
+            ticks.forEachIndexed { index, tick ->
+                if (index % stride != 0 && index != ticks.lastIndex) return@forEachIndexed
                 val f = tick.startIndex.toFloat() / last
                 val y = top + usable * f
                 drawCircle(
                     color = Color(0xFF6E7078),
-                    radius = 2.dp.toPx(),
+                    radius = if (stride > 1) 1.5f.dp.toPx() else 2.dp.toPx(),
                     center = Offset(trackX, y)
                 )
             }
@@ -185,16 +197,17 @@ fun DateScrubber(
                 center = Offset(trackX, handleY)
             )
         }
-        // 拖动时在左侧显示当前日期气泡。
+        // 拖动时在左侧显示当前「具体日期」气泡。
         if (dragging && activeTick != null) {
             Text(
                 text = activeTick.label,
                 color = TextPrimary,
-                fontSize = 11.sp,
+                fontSize = if (activeTick.label.length > 5) 9.sp else 10.sp,
+                maxLines = 1,
                 textAlign = TextAlign.End,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(end = 18.dp)
+                    .padding(end = 14.dp)
             )
         }
     }

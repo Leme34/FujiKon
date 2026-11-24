@@ -162,7 +162,8 @@ fun GalleryScreen(
     val visible = remember(state.photos, albumFilter) {
         if (albumFilter == null) state.photos else state.photos.filter { it.bucketId == albumFilter }
     }
-    // 右侧日期快速定位轴：按可见照片的日期生成刻度，拖动即滚动网格到对应照片。
+    // 右侧日期快速定位轴：按可见照片的「具体某一天」生成刻度，拖动即滚动网格，
+    // 松手吸附到当天第一张照片。
     val gridState = rememberLazyGridState()
     val dateTicks = remember(visible) { buildDateTicks(visible, System.currentTimeMillis()) }
     val selectionOrder = remember(orderedIds) {
