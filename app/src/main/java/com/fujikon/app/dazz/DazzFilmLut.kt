@@ -29,13 +29,15 @@ object DazzFilmLut {
     const val LOOK_NOSTALGIC_NEG = 3
     /** Dazz 最火的理光负片 OFM R：低饱和、褪色抬黑、中性偏暖浅黄（1.6.69）。 */
     const val LOOK_OFM_R = 4
+    /** 胶片直闪人像：高反差压黑提白、青绿阴影 + 暖奶油高光、肤色通透（1.6.73）。 */
+    const val LOOK_FLASH_PORTRAIT = 5
 
-    private val cache = arrayOfNulls<FloatArray>(LOOK_OFM_R + 1)
+    private val cache = arrayOfNulls<FloatArray>(LOOK_FLASH_PORTRAIT + 1)
 
     /** 返回对应 look 的 LUT；look 非法或无 LUT 时返回 null。线程安全（读多写少的幂等缓存）。 */
     @Synchronized
     fun get(look: Int): FloatArray? {
-        if (look <= LOOK_NONE || look > LOOK_OFM_R) return null
+        if (look <= LOOK_NONE || look > LOOK_FLASH_PORTRAIT) return null
         return cache[look] ?: build(look).also { cache[look] = it }
     }
 
@@ -120,11 +122,42 @@ object DazzFilmLut {
         hprot = 0.90f, gcast = floatArrayOf(0.014f, 0.010f, -0.024f), redBoost = 0f
     )
 
+    /**
+     * 胶片直闪人像（1.6.73）：复刻「机顶直闪」的胶片人像风格，指纹来自该类
+     * 滤镜的公认视觉语言与多篇实拍/后期教程的一致描述：
+     *  - 强 S 曲线：黑位压到近乎纯黑、暗部下沉，高光提亮到接近过曝（奶油白
+     *    在皮肤/反光处轻微溢出），中间调下沉让主体从背景里「跳」出来。
+     *    这比四款胶片 look 的反差都更硬，是直闪的物理特征（主体亮/背景暗）。
+     *  - 阴影青绿、高光暖奶油：经典的 teal-shadow / warm-highlight 分离，
+     *    给暗环境与背景一点脏青绿、给受光面一点暖黄奶油。
+     *  - 肤色强保护 + 暖粉通透：直闪人像的灵魂是「脸被打亮、干净通透、带
+     *    光泽」，因此肤色保护最强、提亮最多、保留红润，绝不染青发脏。
+     *  - 饱和度略降：胶片褪色感，但靠强反差和肤色提亮保持主体突出。
+     * 暗角与细颗粒由预设的 vignette/grain 叠加（对应闪光随距离衰减 + 胶粒）。
+     */
+    private val FLASH_PORTRAIT = Spec(
+        // 强 S 曲线：黑位压到近纯黑、暗部/中段明显下沉（直闪背景压暗），
+        // 高光提升集中到 0.78 以上（皮肤反光/高光近过曝）。0.5~0.72 段保持
+        // 平缓，避免把落在这一段的中间调肤色整体提亮而失去保护。
+        tone = floatArrayOf(
+            0f, 0.005f,
+            0.12f, 0.060f, 0.28f, 0.180f, 0.50f, 0.430f,
+            0.72f, 0.720f, 0.88f, 0.970f, 1f, 1.0f
+        ),
+        s0 = 0.22f, s1 = 0.62f, h0 = 0.48f, h1 = 0.92f,
+        shadow = floatArrayOf(-0.030f, 0.042f, 0.074f),
+        mid = floatArrayOf(-0.006f, 0.002f, 0.010f),
+        high = floatArrayOf(0.058f, 0.032f, -0.022f),
+        skinProtect = 0.94f, skinLift = 0.050f, sat = 0.94f, skinSatDelta = 0.10f,
+        hprot = 0.78f, gcast = floatArrayOf(0.010f, 0.006f, -0.014f), redBoost = 0f
+    )
+
     private fun specOf(look: Int): Spec = when (look) {
         LOOK_FXN_R -> FXN_R
         LOOK_CLASSIC_U -> CLASSIC_U
         LOOK_NOSTALGIC_NEG -> NOSTALGIC_NEG
         LOOK_OFM_R -> OFM_R
+        LOOK_FLASH_PORTRAIT -> FLASH_PORTRAIT
         else -> FXN_R
     }
 

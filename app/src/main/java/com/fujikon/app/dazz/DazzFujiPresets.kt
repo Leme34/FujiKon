@@ -26,6 +26,10 @@ import com.fujikon.app.ncp.PictureControlFormat
  * 中性偏暖浅黄，是 Dazz 近期最火的理光 GR 平替。同样烘成 33³ 3D LUT，套用/导出
  * 与三款一致的速度。
  *
+ * 1.6.73 新增胶片直闪人像 Flash：强 S 曲线（压黑提白、中间调下沉）、青绿阴影 +
+ * 暖奶油高光、肤色强保护且暖粉通透，叠加轻暗角与颗粒还原直闪质感。同样烘成
+ * 33³ 3D LUT。
+ *
  * 诚实边界：没有原图—成片配对，无法逐像素反推 Dazz 的内部 LUT；这里复刻的是
  * 样张呈现的风格指纹 + 富士公开色彩科学，属风格接近而非像素级移植。
  */
@@ -41,7 +45,9 @@ object DazzFujiPresets {
         val name: String,
         val description: String,
         val filmLook: Int,
-        val grain: Float
+        val grain: Float,
+        /** 暗角强度（0..100，正值压暗四角），用于模拟闪光随距离衰减。 */
+        val vignette: Float = 0f
     )
 
     private val SPECS: List<Spec> = listOf(
@@ -72,6 +78,14 @@ object DazzFujiPresets {
             description = "Dazz 近期最火的理光 GR 平替（OFM R）：低饱和、低对比、轻微褪色抬黑，中性偏暖的浅黄调，过渡柔和自带氛围感。适合日常随拍、街景建筑、静物与暖色室内。",
             filmLook = DazzFilmLut.LOOK_OFM_R,
             grain = 8f
+        ),
+        Spec(
+            slug = "film_flash_portrait",
+            name = "Flash · 胶片直闪人像",
+            description = "复古胶片直闪人像：强反差压黑提白、肤色被「打亮」般通透暖粉，阴影带青绿、高光暖奶油白，轻暗角与细颗粒还原 90 年代傻瓜相机直闪质感。适合夜间、室内弱光与聚会人像。",
+            filmLook = DazzFilmLut.LOOK_FLASH_PORTRAIT,
+            grain = 14f,
+            vignette = 28f
         )
     )
 
@@ -101,7 +115,7 @@ object DazzFujiPresets {
         ).copy(
             name = name,
             filmLook = filmLook,
-            adjustments = EditAdjustments(grain = grain)
+            adjustments = EditAdjustments(grain = grain, vignette = vignette)
         )
     }
 }
