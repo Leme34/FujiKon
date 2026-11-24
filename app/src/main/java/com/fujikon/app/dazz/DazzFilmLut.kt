@@ -74,7 +74,15 @@ object DazzFilmLut {
          * 配比 (0.7,-0.35,0.5)；直闪人像为去橙红改用中性配比（少加红、不压绿、
          * 补蓝），避免肤色与其它暖色区域整体泛红。
          */
-        val liftRGB: FloatArray = floatArrayOf(0.7f, -0.35f, 0.5f)
+        val liftRGB: FloatArray = floatArrayOf(0.7f, -0.35f, 0.5f),
+        /**
+         * 白布中性化强度（0..1，默认 0 关闭）。高亮（luma 0.78→0.90）且低饱和
+         * （sat 0.16→0.06）的白色/米白布料（白裙、白衣、白床单）会被肤色逻辑
+         * 与保色影调保留暖粉偏色，与同画面中性白物（栏杆/白墙）不一致而显得
+         * 「颜色失真」。开启后把这类白布往其亮度灰度拉近，消除暖粉；肤色
+         * （sat>0.16）与彩色碎花不受影响。仅直闪人像启用。
+         */
+        val whiteNeutral: Float = 0f
     )
 
     private val FXN_R = Spec(
@@ -166,7 +174,9 @@ object DazzFilmLut {
         // 去掉全局青蓝色温（gcast 归零）：白色/中性区保持干净通透、不发青发灰。
         // 色彩感改由「青绿阴影 + 高饱和 + 干净高光」的色调分离提供，而非全局染色。
         gcast = floatArrayOf(0f, 0f, 0f), redBoost = 0f,
-        liftRGB = floatArrayOf(0.25f, 0.10f, 0.55f)
+        liftRGB = floatArrayOf(0.25f, 0.10f, 0.55f),
+        // 1.6.81 白布中性化：白裙/白衣等暖白布料消除暖粉偏色（肤色/碎花不受影响）。
+        whiteNeutral = 0.75f
     )
 
     private fun specOf(look: Int): Spec = when (look) {
@@ -257,6 +267,20 @@ object DazzFilmLut {
                     r = l2 + (r - l2) * sat
                     g = l2 + (g - l2) * sat
                     b = l2 + (b - l2) * sat
+
+                    // 7) 白布中性化（仅直闪人像）：高亮低饱和的白裙/白衣往亮度灰度
+                    //    拉近，消除被肤色逻辑与保色曲线保留的暖粉偏色；肤色(sat>0.16)
+                    //    与彩色碎花不受影响。
+                    if (s.whiteNeutral > 0f) {
+                        val wg = smoothstep(0.78f, 0.90f, luma) * (1f - smoothstep(0.06f, 0.16f, sat0))
+                        val amt = s.whiteNeutral * wg
+                        if (amt > 0.001f) {
+                            val lf = 0.299f * r + 0.587f * g + 0.114f * b
+                            r += (lf - r) * amt
+                            g += (lf - g) * amt
+                            b += (lf - b) * amt
+                        }
+                    }
 
                     val idx = ((ri * N + gi) * N + bi) * 3
                     out[idx] = r.coerceIn(0f, 1f)

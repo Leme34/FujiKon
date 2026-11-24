@@ -116,4 +116,27 @@ class FlashPortraitLookTest {
         assertTrue("肤色仍不泛红（R-B=${skin[0] - skin[2]}）", skin[0] - skin[2] < 62)
         assertTrue("白墙仍不泛红（R-B=${wall[0] - wall[2]}）", wall[0] - wall[2] <= 10)
     }
+
+    /**
+     * 1.6.81 白布中性化：白裙/白衣等暖白布料不应被肤色逻辑染成暖粉，
+     * 应与同画面中性白物一致；肤色与蓝色碎花不受影响。
+     */
+    @Test
+    fun whiteClothStaysNeutralWithoutTintingSkin() {
+        val flash = DazzFilmLut.LOOK_FLASH_PORTRAIT
+        // 真实白裙色（暖白 237,228,226）：暖粉偏色应被中和（R-B 从 10 收敛到 <=5）。
+        val skirt = sample(flash, 237, 228, 226)
+        assertTrue("白裙不应偏暖粉（R-B=${skirt[0] - skirt[2]}，应 <=5）",
+            skirt[0] - skirt[2] <= 5)
+        // 中性白栏杆保持中性（不被反向染色）。
+        val rail = sample(flash, 240, 241, 240)
+        assertTrue("白色栏杆应保持中性（|R-B|=${kotlin.math.abs(rail[0] - rail[2])}，应 <=3）",
+            kotlin.math.abs(rail[0] - rail[2]) <= 3)
+        // 关键：肤色与蓝色碎花不受白布中性化影响。
+        val skin = sample(flash, 205, 168, 140)
+        assertTrue("肤色应保持暖调（R-B=${skin[0] - skin[2]}，应 >=50）", skin[0] - skin[2] >= 50)
+        val blueFlower = sample(flash, 190, 205, 235)
+        assertTrue("蓝色碎花应保蓝（B-R=${blueFlower[2] - blueFlower[0]}，应 >=38）",
+            blueFlower[2] - blueFlower[0] >= 38)
+    }
 }

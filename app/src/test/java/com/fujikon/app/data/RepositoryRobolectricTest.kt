@@ -212,7 +212,7 @@ class RepositoryRobolectricTest {
                 "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg",
                 "dazz3:ofm_r_ricoh_neg",
-                "dazz3:film_flash_portrait_v5"
+                "dazz3:film_flash_portrait_v6"
             ),
             first
         )
