@@ -182,12 +182,13 @@ class PresetRepository(private val context: Context) {
         // old content hash -> the new template that replaces it
         val upgrades = mapOf(
             "local:workstyle16_tonal_v1" to WorkStyle16Preset.CONTENT_HASH,
-            // 直闪人像配方升级：基础版 / v2(已废弃) / v3(1.6.77 去橙红+闪光)
-            // 原地替换到 v4(1.6.79 富士青蓝影调 + 理光 matte 空气感)，
+            // 直闪人像配方升级：基础版 / v2(1.6.74 已废弃) / v3(1.6.77 去橙红+闪光)
+            // / v4(1.6.79 matte 灰蒙蒙，已废弃) 原地替换到 v5(1.6.80 清透浓郁富士色彩)，
             // 保留收藏/备注/删除状态。
-            "dazz3:film_flash_portrait" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V4,
-            "dazz3:film_flash_portrait_v2" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V4,
-            "dazz3:film_flash_portrait_v3" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V4
+            "dazz3:film_flash_portrait" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V5,
+            "dazz3:film_flash_portrait_v2" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V5,
+            "dazz3:film_flash_portrait_v3" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V5,
+            "dazz3:film_flash_portrait_v4" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V5
         )
         if (list.none { it.isSample && it.fileName.isBlank() && it.contentHash in upgrades }) {
             return list

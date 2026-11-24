@@ -89,25 +89,31 @@ class FlashPortraitLookTest {
     }
 
     /**
-     * 1.6.79 胶片氛围增强：非肤色区呈富士式青蓝影调（整体 B 相对 R 抬升），
-     * 并以抬黑+降饱和带出理光 matte 空气感，同时肤色/白墙仍干净不泛红。
+     * 1.6.80 清透富士色彩：撤回 1.6.79 的「抬黑 matte + 降饱和 + 全局青蓝」，
+     * 那套让白位压到 242、画面灰蒙蒙。现在白/中性区通透干净、环境色浓郁鲜艳，
+     * 同时肤色/白墙仍不泛红。
      */
     @Test
-    fun filmAtmosphereCoolBlueCastOutsideSkin() {
-        // 中性灰 NonSkin 区应有可感知的青蓝偏移（R-B 明显为负）。
-        val gray = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 128, 128, 128)
-        assertTrue("中间调应带青蓝胶片色偏（R-B=${gray[0] - gray[2]}，应 <=-4）",
-            gray[0] - gray[2] <= -4)
-        // 蓝天/环境冷色被进一步强化（B 抬升）。
-        val sky = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 120, 160, 210)
-        assertTrue("环境冷色应更青蓝（B-R=${sky[2] - sky[0]}）", sky[2] - sky[0] >= 78)
-        // matte 抬黑：偏蓝暗部亮度被抬到 50 以上（旧版约 49，增强后更高）。
-        val shadow = luma(sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 40, 50, 66))
-        assertTrue("暗部应有 matte 空气感（shadow=$shadow，应 >50）", shadow > 50f)
-        // 关键约束：氛围不得让肤色或白墙泛红。
-        val skin = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 205, 168, 140)
+    fun filmLooksClearAndSaturated() {
+        val flash = DazzFilmLut.LOOK_FLASH_PORTRAIT
+        // 清透：白墙/纯白比 1.6.79 灰蒙蒙版（222/242）明显更亮、不发灰。
+        val wall = sample(flash, 220, 218, 214)
+        assertTrue("白墙应通透（luma=${luma(wall)}，应 >226）", luma(wall) > 226f)
+        val white = sample(flash, 255, 255, 255)
+        assertTrue("纯白应清透不发灰（luma=${luma(white)}，应 >244）", luma(white) > 244f)
+        // 浓郁富士色彩：绿色/蓝天饱和度明显高于灰蒙蒙版（草绿旧版 sat≈70）。
+        val grass = sample(flash, 120, 150, 60)
+        assertTrue("绿色应浓郁（sat=${grass.maxOrNull()!! - grass.minOrNull()!!}，应 >72）",
+            grass.maxOrNull()!! - grass.minOrNull()!! > 72)
+        val sky = sample(flash, 120, 160, 210)
+        assertTrue("蓝天应通透鲜艳（B-R=${sky[2] - sky[0]}，应 >=85）", sky[2] - sky[0] >= 85)
+        // 干净中性区：不残留全局青蓝染色（中灰 R-B 绝对值应很小）。
+        val gray = sample(flash, 128, 128, 128)
+        assertTrue("中灰应干净不发青（|R-B|=${kotlin.math.abs(gray[0] - gray[2])}，应 <=8）",
+            kotlin.math.abs(gray[0] - gray[2]) <= 8)
+        // 关键约束：清透/提艳不得让肤色或白墙泛红。
+        val skin = sample(flash, 205, 168, 140)
         assertTrue("肤色仍不泛红（R-B=${skin[0] - skin[2]}）", skin[0] - skin[2] < 62)
-        val wall = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 220, 218, 214)
         assertTrue("白墙仍不泛红（R-B=${wall[0] - wall[2]}）", wall[0] - wall[2] <= 10)
     }
 }

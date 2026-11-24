@@ -29,7 +29,7 @@ object DazzFilmLut {
     const val LOOK_NOSTALGIC_NEG = 3
     /** Dazz 最火的理光负片 OFM R：低饱和、褪色抬黑、中性偏暖浅黄（1.6.69）。 */
     const val LOOK_OFM_R = 4
-    /** 胶片直闪人像：径向闪光 + 富士青蓝影调/理光 matte 空气感、肤色清透不泛红（1.6.73，1.6.79 胶片氛围增强）。 */
+    /** 胶片直闪人像：径向闪光 + 清透浓郁富士色彩（青绿阴影/干净高光/高饱和）、肤色通透不泛红（1.6.73，1.6.80 清晰度修正）。 */
     const val LOOK_FLASH_PORTRAIT = 5
 
     private val cache = arrayOfNulls<FloatArray>(LOOK_FLASH_PORTRAIT + 1)
@@ -145,22 +145,27 @@ object DazzFilmLut {
      *    肤色与其它暖色区域整体泛红。肤色保持健康通透。
      */
     private val FLASH_PORTRAIT = Spec(
-        // 抬黑 + 提暗部 + 收高光（matte 空气感），中段保留轻微下沉的直闪反差。
+        // 1.6.80 清透富士影调：撤回 1.6.79 的「抬黑 matte + 收高光 + 全局青蓝」，
+        // 那套把白位压到 242、抬黑 0.042 拉平对比，导致画面灰蒙蒙、不通透。
+        // 现在黑位回收到 0.016（对比清爽）、白位放回 0.968（白墙 230/纯白 247 通透），
+        // 中段仅保留极轻下沉维持直闪主体反差。
         tone = floatArrayOf(
-            0f, 0.042f,
-            0.12f, 0.126f, 0.28f, 0.270f, 0.50f, 0.464f,
-            0.72f, 0.702f, 0.88f, 0.898f, 1f, 0.950f
+            0f, 0.016f,
+            0.12f, 0.098f, 0.28f, 0.250f, 0.50f, 0.470f,
+            0.72f, 0.730f, 0.88f, 0.930f, 1f, 0.968f
         ),
         s0 = 0.22f, s1 = 0.62f, h0 = 0.48f, h1 = 0.92f,
-        // 青绿阴影更强（富士影调分离）。
-        shadow = floatArrayOf(-0.042f, 0.052f, 0.092f),
-        mid = floatArrayOf(-0.004f, 0.002f, 0.010f),
-        high = floatArrayOf(0.038f, 0.032f, 0.006f),
-        // 降饱和带出褪色胶片感；肤色仅保留极轻血色，不泛红。
-        skinProtect = 0.94f, skinLift = 0.045f, sat = 0.87f, skinSatDelta = 0.03f,
-        hprot = 0.78f,
-        // 全局青蓝色温（仅非肤色区）：整体冷调胶片氛围的核心来源。
-        gcast = floatArrayOf(-0.010f, -0.002f, 0.014f), redBoost = 0f,
+        // 青绿阴影保留（富士经典影调分离）：暗环境/背景泛青绿，主体更突出。
+        shadow = floatArrayOf(-0.038f, 0.048f, 0.086f),
+        mid = floatArrayOf(-0.006f, 0.002f, 0.010f),
+        high = floatArrayOf(0.045f, 0.036f, 0.010f),
+        // 提高整体饱和恢复浓郁富士色彩（sat 0.87→0.99，草绿/蓝天明显更艳）；
+        // skinSatDelta 取负值，让肤色饱和单独特调、避免环境提艳时肤色跟着泛红。
+        skinProtect = 0.94f, skinLift = 0.045f, sat = 0.99f, skinSatDelta = -0.06f,
+        hprot = 0.76f,
+        // 去掉全局青蓝色温（gcast 归零）：白色/中性区保持干净通透、不发青发灰。
+        // 色彩感改由「青绿阴影 + 高饱和 + 干净高光」的色调分离提供，而非全局染色。
+        gcast = floatArrayOf(0f, 0f, 0f), redBoost = 0f,
         liftRGB = floatArrayOf(0.25f, 0.10f, 0.55f)
     )
 

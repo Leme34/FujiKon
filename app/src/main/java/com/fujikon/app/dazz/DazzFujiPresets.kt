@@ -42,9 +42,10 @@ object DazzFujiPresets {
     /**
      * 直闪人像配方升级版本后缀，触发老用户原地升级到新效果：
      * v2=1.6.74 主体感知（已废弃）、v3=1.6.77 去橙红+径向闪光、
-     * v4=1.6.79 富士青蓝影调 + 理光 matte 空气感。
+     * v4=1.6.79 富士青蓝影调 + 理光 matte 空气感（灰蒙蒙，已废弃）、
+     * v5=1.6.80 撤回 matte/青蓝，恢复清透浓郁富士色彩。
      */
-    const val FLASH_HASH_V4 = HASH_PREFIX + "film_flash_portrait_v4"
+    const val FLASH_HASH_V5 = HASH_PREFIX + "film_flash_portrait_v5"
 
     private data class Spec(
         val slug: String,
@@ -104,7 +105,7 @@ object DazzFujiPresets {
     fun all(): List<Preset> = SPECS.map { it.toPreset() }
 
     private fun Spec.contentHashOf(): String =
-        if (upgradedHash) FLASH_HASH_V4 else HASH_PREFIX + slug
+        if (upgradedHash) FLASH_HASH_V5 else HASH_PREFIX + slug
 
     private fun Spec.toPreset(): Preset {
         // curve 必须为 null：3D LUT 已含保色影调曲线，避免 1D 路径二次施加。
