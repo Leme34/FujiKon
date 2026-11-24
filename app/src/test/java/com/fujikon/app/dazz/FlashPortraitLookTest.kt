@@ -10,11 +10,12 @@ import org.robolectric.annotation.Config
  * 胶片直闪人像 look 的风格指纹回归。
  *
  * 直闪（机顶硬闪）胶片的公认视觉语言：
- *  ① 强 S 曲线——暗部压黑、高光提亮到近过曝，反差明显硬于常规胶片 look；
- *  ② 阴影偏青绿、高光偏暖奶油（teal-shadow / warm-highlight 分离）；
- *  ③ 肤色保持暖调通透，不被青绿染色。
+ *  ① 抬黑压白、暗部有细节、高光不死白，但反差仍硬于常规胶片 look；
+ *  ② 阴影偏青绿、高光中性偏奶油（teal-shadow / neutral-highlight 分离）；
+ *  ③ 肤色清透健康、不过分发红发橙，也不被青绿染色。
  *
- * 这些断言确保新 look 真正复刻了直闪质感，而非只是又一张相近的胶片 LUT。
+ * 1.6.77 修正整体发红：中性高光不再刻意染暖，肤色提亮改中性三通道配比。
+ * 这些断言确保新 look 复刻直闪质感且不泛红。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -57,18 +58,33 @@ class FlashPortraitLookTest {
         assertTrue("阴影应偏青蓝：B 应高于 R（R=${c[0]} B=${c[2]}）", c[2] > c[0])
     }
 
-    /** 高光偏暖奶油：中性亮部 R 相对 B 抬升。 */
+    /** 1.6.77：中性高光不泛红——去暖后 R 与 B 基本持平（不再偏橙黄）。 */
     @Test
-    fun highlightsLeanWarmCream() {
+    fun highlightsStayNeutralNotWarm() {
         val c = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 215, 215, 215)
-        assertTrue("高光应偏暖：R 应高于 B（R=${c[0]} B=${c[2]}）", c[0] > c[2])
+        assertTrue(
+            "中性高光不应偏暖发红（R-B=${c[0] - c[2]}，应 |R-B|<=6）",
+            kotlin.math.abs(c[0] - c[2]) <= 6
+        )
     }
 
-    /** 肤色保持暖调通透：R-B 为正且不泛青。 */
+    /** 中性物与白墙不应泛红——1.6.77 去掉全局暖偏后整体回归中性。 */
     @Test
-    fun skinStaysWarmAndClean() {
+    fun neutralsDontTurnRed() {
+        val gray = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 120, 118, 112)
+        assertTrue("中性灰不应泛红（R-B=${gray[0] - gray[2]}）", gray[0] - gray[2] <= 6)
+        val wall = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 220, 218, 214)
+        assertTrue("白墙不应泛红（R-B=${wall[0] - wall[2]}）", wall[0] - wall[2] <= 10)
+    }
+
+    /** 肤色保持健康暖调但不橙红：R-B 适中且不泛青，G 被提亮通透。 */
+    @Test
+    fun skinStaysCleanWithoutExcessiveRed() {
         val c = sample(DazzFilmLut.LOOK_FLASH_PORTRAIT, 205, 168, 140)
         assertTrue("肤色应保持暖调（R-B=${c[0] - c[2]}）", c[0] - c[2] > 30)
+        assertTrue("肤色不应过度泛红/橙（R-B=${c[0] - c[2]}，应 <62）", c[0] - c[2] < 62)
         assertTrue("肤色应被提亮通透（G=${c[1]} vs 原 168）", c[1] >= 160)
+        // 去红配比应把 R-G 从旧的 ~51 收到 ~36，肤色不再橙。
+        assertTrue("肤色 R-G 应收敛（R-G=${c[0] - c[1]}，应 <45）", c[0] - c[1] < 45)
     }
 }

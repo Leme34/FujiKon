@@ -57,6 +57,13 @@ data class EditAdjustments(
     val grain: Float = 0f,
     /** Vignette, -100 (darken corners) .. 100 (brighten corners). */
     val vignette: Float = 0f,
+    /**
+     * 全局闪光照明强度（0..100，默认 0 = 关闭）。模拟机顶闪光灯的径向光照：
+     * 以画面中上部（主体/面部通常所在）为中心提亮，向四周快速衰减并轻压边缘，
+     * 形成「主体被打亮、背景随距离衰减」的真实直闪光感。作用于整帧、不依赖 AI
+     * 主体识别，因此对任意照片都稳定生效、无推理开销。值越大中心越亮、边缘越暗。
+     */
+    val flash: Float = 0f,
     /** Point Color / zone-scoped adjustments. */
     val pointColor: PointColor = PointColor.Neutral,
     /** Zone-scoped adjustments (control point / linear / radial / brush). */
@@ -95,6 +102,7 @@ data class EditAdjustments(
         denoise = denoise.coerceIn(0f, TONE_RANGE),
         grain = grain.coerceIn(0f, TONE_RANGE),
         vignette = vignette.coerceIn(-TONE_RANGE, TONE_RANGE),
+        flash = flash.coerceIn(0f, TONE_RANGE),
         pointColor = pointColor.normalized(),
         local = local.normalized(),
         presetStrength = presetStrength.coerceIn(0f, 100f)
@@ -123,6 +131,7 @@ data class EditAdjustments(
             denoise <= tolerance &&
             grain <= tolerance &&
             abs(vignette) <= tolerance &&
+            flash <= tolerance &&
             pointColor.isNeutral(tolerance) &&
             local.isNeutral() &&
             presetStrength >= 100f - tolerance
@@ -151,6 +160,7 @@ data class EditAdjustments(
         put("denoise", denoise.toDouble())
         put("grain", grain.toDouble())
         put("vignette", vignette.toDouble())
+        put("flash", flash.toDouble())
         put("pointColor", pointColor.toJson())
         put("local", local.toJson())
         put("presetStrength", presetStrength.toDouble())
@@ -188,6 +198,7 @@ data class EditAdjustments(
                 denoise = json.optDouble("denoise", 0.0).toFloat(),
                 grain = json.optDouble("grain", 0.0).toFloat(),
                 vignette = json.optDouble("vignette", 0.0).toFloat(),
+                flash = json.optDouble("flash", 0.0).toFloat(),
                 pointColor = PointColor.fromJson(json.optJSONObject("pointColor")),
                 local = LocalAdjustments.fromJson(json.optJSONObject("local")),
                 // Older app versions ignore this key; default keeps the full look.

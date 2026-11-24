@@ -115,6 +115,42 @@ class QualityPipelineTest {
         assertEquals("中心应保持不变", 180f, lum(px[(h / 2) * w + w / 2]), 1.5f)
     }
 
+    // --------------------------------------------------------------- flash
+
+    @Test
+    fun flashFactorBrightensCentreAndDarkensEdges() {
+        // 闪光中心上移到 y=+0.35；0 强度必须完全不改变画面。
+        assertEquals(1f, QualityOperators.flashFactor(0f, 0.35f, 0f), 0.0001f)
+        val centre = QualityOperators.flashFactor(0f, 0.35f, 1f)
+        val edge = QualityOperators.flashFactor(-1f, -1f, 1f)
+        assertTrue("闪光中心应提亮 (>1.2)：$centre", centre > 1.2f)
+        assertTrue("闪光边缘应压暗 (<0.9)：$edge", edge < 0.9f)
+        assertTrue("中心应明显亮于边缘", centre - edge > 0.35f)
+    }
+
+    @Test
+    fun flashBrightensUpperCentreAndDarkensCorners() {
+        val w = 64; val h = 64
+        val px = flat(w, h, rgb(150, 150, 150))
+        QualityOperators.applyFlash(px, w, h, 100f, null)
+        // 中心偏上（y≈0.3 对应行偏上，x 居中）应比四角亮得多。
+        val faceIdx = (h * 0.32f).toInt() * w + w / 2
+        val face = lum(px[faceIdx])
+        val corner = lum(px[0])
+        assertTrue("闪光中心区域应被提亮 (>165)：$face", face > 165f)
+        assertTrue("闪光四角应被压暗 (<140)：$corner", corner < 140f)
+        assertTrue("中心与四角应拉开光比：${face - corner}", face - corner > 40f)
+    }
+
+    @Test
+    fun zeroFlashLeavesPixelsUntouched() {
+        val w = 16; val h = 16
+        val original = flat(w, h, rgb(120, 130, 140))
+        val px = original.copyOf()
+        QualityOperators.applyFlash(px, w, h, 0f, null)
+        assertTrue("flash=0 不应改变任何像素", px.contentEquals(original))
+    }
+
     // ---------------------------------------------------------- point color
 
     @Test

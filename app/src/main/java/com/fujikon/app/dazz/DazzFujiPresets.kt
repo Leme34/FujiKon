@@ -39,6 +39,11 @@ object DazzFujiPresets {
 
     /** 1.6.65 用新前缀让覆盖安装的用户退役旧 dazz2:/dazz: 并补入 3D LUT 新效果。 */
     private const val HASH_PREFIX = "dazz3:"
+    /**
+     * 1.6.77 直闪人像配方升级（去橙红 LUT + 全局径向闪光照明）的版本后缀，
+     * 触发老用户原地升级到新效果。
+     */
+    const val FLASH_HASH_V3 = HASH_PREFIX + "film_flash_portrait_v3"
 
     private data class Spec(
         val slug: String,
@@ -47,7 +52,11 @@ object DazzFujiPresets {
         val filmLook: Int,
         val grain: Float,
         /** 暗角强度（0..100，正值压暗四角），用于模拟闪光随距离衰减。 */
-        val vignette: Float = 0f
+        val vignette: Float = 0f,
+        /** 全局径向闪光照明强度（0..100），仅直闪人像使用。 */
+        val flash: Float = 0f,
+        /** 该配方是否使用升级后的 contentHash（触发老用户原地升级）。 */
+        val upgradedHash: Boolean = false
     )
 
     private val SPECS: List<Spec> = listOf(
@@ -82,14 +91,19 @@ object DazzFujiPresets {
         Spec(
             slug = "film_flash_portrait",
             name = "Flash · 胶片直闪人像",
-            description = "复古胶片直闪人像：强反差压黑提白、肤色被「打亮」般通透暖粉，阴影带青绿、高光暖奶油白，轻暗角与细颗粒还原 90 年代傻瓜相机直闪质感。适合夜间、室内弱光与聚会人像。",
+            description = "复古胶片直闪人像：全局径向闪光照明把主体打亮、四周随距离衰减，暗部不死黑、高光不死白，肤色清透不泛红；青绿阴影配中性奶油高光，细颗粒还原 90 年代傻瓜相机直闪质感。适合夜间、室内弱光与聚会人像。",
             filmLook = DazzFilmLut.LOOK_FLASH_PORTRAIT,
             grain = 14f,
-            vignette = 28f
+            vignette = 10f,
+            flash = 72f,
+            upgradedHash = true
         )
     )
 
     fun all(): List<Preset> = SPECS.map { it.toPreset() }
+
+    private fun Spec.contentHashOf(): String =
+        if (upgradedHash) FLASH_HASH_V3 else HASH_PREFIX + slug
 
     private fun Spec.toPreset(): Preset {
         // curve 必须为 null：3D LUT 已含保色影调曲线，避免 1D 路径二次施加。
@@ -110,12 +124,12 @@ object DazzFujiPresets {
             fileName = "",
             fileSize = 0,
             isSample = false,
-            contentHash = HASH_PREFIX + slug,
+            contentHash = contentHashOf(),
             sourceName = SOURCE_NAME
         ).copy(
             name = name,
             filmLook = filmLook,
-            adjustments = EditAdjustments(grain = grain, vignette = vignette)
+            adjustments = EditAdjustments(grain = grain, vignette = vignette, flash = flash)
         )
     }
 }

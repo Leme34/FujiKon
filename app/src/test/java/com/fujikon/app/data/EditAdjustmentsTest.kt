@@ -44,13 +44,29 @@ class EditAdjustmentsTest {
             blacks = -6f,
             texture = 18f,
             clarity = 22f,
-            dehaze = 9f
+            dehaze = 9f,
+            grain = 14f,
+            vignette = -20f,
+            flash = 72f
         )
 
         val parsed = EditAdjustments.fromJson(source.toJson())
 
         assertEquals(source, parsed)
+        assertEquals(72f, parsed.flash, 0.001f)
         assertEquals(0f, EditAdjustments.fromJson(null).exposure, 0.001f)
+        assertEquals(0f, EditAdjustments.fromJson(null).flash, 0.001f)
+    }
+
+    @Test
+    fun flashIsClampedAndCountsTowardNeutral() {
+        assertEquals(0f, EditAdjustments.Neutral.flash, 0.001f)
+        assertTrue("中性实例不应含闪光", EditAdjustments.Neutral.isNeutral())
+        val over = EditAdjustments(flash = 500f).normalized()
+        assertEquals(100f, over.flash, 0.001f)
+        assertFalse("带闪光的实例不应判定为中性", over.isNeutral())
+        val flash = EditAdjustments(flash = 60f)
+        assertFalse("闪光>0 应使 isNeutral 为 false", flash.isNeutral())
     }
 
     @Test

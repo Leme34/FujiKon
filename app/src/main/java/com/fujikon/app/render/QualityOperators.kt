@@ -211,6 +211,61 @@ object QualityOperators {
         }
     }
 
+    /**
+     * 全局闪光照明的亮度增益系数（纯函数，便于单测）。
+     * [nx],[ny] 为 -1..1 的归一化坐标，原点在画面中心、ny 向上为正；
+     * [strength] 为 0..1 的闪光强度。闪光中心上移到 y=+0.35（人像面部通常
+     * 在上半部），中心最多提亮 +30%、边缘最多压暗 -18%，中间按 1.6 次幂平滑
+     * 衰减——形成「主体被打亮、背景随距离衰减」的真实机顶直闪光感。
+     */
+    fun flashFactor(nx: Float, ny: Float, strength: Float): Float {
+        if (strength <= 0.001f) return 1f
+        val dy = ny - 0.35f
+        val d = (sqrt(nx * nx + dy * dy) / sqrt(2f)).coerceIn(0f, 1f)
+        val w = (1f - d * d * sqrt(d)).coerceIn(0f, 1f) // 1.6 次幂近似：d²·√d
+        return 1f + strength * (0.30f * w - 0.18f * (1f - w))
+    }
+
+    /**
+     * 机顶闪光灯的径向光照：中心提亮、四周衰减。只依赖像素坐标，可安全按行并行；
+     * 每像素仅一次查表（距离 LUT）和一次乘加，成本与 vignette 相当。
+     * [amount] 为 0..100，0 时早退、完全不改变画面。
+     */
+    fun applyFlash(
+        pixels: IntArray, width: Int, height: Int, amount: Float, job: Job?,
+        fromRow: Int = 0, toRow: Int = height
+    ) {
+        val strength = (amount / 100f).coerceIn(0f, 1f)
+        if (strength <= 0.001f) return
+        // d∈[0,1] → 闪光权重 w∈[0,1] 预计算到 LUT，省去每像素 pow/sqrt。
+        val wLut = FloatArray(LUT_SIZE) { i ->
+            val d = i / (LUT_SIZE - 1).toFloat()
+            (1f - d * d * sqrt(d)).coerceIn(0f, 1f)
+        }
+        val invW = 2f / (width - 1).coerceAtLeast(1)
+        val invH = 2f / (height - 1).coerceAtLeast(1)
+        val invSqrt2 = 1f / sqrt(2f)
+        val colNx = FloatArray(width) { x -> (x * invW - 1f) }
+        for (y in fromRow until toRow) {
+            if ((y and 0x0F) == 0) checkCancelled(job)
+            val ny = y * invH - 1f
+            val dy = ny - 0.35f
+            var i = y * width
+            for (x in 0 until width) {
+                val nx = colNx[x]
+                val d = (sqrt(nx * nx + dy * dy) * invSqrt2).coerceIn(0f, 1f)
+                val w = wLut[(d * (LUT_SIZE - 1)).toInt().coerceIn(0, LUT_SIZE - 1)]
+                val factor = 1f + strength * (0.30f * w - 0.18f * (1f - w))
+                val c = pixels[i]
+                val r = ((c shr 16) and 0xFF) * factor
+                val g = ((c shr 8) and 0xFF) * factor
+                val b = (c and 0xFF) * factor
+                pixels[i] = pack(r, g, b)
+                i++
+            }
+        }
+    }
+
     private fun hashNoise(x: Int, y: Int): Float {
         var h = x * 374761393 + y * 668265263
         h = (h xor (h ushr 13)) * 1274126177

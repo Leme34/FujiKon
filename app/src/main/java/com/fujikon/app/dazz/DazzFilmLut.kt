@@ -29,7 +29,7 @@ object DazzFilmLut {
     const val LOOK_NOSTALGIC_NEG = 3
     /** Dazz 最火的理光负片 OFM R：低饱和、褪色抬黑、中性偏暖浅黄（1.6.69）。 */
     const val LOOK_OFM_R = 4
-    /** 胶片直闪人像：保留反差、抬黑压白不死黑死白、青绿阴影 + 暖奶油高光、肤色通透（1.6.73，1.6.76 优化）。 */
+    /** 胶片直闪人像：径向闪光照明 + 抬黑压白、青影中性高光、肤色清透不泛红（1.6.73，1.6.77 优化）。 */
     const val LOOK_FLASH_PORTRAIT = 5
 
     private val cache = arrayOfNulls<FloatArray>(LOOK_FLASH_PORTRAIT + 1)
@@ -68,7 +68,13 @@ object DazzFilmLut {
         val shadow: FloatArray, val mid: FloatArray, val high: FloatArray,
         val skinProtect: Float, val skinLift: Float,
         val sat: Float, val skinSatDelta: Float, val hprot: Float,
-        val gcast: FloatArray, val redBoost: Float
+        val gcast: FloatArray, val redBoost: Float,
+        /**
+         * 肤色提亮 [skinLift] 在 R/G/B 三通道上的分配权重。默认走「增粉嫩」
+         * 配比 (0.7,-0.35,0.5)；直闪人像为去橙红改用中性配比（少加红、不压绿、
+         * 补蓝），避免肤色与其它暖色区域整体泛红。
+         */
+        val liftRGB: FloatArray = floatArrayOf(0.7f, -0.35f, 0.5f)
     )
 
     private val FXN_R = Spec(
@@ -123,24 +129,20 @@ object DazzFilmLut {
     )
 
     /**
-     * 胶片直闪人像（1.6.73，1.6.76 影调优化）：复刻「机顶直闪」的胶片人像
-     * 风格，指纹来自该类滤镜的公认视觉语言与多篇实拍/后期教程的一致描述：
+     * 胶片直闪人像（1.6.73，1.6.76 影调优化，1.6.77 去橙红）：复刻「机顶直闪」
+     * 的胶片人像风格，指纹来自该类滤镜的公认视觉语言与多篇实拍/后期教程：
      *  - 保留直闪反差、但暗部不死黑、高光不死白：中段仍下沉让主体从背景里
-     *    「跳」出来；同时抬黑位、提亮暗部（阴影有细节），并把高光/白位回收
-     *    到近白而非死白（保留皮肤反光与背景亮部的层次）。比纯粹的强 S 曲线
-     *    更耐看、宽容度更高，也更接近主流修图里「提阴影 + 压高光」的思路。
-     *  - 阴影青绿、高光暖奶油：经典的 teal-shadow / warm-highlight 分离，
-     *    给暗环境与背景一点脏青绿、给受光面一点暖黄奶油。
-     *  - 肤色强保护 + 暖粉通透：直闪人像的灵魂是「脸被打亮、干净通透、带
-     *    光泽」，因此肤色保护最强、提亮最多、保留红润，绝不染青发脏。
-     *  - 饱和度略降：胶片褪色感，但靠反差和肤色提亮保持主体突出。
-     * 暗角与细颗粒由预设的 vignette/grain 叠加（对应闪光随距离衰减 + 胶粒）。
+     *    「跳」出来；同时抬黑位、提亮暗部，把高光/白位回收到近白。
+     *  - 真实闪光照明由预设的 [flash] 径向算子完成（中心提亮、边缘衰减），本
+     *    LUT 只负责色彩与影调指纹；暗角/颗粒作为闪光氛围的点缀。
+     *  - 阴影青绿、高光中性偏奶油：teal-shadow / warm-highlight 分离给暗环境
+     *    一点脏青绿；高光不再刻意染暖，避免整体泛红。
+     *  - 肤色清透不泛红（1.6.77 修正）：肤色提亮改用中性三通道配比（少加红、
+     *    不压绿、补蓝），去掉增粉嫩设计；skinSatDelta 归零，避免肤色饱和度被
+     *    拉高而显橙红；全局 gcast 去暖。肤色保持健康通透而非橙红。
      */
     private val FLASH_PORTRAIT = Spec(
-        // 抬黑 + 提暗部 + 收高光，中段保留轻微下沉的直闪反差：
-        //  黑位 0→0.025、0.12→0.105、0.28→0.255（暗部有细节、不死黑）；
-        //  0.50→0.470、0.72→0.710 保留主体突出的反差；
-        //  0.88→0.910、白位 1→0.958（高光回收、不死白）。
+        // 抬黑 + 提暗部 + 收高光，中段保留轻微下沉的直闪反差。
         tone = floatArrayOf(
             0f, 0.025f,
             0.12f, 0.105f, 0.28f, 0.255f, 0.50f, 0.470f,
@@ -149,9 +151,10 @@ object DazzFilmLut {
         s0 = 0.22f, s1 = 0.62f, h0 = 0.48f, h1 = 0.92f,
         shadow = floatArrayOf(-0.030f, 0.042f, 0.074f),
         mid = floatArrayOf(-0.006f, 0.002f, 0.010f),
-        high = floatArrayOf(0.058f, 0.032f, -0.022f),
-        skinProtect = 0.94f, skinLift = 0.050f, sat = 0.94f, skinSatDelta = 0.10f,
-        hprot = 0.78f, gcast = floatArrayOf(0.010f, 0.006f, -0.014f), redBoost = 0f
+        high = floatArrayOf(0.038f, 0.032f, 0.006f),
+        skinProtect = 0.94f, skinLift = 0.045f, sat = 0.94f, skinSatDelta = 0f,
+        hprot = 0.78f, gcast = floatArrayOf(0.002f, 0.002f, 0.004f), redBoost = 0f,
+        liftRGB = floatArrayOf(0.25f, 0.10f, 0.55f)
     )
 
     private fun specOf(look: Int): Spec = when (look) {
@@ -209,7 +212,9 @@ object DazzFilmLut {
                     val prot = 1f - sk * s.skinProtect
                     dr *= prot; dg *= prot; db *= prot
                     val lift = sk * s.skinLift
-                    dr += lift * 0.7f; dg -= lift * 0.35f; db += lift * 0.5f
+                    dr += lift * s.liftRGB[0]
+                    dg += lift * s.liftRGB[1]
+                    db += lift * s.liftRGB[2]
 
                     // 4) 高光低饱和保护：白衣 / 天空 / 白墙保持干净
                     val mx0 = max(r0, max(g0, b0))

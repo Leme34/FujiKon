@@ -58,11 +58,13 @@ class DazzFujiPresetsTest {
             val a = p.adjustments
             assertTrue("曝光应为 0（烘进 LUT）", a.exposure == 0f)
             assertTrue("颗粒应温和", a.grain in 0f..30f)
-            // 直闪人像刻意叠加轻暗角模拟闪光衰减；其余胶片 look 不加暗角。
+            // 直闪人像叠加全局径向闪光照明 + 轻暗角；其余胶片 look 两者都不加。
             if (p.filmLook == DazzFilmLut.LOOK_FLASH_PORTRAIT) {
                 assertTrue("直闪人像应带轻暗角", a.vignette in 1f..60f)
+                assertTrue("直闪人像应带全局闪光照明", a.flash in 30f..100f)
             } else {
                 assertEquals("不应保留暗角 pass", 0f, a.vignette)
+                assertEquals("其余 look 不应带闪光照明", 0f, a.flash)
             }
             assertEquals("不应保留清晰度卷积", 0f, a.clarity)
             assertTrue("强度为满档", a.presetStrength == 100f)
@@ -83,7 +85,7 @@ class DazzFujiPresetsTest {
             listOf(
                 "dazz3:fxn_r_classic_neg", "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg", "dazz3:ofm_r_ricoh_neg",
-                "dazz3:film_flash_portrait"
+                "dazz3:film_flash_portrait_v3"
             ),
             hashes
         )

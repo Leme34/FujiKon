@@ -149,8 +149,10 @@ open class ImageRenderer {
                 LocalMaskRenderer.apply(pixels, width, height, localLayers, job, meanLuma, from, to)
             }
         }
-        if (adjustments.grain != 0f || adjustments.vignette != 0f) {
+        if (adjustments.flash > 0f || adjustments.grain != 0f || adjustments.vignette != 0f) {
             parallelRows(height) { from, to ->
+                // 先模拟机顶闪光的径向照明（中心提亮、边缘衰减），再加颗粒与暗角。
+                QualityOperators.applyFlash(pixels, width, height, adjustments.flash, job, from, to)
                 QualityOperators.applyGrain(pixels, width, height, adjustments.grain, job, from, to)
                 QualityOperators.applyVignette(pixels, width, height, adjustments.vignette, job, from, to)
             }
