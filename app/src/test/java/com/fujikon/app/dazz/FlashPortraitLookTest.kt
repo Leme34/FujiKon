@@ -28,19 +28,24 @@ class FlashPortraitLookTest {
     private fun luma(c: IntArray): Float =
         c[0] * 0.299f + c[1] * 0.587f + c[2] * 0.114f
 
-    /** 强 S 曲线：中间调被压向两端——中灰变暗、亮部被提亮。 */
+    /**
+     * 1.6.76 影调优化：抬黑 + 压白——暗部不死黑、高光不死白，但中段仍保留
+     * 比经典负片更强的反差，维持「主体从背景跳出来」的直闪特征。
+     */
     @Test
-    fun strongScurveCrushesMidAndLiftsHighlights() {
+    fun liftsShadowsAndRollsOffHighlightsWithoutCrushing() {
         val flash = DazzFilmLut.LOOK_FLASH_PORTRAIT
-        val fxn = DazzFilmLut.LOOK_FXN_R
-        // 中灰 128：直闪应比经典负片更暗（中间调下沉）。
-        val midFlash = luma(sample(flash, 128, 128, 128))
-        val midFxn = luma(sample(fxn, 128, 128, 128))
-        assertTrue("直闪中灰应下沉（flash=$midFlash vs fxn=$midFxn）", midFlash < midFxn)
-        // 亮灰 215：直闪应提亮更多（高光趋近过曝）。
-        val hiFlash = luma(sample(flash, 215, 215, 215))
-        val hiFxn = luma(sample(fxn, 215, 215, 215))
-        assertTrue("直闪高光应更亮（flash=$hiFlash vs fxn=$hiFxn）", hiFlash > hiFxn)
+        // 偏蓝暗部：直闪应明显抬亮，阴影有细节（旧版 luma≈33，新版≈48）。
+        val shadow = luma(sample(flash, 40, 50, 66))
+        assertTrue("暗部应抬亮、不死黑（shadow=$shadow）", shadow > 44f)
+        // 高光中性 215：应回收到近白而非过曝（旧版≈233，新版≈221）。
+        val hi = luma(sample(flash, 215, 215, 215))
+        assertTrue("高光应回收、不死白（hi=$hi）", hi < 228f)
+        // 纯白 255：压到近白（≈245）而非溢出死白（255）。
+        val white = luma(sample(flash, 255, 255, 255))
+        assertTrue("纯白应压到近白（white=$white）", white in 238f..250f)
+        // 动态范围仍然拉开，画面不发灰：高光与暗部跨度足够大。
+        assertTrue("高光与暗部应拉开动态范围（hi-shadow=${hi - shadow}）", hi - shadow > 150f)
     }
 
     /** 色彩分离：偏蓝的环境暗部被进一步染成青绿（G、B 相对 R 抬升）。 */
