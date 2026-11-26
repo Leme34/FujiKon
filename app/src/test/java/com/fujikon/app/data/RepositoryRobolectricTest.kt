@@ -211,7 +211,7 @@ class RepositoryRobolectricTest {
                 "dazz3:fxn_r_classic_neg_v2",
                 "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg",
-                "dazz3:ofm_r_ricoh_neg",
+                "dazz3:ofm_r_ricoh_neg_v2",
                 "dazz3:film_flash_portrait_v6"
             ),
             first
@@ -284,6 +284,40 @@ class RepositoryRobolectricTest {
             reopened.presets.value.none { it.contentHash == "dazz3:fxn_r_classic_neg" })
         assertTrue("用户收藏应保留", upgraded!!.favorite)
         assertEquals("我的 FXN", upgraded.note)
+        assertEquals("条目总数不应变化", seededCount(), reopened.presets.value.size)
+    }
+
+    @Test
+    fun upgradeReplacesLegacyOfmPresetWithV2KeepingUserState() = runBlocking {
+        repository.load()
+        // 模拟老用户：索引里 OFM R 还是旧 hash，且已收藏/备注。
+        val index = java.io.File(context.filesDir, "presets/index.json")
+        val root = org.json.JSONObject(index.readText())
+        val array = root.getJSONArray("presets")
+        var found = false
+        for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            if (item.optString("contentHash") == "dazz3:ofm_r_ricoh_neg_v2") {
+                item.put("contentHash", "dazz3:ofm_r_ricoh_neg")
+                item.put("favorite", true)
+                item.put("note", "我的 OFM")
+                found = true
+            }
+        }
+        assertTrue("测试前置：索引里应有 OFM R v2 条目", found)
+        index.writeText(root.toString())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+
+        val upgraded = reopened.presets.value.firstOrNull {
+            it.contentHash == "dazz3:ofm_r_ricoh_neg_v2"
+        }
+        assertNotNull("升级后应存在 OFM R v2", upgraded)
+        assertTrue("旧 hash 应被清除",
+            reopened.presets.value.none { it.contentHash == "dazz3:ofm_r_ricoh_neg" })
+        assertTrue("用户收藏应保留", upgraded!!.favorite)
+        assertEquals("我的 OFM", upgraded.note)
         assertEquals("条目总数不应变化", seededCount(), reopened.presets.value.size)
     }
 

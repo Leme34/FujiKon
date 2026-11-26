@@ -186,14 +186,20 @@ object DazzFilmLut {
      *  - 肤色：理光负片自带柔和磨皮、肤色干净；继续复用椭圆肤色保护，避免发黄发脏。
      */
     private val OFM_R = Spec(
-        // 抬黑 + 压白：黑位 0→0.040，中段略降对比，白位 1→0.955。
-        tone = floatArrayOf(0f, 0.040f, 0.12f, 0.142f, 0.28f, 0.292f, 0.50f, 0.492f, 0.72f, 0.705f, 0.90f, 0.895f, 1f, 0.955f),
-        s0 = 0.20f, s1 = 0.60f, h0 = 0.52f, h1 = 0.96f,
-        shadow = floatArrayOf(-0.014f, 0.004f, 0.030f),
-        mid = floatArrayOf(0f, 0f, -0.006f),
-        high = floatArrayOf(0.030f, 0.022f, -0.030f),
-        skinProtect = 0.90f, skinLift = 0.052f, sat = 0.78f, skinSatDelta = 0.10f,
-        hprot = 0.90f, gcast = floatArrayOf(0.014f, 0.010f, -0.024f), redBoost = 0f
+        // 1.6.84 按 10 张 Dazz OFM R 成片的色彩锚点量化重做：
+        // 抬黑 + 压白更强（黑位 0→0.052，白位 1→0.930），褪色感更足；
+        // 中段压低对比，形成理光负片的柔和空气感。
+        tone = floatArrayOf(0f, 0.052f, 0.12f, 0.140f, 0.28f, 0.278f, 0.50f, 0.475f, 0.72f, 0.690f, 0.90f, 0.875f, 1f, 0.930f),
+        s0 = 0.18f, s1 = 0.62f, h0 = 0.50f, h1 = 0.95f,
+        // 阴影去青：旧版 +0.030 蓝偏青蓝，成片阴影近中性微暖，改为近零。
+        shadow = floatArrayOf(0.006f, 0.004f, -0.008f),
+        mid = floatArrayOf(0f, 0f, -0.004f),
+        high = floatArrayOf(0.028f, 0.022f, -0.024f),
+        // 饱和度 0.78→0.60：成片 sat≈0.218，旧版只降到 0.305 明显不够。
+        skinProtect = 0.93f, skinLift = 0.048f, sat = 0.60f, skinSatDelta = 0.15f,
+        hprot = 0.88f, gcast = floatArrayOf(0.012f, 0.010f, -0.018f), redBoost = 0f,
+        // 与 Python 拟合脚本一致的肤色提亮配比，保证肤色清透不发红。
+        liftRGB = floatArrayOf(0.85f, -0.35f, 0.18f)
     )
 
     /**
