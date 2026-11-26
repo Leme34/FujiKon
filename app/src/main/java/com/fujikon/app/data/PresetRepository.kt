@@ -195,7 +195,10 @@ class PresetRepository(private val context: Context) {
             "dazz3:fxn_r_classic_neg" to com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V2,
             // OFM R 理光负片量化重做（1.6.84）：旧版阴影偏青、降饱和不足、褪色不够，
             // 原地升级到低饱和暖灰新影调，保留收藏/备注/删除状态。
-            "dazz3:ofm_r_ricoh_neg" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V2
+            "dazz3:ofm_r_ricoh_neg" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V3,
+            // OFM R 去「富士红」（1.6.85）：1.6.84 的高光/全局偏暖红，改为淡暖灰、
+            // 肤色更淡，覆盖安装时把 V2 原地升级到 V3，保留收藏/备注/删除状态。
+            "dazz3:ofm_r_ricoh_neg_v2" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V3
         )
         if (list.none { it.isSample && it.fileName.isBlank() && it.contentHash in upgrades }) {
             return list

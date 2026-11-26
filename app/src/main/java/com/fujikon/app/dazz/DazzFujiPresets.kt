@@ -57,6 +57,12 @@ object DazzFujiPresets {
      * 覆盖安装时把旧 `dazz3:ofm_r_ricoh_neg` 原地升级到新影调，保留用户态。
      */
     const val OFM_HASH_V2 = HASH_PREFIX + "ofm_r_ricoh_neg_v2"
+    /**
+     * OFM R 理光负片配方升级后缀（1.6.85）：去掉 1.6.84 偏「富士红」的高光/全局
+     * 加红减蓝色偏，改为淡暖灰（成片白物/中灰近中性、肤色更淡、低饱和）。
+     * 覆盖安装时把旧 `dazz3:ofm_r_ricoh_neg_v2` 原地升级到新影调，保留用户态。
+     */
+    const val OFM_HASH_V3 = HASH_PREFIX + "ofm_r_ricoh_neg_v3"
 
     private data class Spec(
         val slug: String,
@@ -101,7 +107,7 @@ object DazzFujiPresets {
             description = "Dazz 近期最火的理光 GR 平替（OFM R）：低饱和、低对比、轻微褪色抬黑，中性偏暖的浅黄调，过渡柔和自带氛围感。适合日常随拍、街景建筑、静物与暖色室内。",
             filmLook = DazzFilmLut.LOOK_OFM_R,
             grain = 8f,
-            hashOverride = OFM_HASH_V2
+            hashOverride = OFM_HASH_V3
         ),
         Spec(
             slug = "film_flash_portrait",

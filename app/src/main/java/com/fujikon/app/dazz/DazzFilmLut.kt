@@ -186,18 +186,20 @@ object DazzFilmLut {
      *  - 肤色：理光负片自带柔和磨皮、肤色干净；继续复用椭圆肤色保护，避免发黄发脏。
      */
     private val OFM_R = Spec(
-        // 1.6.84 按 10 张 Dazz OFM R 成片的色彩锚点量化重做：
-        // 抬黑 + 压白更强（黑位 0→0.052，白位 1→0.930），褪色感更足；
-        // 中段压低对比，形成理光负片的柔和空气感。
-        tone = floatArrayOf(0f, 0.052f, 0.12f, 0.140f, 0.28f, 0.278f, 0.50f, 0.475f, 0.72f, 0.690f, 0.90f, 0.875f, 1f, 0.930f),
+        // 1.6.85 按 10 张 Dazz OFM R 成片重新优化：用户指出 1.6.84 偏「富士红」，
+        // 理光负片应是「淡」而非暖红。锚点复核：成片白物 R-B≈+4、中灰≈+3（近中性
+        // 微暖），肤色仅 +21（很淡），整体 sat≈0.218；而 1.6.84 肤色 +37、sat 0.266。
+        // 富士红的根因是高光/全局色偏的「加红减蓝」，本版把二者收敛到近中性，
+        // 保留理光的淡暖灰（非青蓝冷调），饱和度进一步降到成片水平。
+        tone = floatArrayOf(0f, 0.058f, 0.12f, 0.140f, 0.28f, 0.275f, 0.50f, 0.468f, 0.72f, 0.682f, 0.90f, 0.872f, 1f, 0.928f),
         s0 = 0.18f, s1 = 0.62f, h0 = 0.50f, h1 = 0.95f,
-        // 阴影去青：旧版 +0.030 蓝偏青蓝，成片阴影近中性微暖，改为近零。
-        shadow = floatArrayOf(0.006f, 0.004f, -0.008f),
-        mid = floatArrayOf(0f, 0f, -0.004f),
-        high = floatArrayOf(0.028f, 0.022f, -0.024f),
-        // 饱和度 0.78→0.60：成片 sat≈0.218，旧版只降到 0.305 明显不够。
-        skinProtect = 0.93f, skinLift = 0.048f, sat = 0.60f, skinSatDelta = 0.15f,
-        hprot = 0.88f, gcast = floatArrayOf(0.012f, 0.010f, -0.018f), redBoost = 0f,
+        // 去富士红：high/gcast 由「加红减蓝」收敛到近中性微暖，白墙/高光不再泛红。
+        shadow = floatArrayOf(0.004f, 0.003f, -0.004f),
+        mid = floatArrayOf(0f, 0f, -0.002f),
+        high = floatArrayOf(0.006f, 0.005f, 0f),
+        // 饱和度 0.60→0.50：向成片 sat≈0.218 靠拢（代理原图渲染 0.266→0.234）。
+        skinProtect = 0.93f, skinLift = 0.048f, sat = 0.50f, skinSatDelta = 0.20f,
+        hprot = 0.88f, gcast = floatArrayOf(0.005f, 0.004f, -0.004f), redBoost = 0f,
         // 与 Python 拟合脚本一致的肤色提亮配比，保证肤色清透不发红。
         liftRGB = floatArrayOf(0.85f, -0.35f, 0.18f)
     )
