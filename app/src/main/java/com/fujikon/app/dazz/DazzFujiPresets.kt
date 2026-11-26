@@ -47,6 +47,11 @@ object DazzFujiPresets {
      * v6=1.6.81 白布中性化，修复白裙/白衣暖粉偏色。
      */
     const val FLASH_HASH_V6 = HASH_PREFIX + "film_flash_portrait_v6"
+    /**
+     * FXN R 经典负片配方升级后缀（1.6.83）：用原图—成片配对量化拟合重做，
+     * 覆盖安装时把旧 `dazz3:fxn_r_classic_neg` 原地升级到新影调，保留用户态。
+     */
+    const val FXN_HASH_V2 = HASH_PREFIX + "fxn_r_classic_neg_v2"
 
     private data class Spec(
         val slug: String,
@@ -58,17 +63,18 @@ object DazzFujiPresets {
         val vignette: Float = 0f,
         /** 全局径向闪光照明强度（0..100），仅直闪人像使用。 */
         val flash: Float = 0f,
-        /** 该配方是否使用升级后的 contentHash（触发老用户原地升级）。 */
-        val upgradedHash: Boolean = false
+        /** 该配方要使用的 contentHash（非 null 时触发老用户原地升级）。 */
+        val hashOverride: String? = null
     )
 
     private val SPECS: List<Spec> = listOf(
         Spec(
             slug = "fxn_r_classic_neg",
             name = "FXN R · 经典负片",
-            description = "Dazz 最火的富士平替（FXN R / Classic Negative）：青绿阴影配洋红暖高光，低饱和、高对比，通透有胶片颗粒。适合街拍、绿植、美食与日常随拍。",
+            description = "Dazz 最火的富士平替（FXN R / Classic Negative）：低饱和青灰影调、阴影青蓝、高光去暖，压暗有层次，肤色清透通透，带胶片颗粒。适合街拍、绿植、美食与日常随拍。",
             filmLook = DazzFilmLut.LOOK_FXN_R,
-            grain = 12f
+            grain = 12f,
+            hashOverride = FXN_HASH_V2
         ),
         Spec(
             slug = "classic_u_superia400",
@@ -99,14 +105,14 @@ object DazzFujiPresets {
             grain = 14f,
             vignette = 10f,
             flash = 72f,
-            upgradedHash = true
+            hashOverride = FLASH_HASH_V6
         )
     )
 
     fun all(): List<Preset> = SPECS.map { it.toPreset() }
 
     private fun Spec.contentHashOf(): String =
-        if (upgradedHash) FLASH_HASH_V6 else HASH_PREFIX + slug
+        hashOverride ?: (HASH_PREFIX + slug)
 
     private fun Spec.toPreset(): Preset {
         // curve 必须为 null：3D LUT 已含保色影调曲线，避免 1D 路径二次施加。

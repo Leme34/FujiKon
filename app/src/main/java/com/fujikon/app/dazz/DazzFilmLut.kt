@@ -134,14 +134,25 @@ object DazzFilmLut {
         val whiteNeutral: Float = 0f
     )
 
+    /**
+     * FXN R 经典负片（1.6.83 量化拟合重做）：
+     * 初版参数（tone 高光 0.975 偏暖、sat 0.88、gcast 仅 -0.030）套出来偏亮、
+     * 偏暖、青蓝影调不足，与 Dazz 样张「压暗、低饱和、青灰影调、高光去暖」的
+     * 指纹差距 3~4 倍甚至方向相反。本版用原图—Dazz 成片配对做色彩指纹拟合，
+     * 让变换量逼近实测目标：lum -0.045 / sat -0.066 / RB -0.122 / 阴影B-R +0.120 /
+     * 高光R-B -0.093。同时保留椭圆肤色保护，环境去红青蓝不污染人脸清透度。
+     */
     private val FXN_R = Spec(
-        tone = floatArrayOf(0f, 0.008f, 0.10f, 0.070f, 0.25f, 0.215f, 0.50f, 0.455f, 0.75f, 0.815f, 0.90f, 0.945f, 1f, 0.975f),
+        tone = floatArrayOf(0f, 0.006f, 0.10f, 0.055f, 0.25f, 0.190f, 0.50f, 0.420f, 0.75f, 0.790f, 0.90f, 0.930f, 1f, 0.965f),
         s0 = 0.18f, s1 = 0.55f, h0 = 0.50f, h1 = 0.95f,
-        shadow = floatArrayOf(-0.030f, 0.010f, 0.075f),
-        mid = floatArrayOf(0f, 0f, 0.008f),
-        high = floatArrayOf(0.045f, -0.008f, 0.028f),
-        skinProtect = 0.92f, skinLift = 0.050f, sat = 0.88f, skinSatDelta = 0.03f,
-        hprot = 0.85f, gcast = floatArrayOf(-0.030f, -0.006f, 0.045f), redBoost = 0f
+        shadow = floatArrayOf(-0.048f, 0.028f, 0.105f),
+        mid = floatArrayOf(-0.010f, 0.014f, 0.018f),
+        high = floatArrayOf(-0.012f, 0.006f, 0.048f),
+        skinProtect = 0.94f, skinLift = 0.052f, sat = 0.72f, skinSatDelta = 0.05f,
+        hprot = 0.88f, gcast = floatArrayOf(-0.058f, 0.014f, 0.078f), redBoost = 0f,
+        // 拟合脚本的肤色提亮配比（少加红、微压绿、少补蓝），避免通用配比
+        // (0.7,-0.35,0.5) 在去红青蓝影调里把肤色推冷发灰。
+        liftRGB = floatArrayOf(0.85f, -0.35f, 0.18f)
     )
 
     private val CLASSIC_U = Spec(

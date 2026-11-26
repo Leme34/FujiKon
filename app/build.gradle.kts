@@ -12,8 +12,8 @@ android {
         applicationId = "com.fujikon.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 89
-        versionName = "1.6.82"
+        versionCode = 90
+        versionName = "1.6.83"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -78,6 +78,11 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
         systemProperty("robolectric.offline", "true")
         systemProperty("robolectric.dependency.dir", dir)
     }
+    // 大图解码/导出回归用例会一次分配数十 MB 像素数组；全量跑时多个用例
+    // 共用一个测试 JVM，堆里残留的 Bitmap 累积后偶发 OOM（单独跑必过）。
+    // 每跑完一个测试类就 fork 新 JVM，彻底隔离内存，让全量结果稳定可复现。
+    forkEvery = 1
+    maxParallelForks = 1
 }
 
 dependencies {
