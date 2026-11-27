@@ -849,6 +849,57 @@ class EditorViewModel(
     private var aiJob: Job? = null
 
     /**
+     * 一帧渲染结果的完整身份：影响 `renderCurrent()` 输出的全部输入。
+     *
+     * 只要这组字段相同，渲染出的位图就逐像素相同，因此可以安全地复用缓存帧，
+     * 免去对大图重跑十几个全帧 pass。presetId 单独列出是因为预设内容会在
+     * 覆盖安装后原地升级（contentHash 变化），必须让旧帧失效。
+     */
+    private data class FrameKey(
+        val photoId: Long,
+        val presetId: String?,
+        val presetHash: String,
+        val toneCurve: ToneCurve?,
+        val channelCurves: ChannelToneCurves?,
+        val adjustments: EditAdjustments,
+        val aiUri: String?
+    )
+
+    /** 一次渲染的可复用产物：原图 + 裁剪后成片 + 未裁剪全帧。 */
+    private data class RenderedFrame(
+        val original: Bitmap,
+        val shown: Bitmap,
+        val fullFrame: Bitmap
+    )
+
+    /**
+     * 预览帧 LRU：撤销/重做/切换照片/重复调节时，若编辑状态对应的帧已渲染过就直接
+     * 取位图，跳过整条渲染管线 —— 这是「历史步骤读缓存而非重渲染」的核心。
+     *
+     * 容量按字节而非固定帧数自适应设备：约为可用堆的 1/8（下限 32MB），clipse 大图
+     * 每帧 shown+fullFrame 约 17~35MB，因此低端机也能缓存数帧、高端机缓存更多。
+     * original 与 [originalCache] 共享引用，计入这里会重复计算，故 sizeOf 只算
+     * shown/fullFrame（两者在无裁剪时是同一对象，也去重）。
+     *
+     * 淘汰时不 recycle：位图可能仍被 `_state` 或 Compose 引用，交给 GC 统一回收。
+     */
+    private val frameCacheMaxBytes = (Runtime.getRuntime().maxMemory() / 8)
+        .coerceAtLeast(32L * 1024 * 1024).toInt()
+    private val frameCache = object : LruCache<FrameKey, RenderedFrame>(frameCacheMaxBytes) {
+        override fun sizeOf(key: FrameKey, value: RenderedFrame): Int {
+            val shownBytes = value.shown.byteCount
+            val fullBytes = if (value.fullFrame !== value.shown) value.fullFrame.byteCount else 0
+            return (shownBytes + fullBytes).coerceAtLeast(1)
+        }
+
+        override fun entryRemoved(
+            evicted: Boolean, key: FrameKey, oldValue: RenderedFrame, newValue: RenderedFrame?
+        ) {
+            // No recycle: a frame may still be displayed / referenced by state.
+        }
+    }
+
+    /**
      * 把进程级导出协调器的状态镜像到本 ViewModel 的 UI 状态，使编辑器页面
      * 重建（旋转 / 被系统回收）后仍能恢复真实进度与结果弹窗，而不是从 Idle 重启。
      * 导出任务本身不随本 ViewModel 销毁而取消。
@@ -1290,6 +1341,24 @@ class EditorViewModel(
         )
     }
 
+    /**
+     * 计算当前状态对应的渲染帧身份。字段与 [renderCurrent] 读取的输入严格一致：
+     * 任何会让成片变化的状态都必须进入 key，否则撤销后会显示错误的旧帧。
+     */
+    private fun currentFrameKey(state: EditorViewModel.UiState = _state.value): FrameKey? {
+        val photo = state.currentPhoto ?: return null
+        val preset = state.currentPreset ?: return null
+        return FrameKey(
+            photoId = photo.id,
+            presetId = state.presetId,
+            presetHash = preset.contentHash,
+            toneCurve = state.toneCurveOverride,
+            channelCurves = state.channelCurvesOverride,
+            adjustments = state.adjustments,
+            aiUri = state.aiResultUris[photo.id]?.toString()
+        )
+    }
+
     /** Records one step in the CURRENT photo's own history. */
     private fun recordHistory(label: String, coalesceKey: String? = null) {
         val session = currentSession() ?: return
@@ -1665,6 +1734,26 @@ class EditorViewModel(
         }
         val crop = snapshot.adjustments.crop
         val aiUri = snapshot.aiResultUris[photo.id]
+
+        // 1.6.92 性能：撤销/重做/切回照片/重复调节时，若该编辑状态已渲染过，
+        // 直接复用缓存帧，免去对大图重跑十几个全帧 pass（原来每次都要数秒）。
+        // 缓存帧的 original 也从 originalCache 取，整条路径不碰 decode / renderer。
+        val frameKey = currentFrameKey(snapshot)
+        val cached = frameKey?.let { frameCache.get(it) }
+        if (cached != null) {
+            _state.update { current ->
+                if (current.currentPhoto?.id != photo.id) current
+                else current.copy(
+                    original = cached.original,
+                    rendered = cached.shown,
+                    cropBase = cached.fullFrame,
+                    loading = false,
+                    error = null
+                )
+            }
+            return
+        }
+
         renderJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
@@ -1713,6 +1802,18 @@ class EditorViewModel(
                     ensureActive()
                     val shown = if (crop.isFull()) fullFrame else renderer.crop(fullFrame, crop)
                     RenderOutcome.Frame(original, shown, fullFrame)
+                }
+                // 只有仍是最新的那次渲染才写入缓存，避免被取消的旧结果污染。
+                if (generation == renderGeneration && frameKey != null) {
+                    val frame = when (outcome) {
+                        is RenderOutcome.Ai -> RenderedFrame(
+                            outcome.original, outcome.finalImage, outcome.finalImage
+                        )
+                        is RenderOutcome.Frame -> RenderedFrame(
+                            outcome.original, outcome.shown, outcome.fullFrame
+                        )
+                    }
+                    frameCache.put(frameKey, frame)
                 }
                 _state.update { current ->
                     if (generation != renderGeneration ||
@@ -1866,11 +1967,14 @@ class EditorViewModel(
          * 1.6.67 从 4096 下调到 2560：4096 会让 3384×6016 这类竖拍大图在
          * 解码时因「长边 6016 < 4096×2」而取 sample=1（全分辨率解码 2000 万
          * 像素），再叠加旋转/缩放的整图拷贝，真机上点一次预设预览要转很久。
-         * 2560 使这类图走 sample≥2，解码像素降到 1/4，配合 decodePreview 的
-         * 旋转缩放合并，消除数量级卡顿。2560 长边在手机屏幕上依然清晰，且
-         * 仅影响交互预览——导出仍走 ExportManager 的全分辨率路径，画质不变。
+         *
+         * 1.6.92 再下调到 2048：20M 相机原图（6016×4000）在 2560 预览下仍有
+         * 约 440 万像素要跑十几个全帧 pass，套用预设/调一次滑块要数秒。2048
+         * 使像素再降约 36%，配合渲染帧缓存，交互接近即时。2048 长边在手机屏幕
+         * 上依旧清晰，且仅影响交互预览——导出仍走 ExportManager 的全分辨率
+         * 路径（最长边约 4900），成片画质完全不变。
          */
-        const val PREVIEW_MAX_CAP = 2560
+        const val PREVIEW_MAX_CAP = 2048
 
         private val SUPPORTED_RATIOS = listOf(
             "1:1" to 1f,

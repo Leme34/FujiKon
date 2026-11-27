@@ -43,7 +43,11 @@ object GallerySaver {
             FileOutputStream(temp).use { output ->
                 val compressed = bitmap.compress(
                     if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
-                    100,
+                    // 1.6.92：JPEG quality=100 是最慢编码档，对 20M 全分辨率成片
+                    // 要耗时数秒且文件膨胀；92 属视觉无损的高质量区间（项目
+                    // ExportFidelityTest 亦以 92 作高保真基准），编码明显更快、
+                    // 文件更小，成片分辨率与画质观感不变。PNG 无损，质量值忽略。
+                    JPEG_QUALITY,
                     output
                 )
                 if (!compressed) throw IOException("图片编码失败")
@@ -133,4 +137,6 @@ object GallerySaver {
 
     private fun sanitize(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|\\n\\r\\t]"), "_").trim()
+
+    private const val JPEG_QUALITY = 92
 }
