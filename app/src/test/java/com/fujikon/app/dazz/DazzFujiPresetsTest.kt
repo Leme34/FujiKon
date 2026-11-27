@@ -83,7 +83,7 @@ class DazzFujiPresetsTest {
         })
         assertEquals(
             listOf(
-                "dazz3:fxn_r_classic_neg_v2", "dazz3:classic_u_superia400",
+                "dazz3:fxn_r_classic_neg_v3", "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg",                 "dazz3:ofm_r_ricoh_neg_v6",
                 "dazz3:film_flash_portrait_v6"
             ),

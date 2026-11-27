@@ -208,7 +208,7 @@ class RepositoryRobolectricTest {
                 "nikonpc:kodak_portra_160nc",
                 "nikonpc:pt_mode2",
                 "nikonpc:st_g1_47",
-                "dazz3:fxn_r_classic_neg_v2",
+                "dazz3:fxn_r_classic_neg_v3",
                 "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg",
                 "dazz3:ofm_r_ricoh_neg_v6",
@@ -254,37 +254,64 @@ class RepositoryRobolectricTest {
     }
 
     @Test
-    fun upgradeReplacesLegacyFxnPresetWithV2KeepingUserState() = runBlocking {
+    fun upgradeReplacesLegacyFxnPresetWithV3KeepingUserState() = runBlocking {
         repository.load()
-        // 模拟老用户：索引里 FXN R 还是旧 hash，且已收藏/备注/软删除。
+        // 模拟 1.6.83 老用户：索引里 FXN R 还是 V2 hash，且已收藏/备注。
         val index = java.io.File(context.filesDir, "presets/index.json")
         val root = org.json.JSONObject(index.readText())
         val array = root.getJSONArray("presets")
         var found = false
         for (i in 0 until array.length()) {
             val item = array.getJSONObject(i)
-            if (item.optString("contentHash") == "dazz3:fxn_r_classic_neg_v2") {
-                item.put("contentHash", "dazz3:fxn_r_classic_neg")
+            if (item.optString("contentHash") == "dazz3:fxn_r_classic_neg_v3") {
+                item.put("contentHash", "dazz3:fxn_r_classic_neg_v2")
                 item.put("favorite", true)
                 item.put("note", "我的 FXN")
                 found = true
             }
         }
-        assertTrue("测试前置：索引里应有 FXN R v2 条目", found)
+        assertTrue("测试前置：索引里应有 FXN R v3 条目", found)
         index.writeText(root.toString())
 
         val reopened = PresetRepository(context)
         reopened.load()
 
         val upgraded = reopened.presets.value.firstOrNull {
-            it.contentHash == "dazz3:fxn_r_classic_neg_v2"
+            it.contentHash == "dazz3:fxn_r_classic_neg_v3"
         }
-        assertNotNull("升级后应存在 FXN R v2", upgraded)
+        assertNotNull("升级后应存在 FXN R v3", upgraded)
         assertTrue("旧 hash 应被清除",
-            reopened.presets.value.none { it.contentHash == "dazz3:fxn_r_classic_neg" })
+            reopened.presets.value.none { it.contentHash == "dazz3:fxn_r_classic_neg_v2" })
         assertTrue("用户收藏应保留", upgraded!!.favorite)
         assertEquals("我的 FXN", upgraded.note)
         assertEquals("条目总数不应变化", seededCount(), reopened.presets.value.size)
+    }
+
+    @Test
+    fun olderFxnHashAlsoReachesV3() = runBlocking {
+        // 基础 hash（无版本后缀）老用户也必须一步直达 V3。
+        repository.load()
+        val index = java.io.File(context.filesDir, "presets/index.json")
+        val root = org.json.JSONObject(index.readText())
+        val array = root.getJSONArray("presets")
+        var found = false
+        for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            if (item.optString("contentHash") == "dazz3:fxn_r_classic_neg_v3") {
+                item.put("contentHash", "dazz3:fxn_r_classic_neg")
+                found = true
+            }
+        }
+        assertTrue("测试前置：索引里应有 FXN R v3 条目", found)
+        index.writeText(root.toString())
+
+        val reopened = PresetRepository(context)
+        reopened.load()
+        assertNotNull(
+            "基础 hash 应升级到 FXN R v3",
+            reopened.presets.value.firstOrNull { it.contentHash == "dazz3:fxn_r_classic_neg_v3" })
+        assertTrue("基础 hash 应被清除",
+            reopened.presets.value.none { it.contentHash == "dazz3:fxn_r_classic_neg" })
     }
 
     @Test

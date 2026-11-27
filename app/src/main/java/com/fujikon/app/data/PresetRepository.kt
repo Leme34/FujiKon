@@ -190,9 +190,11 @@ class PresetRepository(private val context: Context) {
             "dazz3:film_flash_portrait_v3" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V6,
             "dazz3:film_flash_portrait_v4" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V6,
             "dazz3:film_flash_portrait_v5" to com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V6,
-            // FXN R 经典负片量化拟合重做（1.6.83）：旧版偏亮偏暖、青蓝不足，
-            // 原地升级到青灰低饱和新影调，保留收藏/备注/删除状态。
-            "dazz3:fxn_r_classic_neg" to com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V2,
+            // FXN R 经典负片：历次配方（1.6.83 青冷拟合 / 1.6.90 暖黄绿富士色）
+            // 全部直达最新 V3。升级是单次查表、新模板只有最新版本，旧 hash 一律
+            // 一步升级到 V3，原地保留收藏/备注/删除状态。
+            "dazz3:fxn_r_classic_neg" to com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3,
+            "dazz3:fxn_r_classic_neg_v2" to com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3,
             // OFM R 理光负片：历次配方（1.6.84 暖灰 / 1.6.85 去富士红 /
             // 1.6.86 清冷白净 / 1.6.87 主体保色 / 1.6.88 真黄绿）全部直达最新 V6。
             // 升级是单次查表、新模板只有最新版本，故旧 hash 不能做链条式映射

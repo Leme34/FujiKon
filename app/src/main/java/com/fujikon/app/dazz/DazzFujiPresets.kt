@@ -53,6 +53,13 @@ object DazzFujiPresets {
      */
     const val FXN_HASH_V2 = HASH_PREFIX + "fxn_r_classic_neg_v2"
     /**
+     * FXN R 经典负片配方升级后缀（1.6.90）：1.6.83 的青冷「洋红」影调（gcast 加蓝、
+     * lift 加红减绿）红调不对；按 5 张 Dazz 成片改为「恰到好处的暖黄绿」富士色调：
+     * 色偏绿升蓝降、分离色调蓝分量转负、lift 中性增绿减蓝，中灰暖黄、肤色暖而不洋红。
+     * 覆盖安装时把历史 hash 原地升级到本版，保留用户态。
+     */
+    const val FXN_HASH_V3 = HASH_PREFIX + "fxn_r_classic_neg_v3"
+    /**
      * OFM R 理光负片配方升级后缀（1.6.84）：按 10 张 Dazz 成片的色彩锚点量化重做，
      * 覆盖安装时把旧 `dazz3:ofm_r_ricoh_neg` 原地升级到新影调，保留用户态。
      */
@@ -102,10 +109,10 @@ object DazzFujiPresets {
         Spec(
             slug = "fxn_r_classic_neg",
             name = "FXN R · 经典负片",
-            description = "Dazz 最火的富士平替（FXN R / Classic Negative）：低饱和青灰影调、阴影青蓝、高光去暖，压暗有层次，肤色清透通透，带胶片颗粒。适合街拍、绿植、美食与日常随拍。",
+            description = "Dazz 最火的富士平替（FXN R / Classic Negative）：标志性的暖黄绿影调，中性暖黄、肤色暖而不洋红、绿植自然偏黄绿，低对比柔和过渡，带胶片颗粒。适合街拍、人像、绿植与日常随拍。",
             filmLook = DazzFilmLut.LOOK_FXN_R,
             grain = 12f,
-            hashOverride = FXN_HASH_V2
+            hashOverride = FXN_HASH_V3
         ),
         Spec(
             slug = "classic_u_superia400",

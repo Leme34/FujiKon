@@ -143,16 +143,28 @@ object DazzFilmLut {
      * 高光R-B -0.093。同时保留椭圆肤色保护，环境去红青蓝不污染人脸清透度。
      */
     private val FXN_R = Spec(
+        // 1.6.90：按 5 张 Dazz FXN R 成片指纹重做。此前 1.6.83 是「减红加蓝」
+        // 的青冷影调（gcast 蓝最高、分离色调阴影 +0.105 蓝、lift 加红减绿），
+        // 中灰 (110,107,115) 偏青蓝、绿植 R-B=-12 泛青——用户反馈的红调不对，
+        // 实为「红+蓝=洋红/青冷」，缺富士标志性的暖黄。成片量化：肤色 R-B≈+60、
+        // G-B≈+25（暖黄而非洋红），白物 R-B/G-B≈+5/+5，绿植 G-B≈+12，中性
+        // G-B≈+4（全局绿>蓝、暖黄）。本版把色偏整体翻转为温和暖黄绿：gcast 蓝
+        // 由 +0.078 改 -0.010、分离色调蓝分量转负、lift 由加红减绿改中性增绿减蓝，
+        // 中灰由青冷 (RB-5/GB-8) 翻为暖黄 (RB+4/GB+5)，肤色 GB 命中成片 ≈+25，
+        // 影调 tone/抬黑保持不动，避免回到灰蒙蒙。
         tone = floatArrayOf(0f, 0.006f, 0.10f, 0.055f, 0.25f, 0.190f, 0.50f, 0.420f, 0.75f, 0.790f, 0.90f, 0.930f, 1f, 0.965f),
         s0 = 0.18f, s1 = 0.55f, h0 = 0.50f, h1 = 0.95f,
-        shadow = floatArrayOf(-0.048f, 0.028f, 0.105f),
-        mid = floatArrayOf(-0.010f, 0.014f, 0.018f),
-        high = floatArrayOf(-0.012f, 0.006f, 0.048f),
-        skinProtect = 0.94f, skinLift = 0.052f, sat = 0.72f, skinSatDelta = 0.05f,
-        hprot = 0.88f, gcast = floatArrayOf(-0.058f, 0.014f, 0.078f), redBoost = 0f,
-        // 拟合脚本的肤色提亮配比（少加红、微压绿、少补蓝），避免通用配比
-        // (0.7,-0.35,0.5) 在去红青蓝影调里把肤色推冷发灰。
-        liftRGB = floatArrayOf(0.85f, -0.35f, 0.18f)
+        // 分离色调：阴影/中调/高光由加蓝改温和黄绿（G 升、B 降）。
+        shadow = floatArrayOf(-0.032f, 0.026f, 0.016f),
+        mid = floatArrayOf(-0.006f, 0.010f, -0.004f),
+        high = floatArrayOf(-0.006f, 0.008f, -0.008f),
+        // sat 保持 0.72（富士浓郁色彩），skinSatDelta 0.05→0.02 避免肤色过艳。
+        skinProtect = 0.94f, skinLift = 0.052f, sat = 0.72f, skinSatDelta = 0.02f,
+        // gcast 由「减红加蓝」青冷 (-0.058,0.014,0.078) 改温和暖黄绿。
+        hprot = 0.88f, gcast = floatArrayOf(-0.006f, 0.019f, -0.010f), redBoost = 0f,
+        // 肤色提亮配比由「加红减绿」增粉嫩 (0.85,-0.35,0.18) 改中性增绿减蓝
+        // (0.62,0.27,-0.06)：肤色保暖但 G-B 升到成片 ≈+25，不泛洋红。
+        liftRGB = floatArrayOf(0.62f, 0.27f, -0.06f)
     )
 
     private val CLASSIC_U = Spec(
