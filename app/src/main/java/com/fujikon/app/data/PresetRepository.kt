@@ -194,14 +194,15 @@ class PresetRepository(private val context: Context) {
             // 原地升级到青灰低饱和新影调，保留收藏/备注/删除状态。
             "dazz3:fxn_r_classic_neg" to com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V2,
             // OFM R 理光负片：历次配方（1.6.84 暖灰 / 1.6.85 去富士红 /
-            // 1.6.86 清冷白净 / 1.6.87 主体保色）全部直达最新 V5。
+            // 1.6.86 清冷白净 / 1.6.87 主体保色 / 1.6.88 真黄绿）全部直达最新 V6。
             // 升级是单次查表、新模板只有最新版本，故旧 hash 不能做链条式映射
             // （否则指向已退役的中间版本会找不到模板而升级失败）；所有历史版本
-            // 一步升级到 V5，原地保留收藏/备注/删除状态。
-            "dazz3:ofm_r_ricoh_neg" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V5,
-            "dazz3:ofm_r_ricoh_neg_v2" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V5,
-            "dazz3:ofm_r_ricoh_neg_v3" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V5,
-            "dazz3:ofm_r_ricoh_neg_v4" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V5
+            // 一步升级到 V6，原地保留收藏/备注/删除状态。
+            "dazz3:ofm_r_ricoh_neg" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V6,
+            "dazz3:ofm_r_ricoh_neg_v2" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V6,
+            "dazz3:ofm_r_ricoh_neg_v3" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V6,
+            "dazz3:ofm_r_ricoh_neg_v4" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V6,
+            "dazz3:ofm_r_ricoh_neg_v5" to com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V6
         )
         if (list.none { it.isSample && it.fileName.isBlank() && it.contentHash in upgrades }) {
             return list

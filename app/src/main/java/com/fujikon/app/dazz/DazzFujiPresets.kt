@@ -76,6 +76,13 @@ object DazzFujiPresets {
      * 覆盖安装时把旧 `dazz3:ofm_r_ricoh_neg_v4` 原地升级到新影调，保留用户态。
      */
     const val OFM_HASH_V5 = HASH_PREFIX + "ofm_r_ricoh_neg_v5"
+    /**
+     * OFM R 理光负片配方升级后缀（1.6.88）：真正修正「色调-30」方向。此前 V4/V5
+     * 把 Tint 负值误做成加蓝青冷调 + 肤色增粉嫩，始终偏暖偏红。本版按 Tint=-30
+     * 的正确语义改为「偏一点点黄绿」：色偏绿升蓝降、肤色配比中性偏绿、skinSatDelta
+     * 负值单独去红，主体保色不变。覆盖安装时把旧 hash 原地升级到新影调，保留用户态。
+     */
+    const val OFM_HASH_V6 = HASH_PREFIX + "ofm_r_ricoh_neg_v6"
 
     private data class Spec(
         val slug: String,
@@ -117,10 +124,10 @@ object DazzFujiPresets {
         Spec(
             slug = "ofm_r_ricoh_neg",
             name = "OFM R · 理光负片",
-            description = "Dazz 近期最火的理光 GR 平替（OFM R）：主体保色、环境清冷的青绿褪色感，低对比、轻微抬黑，橘子/花朵等暖色主体依然鲜亮，背景柔和去色自带氛围感。适合日常随拍、街景建筑、静物与暖色室内。",
+            description = "Dazz 近期最火的理光 GR 平替（OFM R）：色调-30 的淡淡黄绿氛围，低对比、轻微褪色抬黑，肤色干净不发红，暖色主体依然鲜亮，画面柔和自带胶片感。适合日常随拍、街景建筑、静物与暖色室内。",
             filmLook = DazzFilmLut.LOOK_OFM_R,
             grain = 8f,
-            hashOverride = OFM_HASH_V5
+            hashOverride = OFM_HASH_V6
         ),
         Spec(
             slug = "film_flash_portrait",
