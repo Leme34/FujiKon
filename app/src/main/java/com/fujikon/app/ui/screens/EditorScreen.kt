@@ -676,11 +676,12 @@ fun EditorScreen(
             presets = state.presets,
             selectedId = state.presetId,
             onSelect = { selected ->
-                viewModel.selectPreset(selected.id)
+                viewModel.selectPreset(selected.id, selected.adjustments.presetStrength)
                 showPicker = false
             },
             onDismiss = { showPicker = false },
             photo = current,
+            initialStrength = state.adjustments.presetStrength,
             thumbnailStore = app.container.presetThumbnailStore,
             onOpenDetail = { selected ->
                 showPicker = false

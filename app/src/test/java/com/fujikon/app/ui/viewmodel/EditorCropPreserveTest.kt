@@ -89,7 +89,9 @@ class EditorCropPreserveTest {
 
     private suspend fun awaitInit() {
         repeat(60) {
-            if (vm.state.value.presets.isNotEmpty()) return
+            // 需等 init 完整落地：presets 到位后仍有一步 _state.update 把
+            // adjustments 重置为 baseline，过早 setCrop 会被那一步冲掉。
+            if (vm.state.value.presets.isNotEmpty() && vm.state.value.historyIndex == 0) return
             delay(20)
         }
     }

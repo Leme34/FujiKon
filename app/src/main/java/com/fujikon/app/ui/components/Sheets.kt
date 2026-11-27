@@ -41,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -64,6 +65,7 @@ import com.fujikon.app.ui.theme.InkElevated
 import com.fujikon.app.ui.theme.Outline
 import com.fujikon.app.ui.theme.TextPrimary
 import com.fujikon.app.ui.theme.TextSecondary
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,10 +76,20 @@ fun PresetPickerSheet(
     onDismiss: () -> Unit,
     photo: PhotoItem? = null,
     thumbnailStore: com.fujikon.app.render.PresetThumbnailStore? = null,
-    onOpenDetail: ((Preset) -> Unit)? = null
+    onOpenDetail: ((Preset) -> Unit)? = null,
+    /**
+     * 打开面板时预设强度的初值（0..100）。用户在面板里调整后选中预设，
+     * 强度会烘进传出的 [Preset].adjustments.presetStrength，从而对本次
+     * 批量套用的所有照片生效。默认 100 保持既有调用方行为不变。
+     */
+    initialStrength: Float = 100f
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var onlyFavorite by remember { mutableStateOf(false) }
+    var strength by remember { mutableFloatStateOf(initialStrength) }
+    // 面板由 AnimatedVisibility 控制显隐，重新打开是全新组合；但若调用方
+    // 在面板仍可见时更新了初值，同步进来以免沿用上一次调整的强度。
+    LaunchedEffect(initialStrength) { strength = initialStrength }
     // 「无（保留原图）」不参与筛选，始终保留；搜索与「仅看已收藏」叠加。
     val visibleOptions = remember(presets, searchQuery, onlyFavorite) {
         listOf(Preset.none()) + PresetFilter.forPicker(presets, searchQuery, onlyFavorite)
@@ -172,6 +184,30 @@ fun PresetPickerSheet(
                     selectedLabelColor = Ink
                 )
             )
+            // 预设强度：在「选择预设」这一步就能定浓淡，选中后随预设一起
+            // 套用到本次勾选的所有照片。只要有可选滤镜就显示（首次进入画廊
+            // 尚未选过预设时也能先设定强度）。
+            if (visibleOptions.any { !it.isNone }) {
+                Spacer(Modifier.height(4.dp))
+                AdjustmentSlider(
+                    label = "预设强度",
+                    value = strength,
+                    valueRange = 0f..100f,
+                    step = 1f,
+                    onValueChange = { strength = it },
+                    onValueChangeFinished = {},
+                    onReset = { strength = 100f },
+                    formattedValue = "${strength.roundToInt()}%",
+                    fillFromStart = true,
+                    modifier = Modifier.testTag("preset_picker_strength")
+                )
+                Text(
+                    "选中预设后按此强度套用；100% 为完整效果，0% 回到原图。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp)
+                )
+            }
             Spacer(Modifier.height(8.dp))
             LazyColumn(
                 modifier = Modifier.heightIn(max = 520.dp),
@@ -187,7 +223,16 @@ fun PresetPickerSheet(
                                 if (selected) CardHigh else Card.copy(alpha = 0.55f),
                                 RoundedCornerShape(14.dp)
                             )
-                            .clickable { onSelect(preset) }
+                            .clickable {
+                                // 把面板里选定的强度随预设一起传出；「无（保留原图）」
+                                // 不涉及滤镜强度，保持原样。
+                                onSelect(
+                                    if (preset.isNone) preset
+                                    else preset.copy(
+                                        adjustments = preset.adjustments.copy(presetStrength = strength)
+                                    )
+                                )
+                            }
                             .padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

@@ -401,7 +401,12 @@ fun PresetsScreen(
             presets = presets,
             selectedId = null,
             onSelect = { preset ->
-                app.container.selectionStore.setPreset(preset.id)
+                // 选择面板已把强度烘进 preset.adjustments，一并写入 selectionStore，
+                // 后续进入编辑器时批量套用到所有照片。
+                app.container.selectionStore.setPreset(
+                    preset.id,
+                    preset.adjustments.presetStrength
+                )
                 showPicker = false
                 navController.navigate(Routes.GALLERY)
             },

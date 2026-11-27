@@ -2,6 +2,7 @@ package com.fujikon.app
 
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -222,5 +223,61 @@ class PresetPickerSheetTest {
             "列表应已滚动到选中项，而非把全部项都渲染出来",
             composeRule.onAllNodesWithText("预设 5").fetchSemanticsNodes().isEmpty()
         )
+    }
+
+    @Test
+    fun strengthSliderIsShownAndBakedIntoSelectedPreset() {
+        val preset = Preset.none().copy(id = "film", name = "胶片预设")
+        var chosen: Preset? = null
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = listOf(preset),
+                    selectedId = null,
+                    onSelect = { chosen = it },
+                    onDismiss = {},
+                    initialStrength = 100f
+                )
+            }
+        }
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodes(hasContentDescription("预设强度"))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        // 把强度拖到 42%。
+        composeRule.onNode(hasContentDescription("预设强度"))
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(42f) }
+
+        // 选中该预设：传出的 preset 必须带上刚设定的强度。
+        composeRule.onNode(hasText("胶片预设") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(42f, chosen?.adjustments?.presetStrength ?: -1f, 0.001f)
+    }
+
+    @Test
+    fun noneOptionIsNotBakedWithStrength() {
+        val preset = Preset.none().copy(id = "film", name = "胶片预设")
+        var chosen: Preset? = null
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = listOf(preset),
+                    selectedId = null,
+                    onSelect = { chosen = it },
+                    onDismiss = {},
+                    initialStrength = 30f
+                )
+            }
+        }
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("无（保留原图）")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNode(hasText("无（保留原图）") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick)
+        assertEquals(Preset.NONE_ID, chosen?.id)
+        // 「无（保留原图）」不烘入强度，保持满档，避免误判为「已调整」。
+        assertEquals(100f, chosen?.adjustments?.presetStrength ?: -1f, 0.001f)
     }
 }

@@ -962,7 +962,13 @@ class EditorViewModel(
                 loaded.firstOrNull { it.id == selectedId }
             }
             val photos = selectionStore.photos.value
-            val baseline = selected?.adjustments ?: EditAdjustments.Neutral
+            // 选择预设时设定的强度跨页面传到此处，作为所有选中照片共享的
+            // baseline：「一次选强度、批量套用全部生效」。「无（保留原图）」
+            // 不涉及滤镜强度，保持默认满档不变。
+            val chosenStrength = selectionStore.presetStrength.value.coerceIn(0f, 100f)
+            val baseline = (selected?.adjustments ?: EditAdjustments.Neutral).let {
+                if (selectedId == Preset.NONE_ID) it else it.copy(presetStrength = chosenStrength)
+            }
 
             // Batch apply happens exactly here: every selected photo receives
             // its OWN copy of the chosen preset as step 0 of its OWN history.
@@ -1419,7 +1425,10 @@ class EditorViewModel(
         }
         session.history.jumpTo(target)
         persistCurrentSession()
-        selectionStore.setPreset(_state.value.presetId)
+        selectionStore.setPreset(
+            _state.value.presetId,
+            _state.value.adjustments.presetStrength
+        )
         syncHistoryState()
         renderCurrent()
         return true
@@ -1504,14 +1513,21 @@ class EditorViewModel(
                 adjustments = targetAdjustments
             )
         }
-        selectionStore.setPreset(targetPresetId)
+        selectionStore.setPreset(
+            targetPresetId,
+            _state.value.adjustments.presetStrength
+        )
         recordHistory("粘贴效果")
         renderCurrent()
         return true
     }
 
-    fun selectPreset(id: String) {
-        if (_state.value.presetId == id) return
+    /**
+     * [strength] 为「选择预设」面板设定的套用强度（0..100）；null 表示沿用
+     * 预设自带强度，保持既有调用方行为不变。仅对非「无」预设生效。
+     */
+    fun selectPreset(id: String, strength: Float? = null) {
+        if (_state.value.presetId == id && strength == null) return
         val preset = if (id == Preset.NONE_ID) {
             Preset.none()
         } else {
@@ -1522,7 +1538,10 @@ class EditorViewModel(
             // 正交的用户编辑，必须保留。旧实现用 preset.adjustments 整体覆盖，
             // 把 crop 重置成 EditCrop.Full，导致「裁剪后换预设裁剪丢失」。
             // 预设自身若碰巧带 crop 也忽略——裁剪永远属于当前照片的编辑状态。
-            val incoming = preset?.adjustments ?: EditAdjustments.Neutral
+            var incoming = preset?.adjustments ?: EditAdjustments.Neutral
+            if (strength != null && id != Preset.NONE_ID) {
+                incoming = incoming.copy(presetStrength = strength.coerceIn(0f, 100f))
+            }
             current.copy(
                 presetId = id,
                 toneCurveOverride = null,
@@ -1530,7 +1549,7 @@ class EditorViewModel(
                 adjustments = incoming.copy(crop = current.adjustments.crop)
             )
         }
-        selectionStore.setPreset(id)
+        selectionStore.setPreset(id, strength ?: preset?.adjustments?.presetStrength ?: 100f)
         recordHistory("套用预设：${preset?.name ?: "未知预设"}")
         renderCurrent()
     }
@@ -1642,7 +1661,7 @@ class EditorViewModel(
                 adjustments = saved.adjustments
             )
         }
-        selectionStore.setPreset(saved.id)
+        selectionStore.setPreset(saved.id, saved.adjustments.presetStrength)
         recordHistory("保存预设：${saved.name}")
         // The saved copy has a new ID, so an in-flight render for the original
         // preset will be discarded by the generation guard. Render again with

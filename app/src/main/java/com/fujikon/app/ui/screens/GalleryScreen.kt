@@ -107,6 +107,7 @@ fun GalleryScreen(
     val albumFilter by viewModel.albumFilter.collectAsStateWithLifecycle()
     val presets by app.container.presetRepository.presets.collectAsStateWithLifecycle()
     val presetId by app.container.selectionStore.presetId.collectAsStateWithLifecycle()
+    val presetStrength by app.container.selectionStore.presetStrength.collectAsStateWithLifecycle()
     val currentPhoto by app.container.selectionStore.currentPhoto.collectAsStateWithLifecycle()
     // 预设预览固定用「最近一次选择的第一张照片」，不受编辑器翻页影响。
     val selectionPreview by app.container.selectionStore.previewPhoto.collectAsStateWithLifecycle()
@@ -544,11 +545,17 @@ fun GalleryScreen(
             presets = presets,
             selectedId = presetId,
             onSelect = { selected ->
-                app.container.selectionStore.setPreset(selected.id)
+                // 选中的 preset 已烘入面板里设定的强度，一并写回 selectionStore，
+                // 供编辑器 init 批量套用到所有勾选照片。
+                app.container.selectionStore.setPreset(
+                    selected.id,
+                    selected.adjustments.presetStrength
+                )
                 showPicker = false
             },
             onDismiss = { showPicker = false },
             photo = previewPhoto,
+            initialStrength = presetStrength,
             thumbnailStore = app.container.presetThumbnailStore,
             onOpenDetail = { selected ->
                 showPicker = false

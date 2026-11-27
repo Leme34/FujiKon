@@ -13,6 +13,14 @@ class SelectionStore {
     val presetId: StateFlow<String?> = _presetId.asStateFlow()
 
     /**
+     * 选择预设时设定的套用强度（0..100），与 [presetId] 一起跨页面传递到
+     * 编辑器。编辑器 init 会把它应用到所有选中照片的 baseline，实现
+     * 「一次选强度、批量套用全部生效」。默认 100 保持既有行为不变。
+     */
+    private val _presetStrength = MutableStateFlow(100f)
+    val presetStrength: StateFlow<Float> = _presetStrength.asStateFlow()
+
+    /**
      * The photo currently shown in the editor. Preset previews must NOT read
      * this: paging through photos in the editor would otherwise silently change
      * what every preset in the list is previewed on. See [previewPhoto].
@@ -29,9 +37,10 @@ class SelectionStore {
     private val _previewPhoto = MutableStateFlow<PhotoItem?>(null)
     val previewPhoto: StateFlow<PhotoItem?> = _previewPhoto.asStateFlow()
 
-    fun set(photos: List<PhotoItem>, presetId: String?) {
+    fun set(photos: List<PhotoItem>, presetId: String?, presetStrength: Float = 100f) {
         _photos.value = photos
         _presetId.value = presetId
+        _presetStrength.value = presetStrength.coerceIn(0f, 100f)
         applyNewSelection(photos)
     }
 
@@ -53,8 +62,9 @@ class SelectionStore {
         _previewPhoto.value = photo
     }
 
-    fun setPreset(id: String?) {
+    fun setPreset(id: String?, strength: Float = 100f) {
         _presetId.value = id
+        _presetStrength.value = strength.coerceIn(0f, 100f)
     }
 
     fun setCurrentPhoto(photo: PhotoItem?) {
@@ -64,6 +74,7 @@ class SelectionStore {
     fun clear() {
         _photos.value = emptyList()
         _presetId.value = null
+        _presetStrength.value = 100f
         _currentPhoto.value = null
         _previewPhoto.value = null
     }
