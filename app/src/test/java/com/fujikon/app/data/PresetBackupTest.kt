@@ -63,6 +63,23 @@ class PresetBackupTest {
         contentHash = "hash:$id", filmLook = 0, deleted = deleted, deletedAt = deletedAt
     )
 
+    /** 造一条 App 内置预置条目（无二进制、isSample=true），用于验证恢复时的补种/升级。 */
+    private fun builtInSample(
+        id: String,
+        name: String,
+        hash: String,
+        favorite: Boolean = false,
+        deleted: Boolean = false,
+        deletedAt: Long = 0L,
+        note: String = ""
+    ) = samplePreset(id, name, favorite = favorite, deleted = deleted, deletedAt = deletedAt, note = note).copy(
+        isSample = true,
+        contentHash = hash,
+        fileName = "",
+        fileSize = 0,
+        sourceName = "nic"
+    )
+
     @Test
     fun encodeDecodeRoundTripKeepsEveryUserStateAndBinary() {
         val presets = listOf(
@@ -209,5 +226,99 @@ class PresetBackupTest {
         assertTrue("原二进制文件必须还原，预设才可用", fresh.fileFor(restored!!).exists())
         assertTrue("二进制内容应无损",
             originalBytes.contentEquals(fresh.fileFor(restored).readBytes()))
+    }
+
+    @Test
+    fun restoreOldVersionBackupKeepsBuiltInsAddedByNewerVersion() = runBlocking {
+        // 模拟"旧版本导出的备份"：一条用户预设 + 一批旧的内置预置集合（此时 FXN/OFM/Flash
+        // 这些新版本才有的内置预置完全不在备份里），这正是用户反馈导致内置预置消失的场景。
+        val userPreset = samplePreset("user-1", "我的预设", favorite = true, note = "用户备注")
+        val oldBuiltIn = builtInSample("old-1", "旧内置", "nic:recipe_old")
+        val oldBackup = PresetBackup.encode(
+            listOf(userPreset, oldBuiltIn), emptyMap(), "1.6.59"
+        )
+
+        // 全新安装：load 会按当前版本播种全套内置预置。
+        context.filesDir.deleteRecursively()
+        val fresh = PresetRepository(context)
+        fresh.load()
+        val builtInHashesBefore = fresh.presets.value
+            .filter { it.isSample && it.fileName.isBlank() }
+            .map { it.contentHash }.toSet()
+        assertTrue("当前版本应带有内置预置", builtInHashesBefore.isNotEmpty())
+        assertTrue("FXN/OFM/Flash 应属于当前内置预置",
+            builtInHashesBefore.any { it.startsWith("dazz3:") })
+
+        // 恢复旧备份。
+        val result = fresh.restoreFromBackup(oldBackup)
+
+        // 用户数据原样恢复。
+        val restoredUser = fresh.presets.value.firstOrNull { it.id == "user-1" }
+        assertNotNull(restoredUser)
+        assertTrue(restoredUser!!.favorite)
+        assertEquals("用户备注", restoredUser.note)
+
+        // 核心回归点：备份里没有、但当前版本新增的内置预置必须仍然在。
+        val builtInHashesAfter = fresh.presets.value
+            .filter { it.isSample && it.fileName.isBlank() }
+            .map { it.contentHash }.toSet()
+        assertTrue("恢复旧备份不应丢失当前版本的任何一个内置预置",
+            builtInHashesAfter.containsAll(builtInHashesBefore))
+        assertTrue("FXN R 应在恢复后保留",
+            com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3 in builtInHashesAfter)
+        assertTrue("OFM R 应在恢复后保留",
+            com.fujikon.app.dazz.DazzFujiPresets.OFM_HASH_V6 in builtInHashesAfter)
+        assertTrue("直闪人像应在恢复后保留",
+            com.fujikon.app.dazz.DazzFujiPresets.FLASH_HASH_V6 in builtInHashesAfter)
+        // RestoreResult 计数也应包含补种后的内置预置，而非停留在备份里的 2 条。
+        assertTrue("恢复计数应含补种的内置预置", result.countActive > 2)
+    }
+
+    @Test
+    fun restoreOldVersionBackupUpgradesBuiltInRecipeInPlace() = runBlocking {
+        // 旧版本备份里的 FXN R 用旧配方 hash（V2），恢复后应原地升级到最新 V3，
+        // 同时保留用户对该内置预置的收藏 / 备注，id 不变。
+        val oldFxn = builtInSample(
+            "fxn-id", "FXN R · 经典负片",
+            com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V2,
+            favorite = true, note = "收藏的旧配方"
+        )
+        val oldBackup = PresetBackup.encode(listOf(oldFxn), emptyMap(), "1.6.83")
+
+        context.filesDir.deleteRecursively()
+        val fresh = PresetRepository(context)
+        fresh.load()
+        fresh.restoreFromBackup(oldBackup)
+
+        val upgraded = fresh.presets.value.firstOrNull { it.id == "fxn-id" }
+        assertNotNull(upgraded)
+        assertEquals("旧配方 hash 应升级到最新 V3",
+            com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3, upgraded!!.contentHash)
+        assertTrue("收藏态应保留", upgraded.favorite)
+        assertEquals("备注应保留", "收藏的旧配方", upgraded.note)
+        // 不应再残留旧 hash 的条目。
+        assertTrue("旧 hash 不应残留",
+            fresh.presets.value.none { it.contentHash == com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V2 })
+    }
+
+    @Test
+    fun restoreOldVersionBackupDoesNotResurrectDeletedBuiltIn() = runBlocking {
+        // 内置预置被软删除后，即使在旧备份恢复后也不应被"复活"。
+        val deletedFxn = builtInSample(
+            "fxn-deleted", "FXN R · 经典负片",
+            com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3,
+            deleted = true, deletedAt = 12345L
+        )
+        val oldBackup = PresetBackup.encode(listOf(deletedFxn), emptyMap(), "1.6.90")
+
+        context.filesDir.deleteRecursively()
+        val fresh = PresetRepository(context)
+        fresh.load()
+        fresh.restoreFromBackup(oldBackup)
+
+        assertTrue("被软删除的内置预置不应出现在活跃列表",
+            fresh.presets.value.none { it.contentHash == com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3 })
+        assertTrue("被软删除的内置预置应保留在已删除列表",
+            fresh.deletedPresets.value.any { it.contentHash == com.fujikon.app.dazz.DazzFujiPresets.FXN_HASH_V3 })
     }
 }

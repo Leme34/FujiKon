@@ -107,22 +107,7 @@ class PresetRepository(private val context: Context) {
                         list = seedSamplesLocked()
                         writeIndex(list)
                     } else {
-                        // An existing install keeps its own index, so a sample
-                        // removed from assets would otherwise survive upgrades.
-                        list = dropRetiredSamplesLocked(list)
-                        // Built-in presets ship in code, not assets: an app update
-                        // that changes their render recipe would otherwise never
-                        // reach users who launched a previous version once.
-                        list = upgradeBuiltInSamplesLocked(list)
-                        // 1.6.47：把旧 cloudrecipe:* 身份迁移为 nic:<recipeId> + 官方全称，
-                        // 合并重复缩写变体，并把此前在线导入的失真条目升级为真实 NP3 数据。
-                        list = migrateOfficialCloudIdentityLocked(list)
-                        // Presets ADDED in a newer app version (e.g. the seven
-                        // nikonpc.com official presets) must also be seeded on an
-                        // existing install, otherwise users who already launched
-                        // once would never see them. Content-hash de-dup keeps
-                        // this idempotent and never overwrites user state.
-                        list = ensureBuiltInsLocked(list)
+                        list = reconcileBuiltInsLocked(list)
                     }
                     publish(list)
                     loaded = true
@@ -130,6 +115,35 @@ class PresetRepository(private val context: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * 让一份已有的索引追上当前 App 版本的内置预置集合。四步顺序与历史 [load]
+     * 完全一致，抽成方法供 [load] 与 [restoreFromBackup] 共用：
+     *
+     *  1. 退役已移除的示例（含旧 3D LUT 方案）；
+     *  2. 配方变更的内置预置原地升级到最新 hash；
+     *  3. 旧 cloudrecipe:* 身份迁移为官方 nic:*；
+     *  4. 补种新版本新增、索引里尚缺的内置预置。
+     *
+     * 全按 contentHash 幂等去重并保留用户态（收藏/备注/软删除），因此无论是
+     * 覆盖安装的旧索引，还是从旧版本备份恢复的全量列表，执行结果都一致：
+     * 用户自己的预设原样保留，内置预置始终是当前版本应有的那一套。
+     */
+    private fun reconcileBuiltInsLocked(list: List<Preset>): List<Preset> {
+        // An existing install keeps its own index, so a sample removed from
+        // assets would otherwise survive upgrades.
+        var result = dropRetiredSamplesLocked(list)
+        // Built-in presets ship in code, not assets: an app update that changes
+        // their render recipe would otherwise never reach returning users.
+        result = upgradeBuiltInSamplesLocked(result)
+        // 1.6.47：旧 cloudrecipe:* 身份迁移为官方全称 + 真实 NP3 数据。
+        result = migrateOfficialCloudIdentityLocked(result)
+        // Presets ADDED in a newer app version (e.g. dazz FXN/OFM/Flash, the
+        // nikonpc.com official presets) must be seeded on an existing install,
+        // otherwise users who already launched once would never see them.
+        result = ensureBuiltInsLocked(result)
+        return result
     }
 
     /**
@@ -638,12 +652,17 @@ class PresetRepository(private val context: Context) {
     fun inspectBackup(json: String): PresetBackup.Info = PresetBackup.inspect(json)
 
     /**
-     * 从备份 JSON 全量恢复预设列表到备份时点：还原所有原二进制文件，然后用备份
-     * 里的全量列表整体替换索引（含 favorite / deleted / note / importedAt），并
-     * 让「活跃」「已删除」两个对外列表与之完全一致。
+     * 从备份 JSON 恢复预设列表：还原所有原二进制文件，用备份里的全量列表整体
+     * 替换索引（含 favorite / deleted / note / importedAt），再让「活跃」「已删除」
+     * 两个对外列表与之同步。
      *
-     * 为保证"一模一样"，恢复会清理 filesDir 中不再被备份引用的旧预设二进制，
-     * 但只清理看起来是本模块生成的预设文件（.ncp/.np3/.np2），绝不触碰其它文件。
+     * 用户数据严格恢复到备份时点：收藏、备注、软删除、自己导入的预设与二进制
+     * 都一模一样。唯一例外是「App 内置预置」——它们不属于用户数据，恢复后会按
+     * contentHash 追平当前版本（补种新增项、升级变更配方、退役已移除项），否则
+     * 旧版本导出的备份一旦导入，新版本才加入的内置预置就会永久消失。
+     *
+     * 恢复会清理 filesDir 中不再被引用的旧预设二进制，但只清理看起来是本模块
+     * 生成的预设文件（.ncp/.np3/.np2），绝不触碰其它文件。
      */
     suspend fun restoreFromBackup(json: String): RestoreResult {
         load()
@@ -661,8 +680,14 @@ class PresetRepository(private val context: Context) {
                         .onSuccess { filesRestored++ }
                         .onFailure { warnings.add("二进制 $name 写入失败：${it.message ?: "未知错误"}") }
                 }
-                // 2) 清理不再被引用的旧预设二进制（仅限预设扩展名）
-                val referenced = payload.presets.map { it.fileName }.filter { it.isNotBlank() }.toSet()
+                // 2) 让备份列表追上当前 App 版本的内置预置集合。
+                //    备份可能来自旧版本，不含新版本才加入的内置预置（Dazz FXN/OFM/
+                //    直闪及后续新增项），若直接全量替换会让它们永久消失。复用 [load]
+                //    的维护流水线按 contentHash 幂等补种/升级，用户数据原样保留：
+                //    收藏、备注、软删除、自己导入的预设与二进制都不受影响。
+                val restored = reconcileBuiltInsLocked(payload.presets)
+                // 3) 清理不再被引用的旧预设二进制（仅限预设扩展名）
+                val referenced = restored.map { it.fileName }.filter { it.isNotBlank() }.toSet()
                 filesDir.listFiles()?.forEach { file ->
                     if (file.isFile &&
                         file.name !in referenced &&
@@ -673,8 +698,7 @@ class PresetRepository(private val context: Context) {
                         file.delete()
                     }
                 }
-                // 3) 全量替换：publish 会同步刷新活跃 / 已删除两个对外列表
-                val restored = payload.presets
+                // 4) 全量替换：publish 会同步刷新活跃 / 已删除两个对外列表
                 publish(restored)
                 writeIndex(restored)
                 RestoreResult(
