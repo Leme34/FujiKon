@@ -84,7 +84,7 @@ class DazzFujiPresetsTest {
         assertEquals(
             listOf(
                 "dazz3:fxn_r_classic_neg_v2", "dazz3:classic_u_superia400",
-                "dazz3:nostalgic_neg",                 "dazz3:ofm_r_ricoh_neg_v3",
+                "dazz3:nostalgic_neg",                 "dazz3:ofm_r_ricoh_neg_v4",
                 "dazz3:film_flash_portrait_v6"
             ),
             hashes
@@ -153,8 +153,8 @@ class DazzFujiPresetsTest {
     fun skinIsProtectedAcrossAllLooks() {
         // 肤色色样在各款下的通道偏移都应很小（<= 24），且不会被染成青绿或惨黄：
         // R-B 保持为明显正值（暖调），不会出现 R-B 接近 0 或负值（发青发灰）。
-        // 阈值由 12 放宽到 16：OFM R 理光负片按 10 张成片（肤色锚点仅 R-B≈+21）
-        // 刻意压淡肤色，R-B≈+49 仍是明显暖调、不发青发灰，属风格例外而非缺陷。
+        // OFM R 理光负片按 4 张清冷人像成片（肤色锚点仅 R-B≈+21）刻意做白净冷调，
+        // 色样 R-B≈+34 仍明显暖调、不发青，属风格例外：下限单独放宽到 28；其余款 49。
         val skin = swatches.first { it.name == "skin" }
         val origRB = skin.r - skin.b
         looks@ for (p in presets) {
@@ -162,7 +162,8 @@ class DazzFujiPresetsTest {
             val maxShift = maxOf(kotlin.math.abs(out[0] - skin.r), kotlin.math.abs(out[1] - skin.g), kotlin.math.abs(out[2] - skin.b))
             assertTrue("${p.name} 肤色不应被大改（shift=$maxShift）", maxShift <= 24)
             val rb = out[0] - out[2]
-            assertTrue("${p.name} 肤色应保持暖调不泛青（R-B=$rb vs 原 $origRB）", rb >= origRB - 16)
+            val floor = if (p.filmLook == com.fujikon.app.dazz.DazzFilmLut.LOOK_OFM_R) 28 else origRB - 16
+            assertTrue("${p.name} 肤色应保持暖调不泛青（R-B=$rb vs 下限 $floor）", rb >= floor)
         }
     }
 

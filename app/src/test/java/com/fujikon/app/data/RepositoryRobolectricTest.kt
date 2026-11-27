@@ -211,7 +211,7 @@ class RepositoryRobolectricTest {
                 "dazz3:fxn_r_classic_neg_v2",
                 "dazz3:classic_u_superia400",
                 "dazz3:nostalgic_neg",
-                "dazz3:ofm_r_ricoh_neg_v3",
+                "dazz3:ofm_r_ricoh_neg_v4",
                 "dazz3:film_flash_portrait_v6"
             ),
             first
@@ -288,34 +288,34 @@ class RepositoryRobolectricTest {
     }
 
     @Test
-    fun upgradeReplacesLegacyOfmPresetWithV3KeepingUserState() = runBlocking {
+    fun upgradeReplacesLegacyOfmPresetWithV4KeepingUserState() = runBlocking {
         repository.load()
-        // 模拟 1.6.84 老用户：索引里 OFM R 还是 V2 hash，且已收藏/备注。
+        // 模拟 1.6.85 老用户：索引里 OFM R 还是 V3 hash，且已收藏/备注。
         val index = java.io.File(context.filesDir, "presets/index.json")
         val root = org.json.JSONObject(index.readText())
         val array = root.getJSONArray("presets")
         var found = false
         for (i in 0 until array.length()) {
             val item = array.getJSONObject(i)
-            if (item.optString("contentHash") == "dazz3:ofm_r_ricoh_neg_v3") {
-                item.put("contentHash", "dazz3:ofm_r_ricoh_neg_v2")
+            if (item.optString("contentHash") == "dazz3:ofm_r_ricoh_neg_v4") {
+                item.put("contentHash", "dazz3:ofm_r_ricoh_neg_v3")
                 item.put("favorite", true)
                 item.put("note", "我的 OFM")
                 found = true
             }
         }
-        assertTrue("测试前置：索引里应有 OFM R v3 条目", found)
+        assertTrue("测试前置：索引里应有 OFM R v4 条目", found)
         index.writeText(root.toString())
 
         val reopened = PresetRepository(context)
         reopened.load()
 
         val upgraded = reopened.presets.value.firstOrNull {
-            it.contentHash == "dazz3:ofm_r_ricoh_neg_v3"
+            it.contentHash == "dazz3:ofm_r_ricoh_neg_v4"
         }
-        assertNotNull("升级后应存在 OFM R v3", upgraded)
+        assertNotNull("升级后应存在 OFM R v4", upgraded)
         assertTrue("旧 hash 应被清除",
-            reopened.presets.value.none { it.contentHash == "dazz3:ofm_r_ricoh_neg_v2" })
+            reopened.presets.value.none { it.contentHash == "dazz3:ofm_r_ricoh_neg_v3" })
         assertTrue("用户收藏应保留", upgraded!!.favorite)
         assertEquals("我的 OFM", upgraded.note)
         assertEquals("条目总数不应变化", seededCount(), reopened.presets.value.size)
