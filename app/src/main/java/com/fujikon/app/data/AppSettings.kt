@@ -44,6 +44,17 @@ class AppSettings(context: Context) {
         }
 
     /**
+     * 编辑页顶部预览图上的分布直方图浮窗是否显示（1.6.89）。
+     * 默认显示，用户可在右上角「更多」菜单里隐藏/显示；偏好本地持久化，
+     * 下次进入编辑页仍保持用户选择。
+     */
+    var showHistogram: Boolean
+        get() = prefs.getBoolean("show_histogram", true)
+        set(value) {
+            prefs.edit().putBoolean("show_histogram", value).apply()
+        }
+
+    /**
      * Agnes API key for one-tap AI retouching. Stored locally in the app's own
      * SharedPreferences and only attached to requests the user explicitly starts.
      */

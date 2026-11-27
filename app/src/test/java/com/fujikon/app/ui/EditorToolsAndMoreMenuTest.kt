@@ -1,10 +1,12 @@
 package com.fujikon.app.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.fujikon.app.ui.components.EDITOR_TOOLS
 import com.fujikon.app.ui.components.EditorMoreMenu
@@ -228,5 +230,81 @@ class EditorToolsAndMoreMenuTest {
         }
         rule.onNodeWithTag("editor_more_export_current").assertIsNotEnabled()
         rule.onNodeWithTag("editor_more_export").assertIsNotEnabled()
+    }
+
+    /**
+     * 1.6.89：直方图开关在「更多」菜单中，文案随当前可见性切换：
+     * 显示时提示「隐藏直方图」，隐藏时提示「显示直方图」。
+     */
+    @Test
+    fun histogramToggleLabelFollowsVisibility() {
+        // 单个 setContent：用可变状态驱动重组，覆盖两种可见性下的文案。
+        val visible = mutableStateOf(true)
+        rule.setContent {
+            FujiKonTheme {
+                Column {
+                    EditorMoreMenuItems(
+                        canPaste = false,
+                        canExport = true,
+                        onCopy = {},
+                        onPaste = {},
+                        onExport = {},
+                        histogramVisible = visible.value
+                    )
+                }
+            }
+        }
+        rule.onNodeWithTag("editor_more_histogram").assertExists()
+        rule.onNodeWithText("隐藏直方图").assertExists()
+        rule.onNodeWithText("显示直方图").assertDoesNotExist()
+
+        rule.runOnUiThread { visible.value = false }
+        rule.onNodeWithText("显示直方图").assertExists()
+        rule.onNodeWithText("隐藏直方图").assertDoesNotExist()
+    }
+
+    @Test
+    fun histogramToggleFiresCallback() {
+        var toggled = 0
+        rule.setContent {
+            FujiKonTheme {
+                Column {
+                    EditorMoreMenuItems(
+                        canPaste = false,
+                        canExport = true,
+                        onCopy = {},
+                        onPaste = {},
+                        onExport = {},
+                        histogramVisible = true,
+                        onToggleHistogram = { toggled++ }
+                    )
+                }
+            }
+        }
+        rule.onNodeWithTag("editor_more_histogram").assertIsEnabled().performClick()
+        assertEquals(1, toggled)
+    }
+
+    @Test
+    fun histogramToggleIsReachableFromThreeDotMenu() {
+        var toggled = 0
+        rule.setContent {
+            FujiKonTheme {
+                EditorMoreMenu(
+                    canPaste = false,
+                    canExport = true,
+                    onCopy = {},
+                    onPaste = {},
+                    onExport = {},
+                    histogramVisible = true,
+                    onToggleHistogram = { toggled++ }
+                )
+            }
+        }
+        // 菜单初始收起，点三个点展开后可点到直方图开关。
+        rule.onNodeWithTag("editor_more_histogram").assertDoesNotExist()
+        rule.onNodeWithTag("editor_more_button").performClick()
+        rule.onNodeWithTag("editor_more_histogram").assertIsEnabled().performClick()
+        assertEquals("点击直方图项应触发切换回调", 1, toggled)
     }
 }

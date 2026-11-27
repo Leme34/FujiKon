@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -144,6 +146,9 @@ fun EditorToolsRow(
  * 1.6.68: the single export item is split into two —
  * "导出当前照片" (only the photo currently previewed) and
  * "导出所有照片" (the whole selection, the pre-split behaviour).
+ *
+ * 1.6.89: 新增「隐藏/显示直方图」开关，[histogramVisible] 决定文案与图标，
+ * 点击回调 [onToggleHistogram] 由屏幕切换浮窗可见性并持久化偏好。
  */
 @Composable
 fun ColumnScope.EditorMoreMenuItems(
@@ -152,7 +157,9 @@ fun ColumnScope.EditorMoreMenuItems(
     onCopy: () -> Unit,
     onPaste: () -> Unit,
     onExport: () -> Unit,
-    onExportCurrent: () -> Unit = {}
+    onExportCurrent: () -> Unit = {},
+    histogramVisible: Boolean = true,
+    onToggleHistogram: () -> Unit = {}
 ) {
     val dimmed = TextSecondary.copy(alpha = 0.45f)
     DropdownMenuItem(
@@ -202,6 +209,24 @@ fun ColumnScope.EditorMoreMenuItems(
         onClick = onExport,
         modifier = Modifier.testTag("editor_more_export")
     )
+    // 1.6.89：直方图浮窗的显示/隐藏开关。文案与图标随当前可见性切换。
+    DropdownMenuItem(
+        text = {
+            Text(
+                if (histogramVisible) "隐藏直方图" else "显示直方图",
+                color = TextPrimary
+            )
+        },
+        leadingIcon = {
+            Icon(
+                if (histogramVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                contentDescription = null,
+                tint = TextPrimary
+            )
+        },
+        onClick = onToggleHistogram,
+        modifier = Modifier.testTag("editor_more_histogram")
+    )
 }
 
 /** Three-dot overflow button in the editor's top-right corner. */
@@ -213,6 +238,8 @@ fun EditorMoreMenu(
     onPaste: () -> Unit,
     onExport: () -> Unit,
     onExportCurrent: () -> Unit = {},
+    histogramVisible: Boolean = true,
+    onToggleHistogram: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -234,7 +261,9 @@ fun EditorMoreMenu(
                 onCopy = { expanded = false; onCopy() },
                 onPaste = { expanded = false; onPaste() },
                 onExport = { expanded = false; onExport() },
-                onExportCurrent = { expanded = false; onExportCurrent() }
+                onExportCurrent = { expanded = false; onExportCurrent() },
+                histogramVisible = histogramVisible,
+                onToggleHistogram = { expanded = false; onToggleHistogram() }
             )
         }
     }

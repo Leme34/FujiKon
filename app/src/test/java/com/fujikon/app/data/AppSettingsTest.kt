@@ -118,4 +118,19 @@ class AppSettingsTest {
         settings.hasSeenSwipeHint = true
         assertTrue(AppSettings(context).hasSeenCompareHint)
     }
+
+    @Test
+    fun showHistogramDefaultsToTrue() {
+        // 1.6.89：直方图浮窗默认显示。
+        assertTrue(AppSettings(context).showHistogram)
+    }
+
+    @Test
+    fun showHistogramIsPersistedAcrossInstances() {
+        val settings = AppSettings(context)
+        settings.showHistogram = false
+        assertFalse(AppSettings(context).showHistogram)
+        settings.showHistogram = true
+        assertTrue(AppSettings(context).showHistogram)
+    }
 }

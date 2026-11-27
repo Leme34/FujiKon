@@ -147,6 +147,10 @@ fun EditorScreen(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
+    // 1.6.89：直方图浮窗可见性，来自 AppSettings 本地偏好（默认显示），
+    // 由右上角「更多」菜单的「隐藏/显示直方图」切换并持久化。
+    val appSettings = remember { app.container.settings }
+    var showHistogram by remember { mutableStateOf(appSettings.showHistogram) }
     var comparing by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
@@ -303,7 +307,12 @@ fun EditorScreen(
                             }
                         },
                         onExport = { exportCurrentOnly = false; showExport = true },
-                        onExportCurrent = { exportCurrentOnly = true; showExport = true }
+                        onExportCurrent = { exportCurrentOnly = true; showExport = true },
+                        histogramVisible = showHistogram,
+                        onToggleHistogram = {
+                            showHistogram = !showHistogram
+                            appSettings.showHistogram = showHistogram
+                        }
                     )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Ink)
@@ -501,7 +510,7 @@ fun EditorScreen(
                 // full-width, transparent background matching adjustments panel.
                 // While the long-press compare gesture shows the original, the
                 // chart follows what is on screen instead of the edited copy.
-                if (preset != null && rendered != null) {
+                if (preset != null && rendered != null && showHistogram) {
                     HistogramCard(
                         bitmap = if (comparing) state.original ?: rendered else rendered,
                         // 1.6.53：一键优化闭环始终针对未编辑原图求解一组纯
