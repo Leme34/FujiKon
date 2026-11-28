@@ -133,12 +133,27 @@ fun GalleryScreen(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        viewModel.refresh()
         showingPhotoPicker = false
-        // Keep the current choice (including "无") instead of forcing the
-        // preset picker again after the user adds photos.
-        if (!hasPresetChoice) showPicker = true
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        // 「没选照片点下一步 → 调起系统图库 → 选完返回」这条路径此前只 refresh()
+        // 重新扫描 app 自己的相册，系统 URI 既没被选中、也未必在相册列表里，
+        // 于是回到 app 点下一步仍判定没选照片、再次弹图库（死循环）。这里把系统
+        // 返回的 URI 真正转成一批待处理照片并继续流程。
+        scope.launch {
+            val picked = app.container.photoRepository.photosFromUris(uris)
+            if (picked.isEmpty()) {
+                viewModel.refresh()
+                return@launch
+            }
+            viewModel.adoptExternalPhotos(picked)
+            app.container.selectionStore.setPreviewPhoto(picked.first())
+            if (!hasPresetChoice) {
+                showPicker = true
+            } else {
+                app.container.selectionStore.setPhotos(viewModel.chosenPhotos())
+                navController.navigate(Routes.EDITOR)
+            }
+        }
     }
 
     LaunchedEffect(showingPhotoPicker) {

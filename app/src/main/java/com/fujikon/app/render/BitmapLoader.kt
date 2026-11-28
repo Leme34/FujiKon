@@ -163,7 +163,7 @@ object BitmapLoader {
         }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
     }
 
-    private fun readBounds(context: Context, uri: Uri): Pair<Int, Int>? {
+    fun readBounds(context: Context, uri: Uri): Pair<Int, Int>? {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, options)

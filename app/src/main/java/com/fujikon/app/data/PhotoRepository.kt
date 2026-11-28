@@ -4,9 +4,12 @@ import android.Manifest
 import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
+import com.fujikon.app.render.BitmapLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -98,6 +101,64 @@ class PhotoRepository(private val context: Context) {
             }
         }
         result
+    }
+
+    /**
+     * 把系统图片选择器（ActivityResultContracts.GetMultipleContents）返回的
+     * content URI 转成与相册列表同构的 [PhotoItem]，使用户「没选照片就点下一步
+     * → 调起系统图库 → 选完返回」这条路径能被真正当成一批待处理照片导入编辑器。
+     *
+     * 系统 URI 可能来自其它 provider，没有 MediaStore 的 _ID，且授权是一次性的：
+     *  - 尽量 takePersistableUriPermission，避免返回后再次读取时权限失效；
+     *  - id 用负数（-(index+1)），与 MediaStore 的正数 _ID 永不冲突；
+     *  - displayName/size 走 OpenableColumns，mime 走 getType，宽高走 BitmapLoader。
+     */
+    suspend fun photosFromUris(uris: List<Uri>): List<PhotoItem> = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val now = System.currentTimeMillis()
+        uris.mapIndexedNotNull { index, uri ->
+            runCatching {
+                // 尽力持久化读权限；非 persistable provider 会抛异常，忽略即可，
+                // 当次结果仍带有临时读授权，足以完成本次渲染/导出。
+                runCatching {
+                    resolver.takePersistableUriPermission(
+                        uri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+                var displayName: String? = null
+                var size = 0L
+                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+                    ?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                            if (nameIdx >= 0) displayName = cursor.getString(nameIdx)
+                            if (sizeIdx >= 0) size = cursor.getLong(sizeIdx)
+                        }
+                    }
+                val mime = resolver.getType(uri) ?: "image/jpeg"
+                val bounds = BitmapLoader.readBounds(context, uri) ?: return@runCatching null
+                val rotate = BitmapLoader.readOrientation(context, uri) ==
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 ||
+                    BitmapLoader.readOrientation(context, uri) ==
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270
+                val (w, h) = if (rotate) bounds.second to bounds.first else bounds
+                PhotoItem(
+                    id = -(index + 1).toLong(),
+                    uri = uri,
+                    displayName = displayName ?: "IMG_${now}_${index + 1}",
+                    dateTaken = now,
+                    dateAdded = now,
+                    bucketId = "picked",
+                    bucketName = "已选择",
+                    width = w,
+                    height = h,
+                    mimeType = mime,
+                    size = size
+                )
+            }.getOrNull()
+        }
     }
 
     fun albums(photos: List<PhotoItem>): List<Album> {

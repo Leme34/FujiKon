@@ -600,6 +600,14 @@ class GalleryViewModel(
     private val _selectionOrder = MutableStateFlow<List<Long>>(emptyList())
     val selectionOrder: StateFlow<List<Long>> = _selectionOrder.asStateFlow()
 
+    /**
+     * 系统图库（"没选照片点下一步→调起系统图库→选完返回"）返回的照片，
+     * 它们不在 MediaStore 相册列表 [UiState.photos] 中，需单独保存，否则
+     * [chosenPhotos] 按 id 查表会查不到、回到 app 后等于没选任何照片。
+     */
+    private val _externalPhotos = MutableStateFlow<List<PhotoItem>>(emptyList())
+    val externalPhotos: StateFlow<List<PhotoItem>> = _externalPhotos.asStateFlow()
+
     private val _albumFilter = MutableStateFlow<String?>(null)
     val albumFilter: StateFlow<String?> = _albumFilter.asStateFlow()
 
@@ -648,14 +656,27 @@ class GalleryViewModel(
         _selectionOrder.update { order -> order + ids.filterNot { it in order } }
     }
 
+    /**
+     * 采纳系统图库选完返回的照片作为当前批次：把它们置为已选（按返回顺序），
+     * 并清掉之前在相册里的勾选，避免两批照片混在一起。随后 [chosenPhotos]
+     * 会返回这一批，交给编辑器真正处理。
+     */
+    fun adoptExternalPhotos(photos: List<PhotoItem>) {
+        _externalPhotos.value = photos
+        _selectedIds.value = photos.map { it.id }.toSet()
+        _selectionOrder.value = photos.map { it.id }
+    }
+
     fun clearSelection() {
         _selectedIds.value = emptySet()
         _selectionOrder.value = emptyList()
+        _externalPhotos.value = emptyList()
     }
 
     /** Selected photos in pick order, so [firstOrNull] is the preview photo. */
     fun chosenPhotos(): List<PhotoItem> {
-        val byId = _state.value.photos.associateBy { it.id }
+        // 相册照片 + 系统图库导入的照片合并查表，覆盖两条选图路径。
+        val byId = (_state.value.photos + _externalPhotos.value).associateBy { it.id }
         return _selectionOrder.value.mapNotNull { byId[it] }
     }
 }
