@@ -280,4 +280,37 @@ class PresetPickerSheetTest {
         // 「无（保留原图）」不烘入强度，保持满档，避免误判为「已调整」。
         assertEquals(100f, chosen?.adjustments?.presetStrength ?: -1f, 0.001f)
     }
+
+    @Test
+    fun draggingStrengthSavesImmediatelyWithoutSelectingPreset() {
+        val preset = Preset.none().copy(id = "film", name = "胶片预设")
+        var chosen: Preset? = null
+        var savedStrength: Float? = null
+        var strengthChangeCount = 0
+        composeRule.setContent {
+            FujiKonTheme {
+                PresetPickerSheet(
+                    presets = listOf(preset),
+                    selectedId = null,
+                    onSelect = { chosen = it },
+                    onDismiss = {},
+                    initialStrength = 100f,
+                    onStrengthChange = { savedStrength = it; strengthChangeCount++ }
+                )
+            }
+        }
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodes(hasContentDescription("预设强度"))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        // 只拖动强度，完全不点滤镜。
+        composeRule.onNode(hasContentDescription("预设强度"))
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(55f) }
+
+        // 松手即保存：回调必须已触发，且没有选中任何预设。
+        assertEquals(55f, savedStrength ?: -1f, 0.001f)
+        assertTrue("强度回调应至少触发一次", strengthChangeCount >= 1)
+        assertEquals("不应因拖强度而选中滤镜", null, chosen)
+    }
 }

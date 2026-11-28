@@ -682,6 +682,8 @@ fun EditorScreen(
             onDismiss = { showPicker = false },
             photo = current,
             initialStrength = state.adjustments.presetStrength,
+            // 拖动强度松手即应用到当前照片，无需再点一次滤镜。
+            onStrengthChange = { viewModel.setPresetStrength(it) },
             thumbnailStore = app.container.presetThumbnailStore,
             onOpenDetail = { selected ->
                 showPicker = false

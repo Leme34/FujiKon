@@ -102,6 +102,7 @@ fun PresetsScreen(
     val deletedPresets by viewModel.deletedPresets.collectAsStateWithLifecycle()
     val ready by viewModel.ready.collectAsStateWithLifecycle()
     val previewPhoto by app.container.selectionStore.previewPhoto.collectAsStateWithLifecycle()
+    val presetStrength by app.container.selectionStore.presetStrength.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -412,6 +413,9 @@ fun PresetsScreen(
             },
             onDismiss = { showPicker = false },
             photo = previewPhoto,
+            initialStrength = presetStrength,
+            // 拖动强度松手即保存，后续进编辑器时批量套用。
+            onStrengthChange = { app.container.selectionStore.setPresetStrength(it) },
             thumbnailStore = app.container.presetThumbnailStore,
             onOpenDetail = { selected ->
                 showPicker = false

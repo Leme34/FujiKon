@@ -1593,6 +1593,18 @@ class EditorViewModel(
     }
 
     /**
+     * 编辑器「选择预设」面板里拖动强度滑条结束时即时应用：不必再点一次
+     * 滤镜，强度当场作用到当前照片并渲染。历史按字段合并，连续拖动只留一步。
+     */
+    fun setPresetStrength(strength: Float) {
+        setAdjustments(
+            _state.value.adjustments.copy(presetStrength = strength.coerceIn(0f, 100f)),
+            "预设强度"
+        )
+        selectionStore.setPresetStrength(strength)
+    }
+
+    /**
      * Reverts only the master RGB curve. The adjustments sheet uses this for
      * its "reset tone" action, so resetting the master curve never discards
      * per-channel curves edited in the dedicated curve sheet.

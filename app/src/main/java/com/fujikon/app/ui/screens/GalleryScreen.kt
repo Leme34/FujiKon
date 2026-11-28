@@ -556,6 +556,8 @@ fun GalleryScreen(
             onDismiss = { showPicker = false },
             photo = previewPhoto,
             initialStrength = presetStrength,
+            // 拖动强度松手即保存，进编辑器时批量套用到所有勾选照片。
+            onStrengthChange = { app.container.selectionStore.setPresetStrength(it) },
             thumbnailStore = app.container.presetThumbnailStore,
             onOpenDetail = { selected ->
                 showPicker = false

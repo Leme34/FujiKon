@@ -67,6 +67,11 @@ class SelectionStore {
         _presetStrength.value = strength.coerceIn(0f, 100f)
     }
 
+    /** 只更新选择面板里拖动设定的强度，不改变当前选中的预设 id。 */
+    fun setPresetStrength(strength: Float) {
+        _presetStrength.value = strength.coerceIn(0f, 100f)
+    }
+
     fun setCurrentPhoto(photo: PhotoItem?) {
         _currentPhoto.value = photo
     }

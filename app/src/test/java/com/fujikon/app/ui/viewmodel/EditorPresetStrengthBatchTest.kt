@@ -148,4 +148,18 @@ class EditorPresetStrengthBatchTest {
         vm.selectPreset(presetId)
         assertEquals(presetStrength, vm.state.value.adjustments.presetStrength, 0.001f)
     }
+
+    @Test
+    fun setPresetStrengthAppliesImmediatelyWithoutReselectingPreset() = runBlocking {
+        val vm = newViewModel()
+        awaitInit(vm)
+
+        val presetIdBefore = vm.state.value.presetId
+        // 只调强度，不重新点滤镜：强度必须立即作用到当前照片。
+        vm.setPresetStrength(64f)
+        assertEquals(64f, vm.state.value.adjustments.presetStrength, 0.001f)
+        assertEquals("不应改变已选预设", presetIdBefore, vm.state.value.presetId)
+        // 同步回 selectionStore，供下次进入编辑器时延续。
+        assertEquals(64f, selection.presetStrength.value, 0.001f)
+    }
 }

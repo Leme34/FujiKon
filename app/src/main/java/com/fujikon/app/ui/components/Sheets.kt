@@ -82,7 +82,12 @@ fun PresetPickerSheet(
      * 强度会烘进传出的 [Preset].adjustments.presetStrength，从而对本次
      * 批量套用的所有照片生效。默认 100 保持既有调用方行为不变。
      */
-    initialStrength: Float = 100f
+    initialStrength: Float = 100f,
+    /**
+     * 强度滑条拖动结束（松手或双击重置）时立即回调当前强度。调用方据此
+     * 当场保存，无需用户再点一次滤镜。默认空实现保持既有调用方不变。
+     */
+    onStrengthChange: (Float) -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var onlyFavorite by remember { mutableStateOf(false) }
@@ -195,14 +200,18 @@ fun PresetPickerSheet(
                     valueRange = 0f..100f,
                     step = 1f,
                     onValueChange = { strength = it },
-                    onValueChangeFinished = {},
-                    onReset = { strength = 100f },
+                    // 松手即保存：不必再点一次滤镜，强度当场生效。
+                    onValueChangeFinished = { onStrengthChange(strength) },
+                    onReset = {
+                        strength = 100f
+                        onStrengthChange(100f)
+                    },
                     formattedValue = "${strength.roundToInt()}%",
                     fillFromStart = true,
                     modifier = Modifier.testTag("preset_picker_strength")
                 )
                 Text(
-                    "选中预设后按此强度套用；100% 为完整效果，0% 回到原图。",
+                    "拖动即保存强度；100% 为完整效果，0% 回到原图。",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                     modifier = Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp)
